@@ -1,8 +1,6 @@
 import os
 import datetime
 from fastapi import FastAPI, Depends, HTTPException, Header
-# ❗️ KROK 1: DODAJEMY IMPORT CORS
-from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import create_engine, Column, Integer, String, Boolean, DateTime
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, Session
@@ -63,14 +61,14 @@ async def check_api_key(x_api_key: str = Header(None)):
 # === Uruchomienie FastAPI ===
 app = FastAPI(title="Parking API")
 
-# ❗️ KROK 2: DODAJEMY REGUŁY CORS
-# To mówi serwerowi, aby akceptował żądania z dowolnego miejsca.
+# Dodajemy reguły CORS (bardzo ważne!)
+from fastapi.middleware.cors import CORSMiddleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Pozwól na żądania z każdego adresu (idealne dla apki mobilnej)
+    allow_origins=["*"],
     allow_credentials=True,
-    allow_methods=["*"],  # Pozwól na wszystkie metody (GET, POST, PUT)
-    allow_headers=["*"],  # Pozwól na wszystkie nagłówki
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 class StatusCzujnika(BaseModel):
@@ -86,7 +84,7 @@ def read_root():
     return {"status": "Parking API działa!"}
 
 
-# ❗️ PROSTA FUNKCJA PUSH (używa `requests` i serwerów Expo)
+# PROSTA FUNKCJA PUSH (używa `requests` i serwerów Expo)
 def send_push_notification(token: str, sensor_id: str):
     print(f"Wysyłanie powiadomienia PUSH (przez Expo) do tokena: {token} dla miejsca: {sensor_id}")
     try:
@@ -102,7 +100,7 @@ def send_push_notification(token: str, sensor_id: str):
         print(f"BŁĄD KRYTYCZNY: Nie można wysłać PUSH przez Expo: {e}")
 
 
-# Endpoint dla APLIKACJI MOBILNEJ (bez zmian)
+# Endpoint dla APLIKACJI MOBILNEJ
 @app.post("/api/v1/obserwuj_miejsce")
 def obserwuj_miejsce(request: ObserwujRequest, db: Session = Depends(get_db)):
     token = request.device_token
@@ -126,13 +124,14 @@ def obserwuj_miejsce(request: ObserwujRequest, db: Session = Depends(get_db)):
     return {"status": "obserwowanie rozpoczęte", "miejsce": sensor_id}
 
 
-# Endpoint dla BRAMKI LILYGO (logika powiadomień bez zmian)
+# Endpoint dla BRAMKI LILYGO
 @app.put("/api/v1/miejsce_parkingowe/aktualizuj", dependencies=[Depends(check_api_key)])
 def aktualizuj_miejsce(dane_z_bramki: StatusCzujnika, db: Session = Depends(get_db)):
     teraz = datetime.datetime.utcnow()
     sensor_id = dane_z_bramki.sensor_id
     nowy_status = dane_z_bramki.status
 
+    # 1. Zapisz do Danych Historycznych
     nowy_rekord_historyczny = DaneHistoryczne(
         czas_pomiaru=teraz,
         sensor_id=sensor_id,
@@ -140,6 +139,7 @@ def aktualizuj_miejsce(dane_z_bramki: StatusCzujnika, db: Session = Depends(get_
     )
     db.add(nowy_rekord_historyczny)
 
+    # 2. Zaktualizuj Aktualny Stan
     miejsce_db = db.query(AktualnyStan).filter(AktualnyStan.sensor_id == sensor_id).first()
     poprzedni_status = -1
     
@@ -155,12 +155,16 @@ def aktualizuj_miejsce(dane_z_bramki: StatusCzujnika, db: Session = Depends(get_
         )
         db.add(nowe_miejsce)
     
+    # 3. Logika Powiadomień
     if poprzedni_status != 1 and nowy_status == 1:
         print(f"Wykryto zajęcie miejsca: {sensor_id}. Sprawdzanie obserwatorów...")
-        limit_czasu = datetime.timedelta(minutes=30)
+        
+        # ❗️❗️❗️ POPRAWKA BŁĘDU 1 ❗️❗️❗️
+        # Porównujemy teraz (TERAZ - CZAS_DODANIA) > 30 MINUT
+        limit_czasu_obserwacji = datetime.timedelta(minutes=30)
         obserwatorzy = db.query(ObserwowaneMiejsca).filter(
             ObserwowaneMiejsca.sensor_id == sensor_id,
-            ObserwowaneMiejsca.czas_dodania > limit_czasu
+            (teraz - ObserwowaneMiejsca.czas_dodania) < limit_czasu_obserwacji
         ).all()
 
         tokeny_do_usuniecia = []
@@ -174,6 +178,7 @@ def aktualizuj_miejsce(dane_z_bramki: StatusCzujnika, db: Session = Depends(get_
             ).delete(synchronize_session=False)
 
     
+    # 4. Zaktualizuj czas ostatniego kontaktu z bramką
     bramka_id_z_czujnika = sensor_id.split('_')[0] 
     bramka_db = db.query(OstatniStanBramki).filter(OstatniStanBramki.bramka_id == bramka_id_z_czujnika).first()
     if bramka_db:
@@ -189,8 +194,17 @@ def aktualizuj_miejsce(dane_z_bramki: StatusCzujnika, db: Session = Depends(get_
 # Endpoint dla APLIKACJI MOBILNEJ (Publiczny)
 @app.get("/api/v1/aktualny_stan")
 def pobierz_aktualny_stan(db: Session = Depends(get_db)):
-    limit_czasu = datetime.timedelta(minutes=15)
-    bramki_offline = db.query(OstatniStanBramki).filter(OstatniStanBramki.ostatni_kontakt < limit_czasu).all()
+    
+    # ❗️❗️❗️ POPRAWKA BŁĘDU 2 ❗️❗️❗️
+    # Porównujemy teraz (TERAZ - OSTATNI_KONTAKT) > 15 MINUT
+    teraz = datetime.datetime.utcnow()
+    limit_czasu_bramki = datetime.timedelta(minutes=15)
+    
+    # Musimy obsłużyć przypadek, gdy ostatni_kontakt jest NULL (None)
+    bramki_offline = db.query(OstatniStanBramki).filter(
+        (OstatniStanBramki.ostatni_kontakt == None) |
+        ((teraz - OstatniStanBramki.ostatni_kontakt) > limit_czasu_bramki)
+    ).all()
 
     for bramka in bramki_offline:
         db.query(AktualnyStan).filter(
