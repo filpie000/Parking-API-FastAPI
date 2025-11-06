@@ -86,6 +86,10 @@ def read_root():
 
 # PROSTA FUNKCJA PUSH (używa `requests` i serwerów Expo)
 def send_push_notification(token: str, sensor_id: str):
+    """
+    Wysyła powiadomienie PUSH do serwerów Expo.
+    Expo użyje naszego pliku .json, który wgraliśmy, aby uwierzytelnić się w Google.
+    """
     print(f"Wysyłanie powiadomienia PUSH (przez Expo) do tokena: {token} dla miejsca: {sensor_id}")
     try:
         requests.post("https://exp.host/--/api/v2/push/send", json={
