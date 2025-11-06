@@ -5,31 +5,9 @@ from sqlalchemy import create_engine, Column, Integer, String, Boolean, DateTime
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, Session
 from pydantic import BaseModel
-import json
+import requests # Używamy prostej biblioteki 'requests'
 
-# ❗️ NOWE IMPORTY DLA FIREBASE V1
-import firebase_admin
-from firebase_admin import credentials, messaging
-
-# === KROK 1: Inicjalizacja Firebase Admin ===
-# Pobierz zawartość pliku JSON ze zmiennej środowiskowej
-firebase_json_str = os.environ.get('FIREBASE_SERVICE_ACCOUNT_JSON')
-if firebase_json_str:
-    try:
-        # Przekonwertuj tekst JSON na słownik Pythona
-        firebase_creds_dict = json.loads(firebase_json_str)
-        # Utwórz dane logowania
-        cred = credentials.Certificate(firebase_creds_dict)
-        # Zainicjuj aplikację Firebase
-        firebase_admin.initialize_app(cred)
-        print("INFO: Pomyślnie zainicjowano Firebase Admin SDK.")
-    except Exception as e:
-        print(f"BŁĄD KRYTYCZNY: Nie można zainicjować Firebase Admin: {e}")
-else:
-    print("OSTRZEŻENIE: Zmienna FIREBASE_SERVICE_ACCOUNT_JSON nie jest ustawiona. Powiadomienia nie będą działać.")
-
-
-# === KROK 2: Konfiguracja Bazy Danych ===
+# === Konfiguracja Bazy Danych ===
 DATABASE_URL = os.environ.get('DATABASE_URL')
 if DATABASE_URL and DATABASE_URL.startswith("postgres://"):
     DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
@@ -38,7 +16,7 @@ engine = create_engine(DATABASE_URL)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 
-# === KROK 3: Definicja Tabel ===
+# === Definicja Tabel ===
 class AktualnyStan(Base):
     __tablename__ = "aktualny_stan"
     sensor_id = Column(String, primary_key=True, index=True)
@@ -72,7 +50,7 @@ def get_db():
     finally:
         db.close()
 
-# === KROK 4: Definicja Klucza API (Bezpieczeństwo Bramki) ===
+# === Definicja Klucza API (Bezpieczeństwo Bramki) ===
 API_KEY = os.environ.get('API_KEY')
 async def check_api_key(x_api_key: str = Header(None)):
     if not API_KEY:
@@ -80,7 +58,7 @@ async def check_api_key(x_api_key: str = Header(None)):
     if x_api_key != API_KEY:
         raise HTTPException(status_code=401, detail="Niepoprawny Klucz API")
 
-# === KROK 5: Uruchomienie FastAPI i definicja endpointów ===
+# === Uruchomienie FastAPI ===
 app = FastAPI(title="Parking API")
 
 class StatusCzujnika(BaseModel):
@@ -96,27 +74,24 @@ def read_root():
     return {"status": "Parking API działa!"}
 
 
-# ❗️ NOWA FUNKCJA PUSH (używa firebase_admin)
+# ❗️ PROSTA FUNKCJA PUSH (używa `requests` i serwerów Expo)
 def send_push_notification(token: str, sensor_id: str):
     """
-    Wysyła powiadomienie PUSH za pomocą Firebase Admin SDK (API V1).
+    Wysyła powiadomienie PUSH do serwerów Expo.
+    Expo użyje naszego pliku .json, który wgraliśmy, aby uwierzytelnić się w Google.
     """
-    print(f"Wysyłanie powiadomienia PUSH do tokena: {token} dla miejsca: {sensor_id}")
+    print(f"Wysyłanie powiadomienia PUSH (przez Expo) do tokena: {token} dla miejsca: {sensor_id}")
     try:
-        # Stwórz wiadomość
-        message = messaging.Message(
-            notification=messaging.Notification(
-                title="❌ Miejsce parkingowe zajęte!",
-                body=f"Miejsce {sensor_id}, do którego nawigujesz, zostało właśnie zajęte.",
-            ),
-            data={ "sensor_id": sensor_id, "action": "reroute" },
-            token=token,
-        )
-        # Wyślij wiadomość
-        response = messaging.send(message)
-        print("Pomyślnie wysłano powiadomienie:", response)
+        requests.post("https://exp.host/--/api/v2/push/send", json={
+            "to": token,
+            "sound": "default",
+            "title": "❌ Miejsce parkingowe zajęte!",
+            "body": f"Miejsce {sensor_id}, do którego nawigujesz, zostało właśnie zajęte.",
+            "data": { "sensor_id": sensor_id, "action": "reroute" }
+        })
+        print(f"Pomyślnie wysłano żądanie do Expo dla: {sensor_id}")
     except Exception as e:
-        print(f"BŁĄD KRYTYCZNY: Nie można wysłać PUSH przez Firebase Admin: {e}")
+        print(f"BŁĄD KRYTYCZNY: Nie można wysłać PUSH przez Expo: {e}")
 
 
 # Endpoint dla APLIKACJI MOBILNEJ (bez zmian)
@@ -222,3 +197,12 @@ def pobierz_aktualny_stan(db: Session = Depends(get_db)):
     
     wszystkie_miejsca = db.query(AktualnyStan).all()
     return wszystkie_miejsca
+```
+
+### Krok 4: Przebuduj Aplikację (Ostatni Raz)
+
+1.  Po zatwierdzeniu zmian na GitHubie, poczekaj, aż **Render.com** zaktualizuje Twój serwer (zobaczysz `Your service is live!`).
+2.  Teraz musisz przebudować aplikację `.apk`, aby upewnić się, że pobrała nowe dane uwierzytelniające z Expo.
+3.  W terminalu PowerShell (w folderze `MojParkingMenu`) uruchom:
+    ```bash
+    npx eas build --platform android --profile development --clear-cache
