@@ -152,7 +152,7 @@ def aktualizuj_miejsce(dane_z_bramki: StatusCzujnika, db: Session = Depends(get_
     # 3. Logika Powiadomień
     if poprzedni_status != 1 and nowy_status == 1:
         print(f"Wykryto zajęcie miejsca: {sensor_id}. Sprawdzanie obserwatorów...")
-        limit_czasu = teraz - datetime.timedelta(minutes=30)
+        limit_czasu = datetime.timedelta(minutes=30)
         obserwatorzy = db.query(ObserwowaneMiejsca).filter(
             ObserwowaneMiejsca.sensor_id == sensor_id,
             ObserwowaneMiejsca.czas_dodania > limit_czasu
@@ -185,7 +185,7 @@ def aktualizuj_miejsce(dane_z_bramki: StatusCzujnika, db: Session = Depends(get_
 # Endpoint dla APLIKACJI MOBILNEJ (Publiczny)
 @app.get("/api/v1/aktualny_stan")
 def pobierz_aktualny_stan(db: Session = Depends(get_db)):
-    limit_czasu = datetime.datetime.utcnow() - datetime.timedelta(minutes=15)
+    limit_czasu = datetime.timedelta(minutes=15)
     bramki_offline = db.query(OstatniStanBramki).filter(OstatniStanBramki.ostatni_kontakt < limit_czasu).all()
 
     for bramka in bramki_offline:
@@ -197,12 +197,3 @@ def pobierz_aktualny_stan(db: Session = Depends(get_db)):
     
     wszystkie_miejsca = db.query(AktualnyStan).all()
     return wszystkie_miejsca
-```
-
-### Krok 4: Przebuduj Aplikację (Ostatni Raz)
-
-1.  Po zatwierdzeniu zmian na GitHubie, poczekaj, aż **Render.com** zaktualizuje Twój serwer (zobaczysz `Your service is live!`).
-2.  Teraz musisz przebudować aplikację `.apk`, aby upewnić się, że pobrała nowe dane uwierzytelniające z Expo.
-3.  W terminalu PowerShell (w folderze `MojParkingMenu`) uruchom:
-    ```bash
-    npx eas build --platform android --profile development --clear-cache
