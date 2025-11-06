@@ -1,11 +1,13 @@
 import os
 import datetime
 from fastapi import FastAPI, Depends, HTTPException, Header
+# ❗️ KROK 1: DODAJEMY IMPORT CORS
+from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import create_engine, Column, Integer, String, Boolean, DateTime
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, Session
 from pydantic import BaseModel
-import requests # Używamy prostej biblioteki 'requests'
+import requests
 
 # === Konfiguracja Bazy Danych ===
 DATABASE_URL = os.environ.get('DATABASE_URL')
@@ -61,6 +63,16 @@ async def check_api_key(x_api_key: str = Header(None)):
 # === Uruchomienie FastAPI ===
 app = FastAPI(title="Parking API")
 
+# ❗️ KROK 2: DODAJEMY REGUŁY CORS
+# To mówi serwerowi, aby akceptował żądania z dowolnego miejsca.
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # Pozwól na żądania z każdego adresu (idealne dla apki mobilnej)
+    allow_credentials=True,
+    allow_methods=["*"],  # Pozwól na wszystkie metody (GET, POST, PUT)
+    allow_headers=["*"],  # Pozwól na wszystkie nagłówki
+)
+
 class StatusCzujnika(BaseModel):
     sensor_id: str
     status: int
@@ -76,10 +88,6 @@ def read_root():
 
 # ❗️ PROSTA FUNKCJA PUSH (używa `requests` i serwerów Expo)
 def send_push_notification(token: str, sensor_id: str):
-    """
-    Wysyła powiadomienie PUSH do serwerów Expo.
-    Expo użyje naszego pliku .json, który wgraliśmy, aby uwierzytelnić się w Google.
-    """
     print(f"Wysyłanie powiadomienia PUSH (przez Expo) do tokena: {token} dla miejsca: {sensor_id}")
     try:
         requests.post("https://exp.host/--/api/v2/push/send", json={
@@ -125,7 +133,6 @@ def aktualizuj_miejsce(dane_z_bramki: StatusCzujnika, db: Session = Depends(get_
     sensor_id = dane_z_bramki.sensor_id
     nowy_status = dane_z_bramki.status
 
-    # 1. Zapisz do Danych Historycznych
     nowy_rekord_historyczny = DaneHistoryczne(
         czas_pomiaru=teraz,
         sensor_id=sensor_id,
@@ -133,7 +140,6 @@ def aktualizuj_miejsce(dane_z_bramki: StatusCzujnika, db: Session = Depends(get_
     )
     db.add(nowy_rekord_historyczny)
 
-    # 2. Zaktualizuj Aktualny Stan
     miejsce_db = db.query(AktualnyStan).filter(AktualnyStan.sensor_id == sensor_id).first()
     poprzedni_status = -1
     
@@ -149,7 +155,6 @@ def aktualizuj_miejsce(dane_z_bramki: StatusCzujnika, db: Session = Depends(get_
         )
         db.add(nowe_miejsce)
     
-    # 3. Logika Powiadomień
     if poprzedni_status != 1 and nowy_status == 1:
         print(f"Wykryto zajęcie miejsca: {sensor_id}. Sprawdzanie obserwatorów...")
         limit_czasu = datetime.timedelta(minutes=30)
@@ -169,7 +174,6 @@ def aktualizuj_miejsce(dane_z_bramki: StatusCzujnika, db: Session = Depends(get_
             ).delete(synchronize_session=False)
 
     
-    # 4. Zaktualizuj czas ostatniego kontaktu z bramką
     bramka_id_z_czujnika = sensor_id.split('_')[0] 
     bramka_db = db.query(OstatniStanBramki).filter(OstatniStanBramki.bramka_id == bramka_id_z_czujnika).first()
     if bramka_db:
