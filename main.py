@@ -82,7 +82,7 @@ app.add_middleware(
 # Klasa Pydantic do walidacji danych po ręcznym parsowaniu
 class WymaganyFormat(BaseModel):
     sensor_id: str
-    status: str 
+    status: int # ZMIENIONE NA INT
 
 class ObserwujRequest(BaseModel):
     sensor_id: str
@@ -137,7 +137,7 @@ def obserwuj_miejsce(request: ObserwujRequest, db: Session = Depends(get_db)):
 
 
 # Endpoint dla BRAMKI LILYGO
-# ❗️❗️❗️ KLUCZOWA ZMIANA: PRZYJMUJEMY SUROWE ŻĄDANIE ZAMIAST MODELU PYDANTIC ❗️❗️❗️
+# ❗️ KLUCZOWA ZMIANA: PRZYJMUJEMY SUROWE ŻĄDANIE I CZEKAMY NA INTEGER
 @app.put("/api/v1/miejsce_parkingowe/aktualizuj", dependencies=[Depends(check_api_key)])
 async def aktualizuj_miejsce(request: Request, db: Session = Depends(get_db)):
     teraz = datetime.datetime.utcnow()
@@ -145,30 +145,25 @@ async def aktualizuj_miejsce(request: Request, db: Session = Depends(get_db)):
     # 1. Odbierz SUROWE dane z modemu
     body_bytes = await request.body()
     
-    # Przekształcenie bajtów na string przy użyciu latin-1, które gwarantuje
-    # konwersję każdego bajtu. Następnie usunięcie białych znaków i ręczne usunięcie \x00.
-    # To jest OSTATNIA LINIA OBRONY przed zepsutym kodowaniem SIM7600.
+    # Przekształcenie bajtów na string przy użyciu latin-1 i usunięcie niechcianych znaków (np. \x00)
     raw_json_str = body_bytes.decode('latin-1').strip().replace('\x00', '')
     
     # Logowanie surowej zawartości (może pomóc w debugowaniu na Render.com)
     logger.info(f"Odebrano surowy payload: {repr(raw_json_str)}") 
 
     try:
-        # 2. Ręcznie parsowanie JSON
+        # 2. Ręcznie parsowanie JSON i walidacja Pydantic
         dane = json.loads(raw_json_str)
-        dane_z_bramki = WymaganyFormat(**dane) # Walidacja Pydantic po parsowaniu
+        # Oczekujemy, że "status" będzie integerem
+        dane_z_bramki = WymaganyFormat(**dane) 
 
     except (json.JSONDecodeError, TypeError, ValueError) as e:
         logger.error(f"BŁĄD PARSOWANIA JSON: {e} | Surowe dane: {repr(raw_json_str)}")
         raise HTTPException(status_code=400, detail=f"Niepoprawny format danych JSON. Szczegóły: {e}")
 
-    # 3. Przetwarzanie i konwersja danych (Jak wcześniej)
+    # 3. Przetwarzanie danych (status jest już integerem)
     sensor_id = dane_z_bramki.sensor_id
-    
-    try:
-        nowy_status = int(dane_z_bramki.status)
-    except ValueError:
-        raise HTTPException(status_code=400, detail="Status musi być liczbą całkowitą.")
+    nowy_status = dane_z_bramki.status
 
     # 1. Zapisz do Danych Historycznych
     nowy_rekord_historyczny = DaneHistoryczne(
