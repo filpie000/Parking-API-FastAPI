@@ -1,11 +1,12 @@
 import os
 import datetime
-from fastapi import FastAPI, Depends, HTTPException, Header
+from fastapi import FastAPI, Depends, HTTPException, Header, Request
 from sqlalchemy import create_engine, Column, Integer, String, Boolean, DateTime
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, Session
 from pydantic import BaseModel
 import requests
+import json # Dodane do ewentualnego debugowania
 
 # === Konfiguracja Bazy Danych ===
 DATABASE_URL = os.environ.get('DATABASE_URL')
@@ -71,9 +72,12 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# ❗️❗️❗️ ZMIANA TUTAJ ❗️❗️❗️
+# Oczekujemy teraz stringa ('status': '1'), co jest bezpieczniejsze przy modemach.
 class StatusCzujnika(BaseModel):
     sensor_id: str
-    status: int
+    status: str # ZMIENIONE Z 'int' NA 'str'
+# ❗️❗️❗️ KONIEC ZMIANY ❗️❗️❗️
 
 class ObserwujRequest(BaseModel):
     sensor_id: str
@@ -104,36 +108,18 @@ def send_push_notification(token: str, sensor_id: str):
         print(f"BŁĄD KRYTYCZNY: Nie można wysłać PUSH przez Expo: {e}")
 
 
-# Endpoint dla APLIKACJI MOBILNEJ
-@app.post("/api/v1/obserwuj_miejsce")
-def obserwuj_miejsce(request: ObserwujRequest, db: Session = Depends(get_db)):
-    token = request.device_token
-    sensor_id = request.sensor_id
-    teraz = datetime.datetime.utcnow()
-
-    wpis = db.query(ObserwowaneMiejsca).filter(ObserwowaneMiejsca.device_token == token).first()
-    
-    if wpis:
-        wpis.sensor_id = sensor_id
-        wpis.czas_dodania = teraz
-    else:
-        nowy_obserwator = ObserwowaneMiejsca(
-            device_token=token,
-            sensor_id=sensor_id,
-            czas_dodania=teraz
-        )
-        db.add(nowy_obserwator)
-    
-    db.commit()
-    return {"status": "obserwowanie rozpoczęte", "miejsce": sensor_id}
-
-
 # Endpoint dla BRAMKI LILYGO
 @app.put("/api/v1/miejsce_parkingowe/aktualizuj", dependencies=[Depends(check_api_key)])
 def aktualizuj_miejsce(dane_z_bramki: StatusCzujnika, db: Session = Depends(get_db)):
     teraz = datetime.datetime.utcnow()
     sensor_id = dane_z_bramki.sensor_id
-    nowy_status = dane_z_bramki.status
+    
+    # ❗️❗️❗️ DODANO RĘCZNĄ KONWERSJĘ Z STRINGA NA INTEGER ❗️❗️❗️
+    try:
+        nowy_status = int(dane_z_bramki.status)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Status musi być liczbą całkowitą.")
+    # ❗️❗️❗️ KONIEC DODATKU ❗️❗️❗️
 
     # 1. Zapisz do Danych Historycznych
     nowy_rekord_historyczny = DaneHistoryczne(
@@ -163,8 +149,6 @@ def aktualizuj_miejsce(dane_z_bramki: StatusCzujnika, db: Session = Depends(get_
     if poprzedni_status != 1 and nowy_status == 1:
         print(f"Wykryto zajęcie miejsca: {sensor_id}. Sprawdzanie obserwatorów...")
         
-        # ❗️❗️❗️ POPRAWKA BŁĘDU 1 ❗️❗️❗️
-        # Porównujemy teraz (TERAZ - CZAS_DODANIA) > 30 MINUT
         limit_czasu_obserwacji = datetime.timedelta(minutes=30)
         obserwatorzy = db.query(ObserwowaneMiejsca).filter(
             ObserwowaneMiejsca.sensor_id == sensor_id,
@@ -199,12 +183,9 @@ def aktualizuj_miejsce(dane_z_bramki: StatusCzujnika, db: Session = Depends(get_
 @app.get("/api/v1/aktualny_stan")
 def pobierz_aktualny_stan(db: Session = Depends(get_db)):
     
-    # ❗️❗️❗️ POPRAWKA BŁĘDU 2 ❗️❗️❗️
-    # Porównujemy teraz (TERAZ - OSTATNI_KONTAKT) > 15 MINUT
     teraz = datetime.datetime.utcnow()
     limit_czasu_bramki = datetime.timedelta(minutes=15)
     
-    # Musimy obsłużyć przypadek, gdy ostatni_kontakt jest NULL (None)
     bramki_offline = db.query(OstatniStanBramki).filter(
         (OstatniStanBramki.ostatni_kontakt == None) |
         ((teraz - OstatniStanBramki.ostatni_kontakt) > limit_czasu_bramki)
