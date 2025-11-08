@@ -6,7 +6,13 @@ from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, Session
 from pydantic import BaseModel
 import requests
-import json # Dodane do ewentualnego debugowania
+import json
+import logging
+
+# Ustawienie loggera do diagnostyki
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
 
 # === Konfiguracja Bazy Danych ===
 DATABASE_URL = os.environ.get('DATABASE_URL')
@@ -72,12 +78,10 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ❗️❗️❗️ ZMIANA TUTAJ ❗️❗️❗️
-# Oczekujemy teraz stringa ('status': '1'), co jest bezpieczniejsze przy modemach.
-class StatusCzujnika(BaseModel):
+# Klasa Pydantic do celów wewnętrznych
+class WymaganyFormat(BaseModel):
     sensor_id: str
-    status: str # ZMIENIONE Z 'int' NA 'str'
-# ❗️❗️❗️ KONIEC ZMIANY ❗️❗️❗️
+    status: str 
 
 class ObserwujRequest(BaseModel):
     sensor_id: str
@@ -92,9 +96,8 @@ def read_root():
 def send_push_notification(token: str, sensor_id: str):
     """
     Wysyła powiadomienie PUSH do serwerów Expo.
-    Expo użyje naszego pliku .json, który wgraliśmy, aby uwierzytelnić się w Google.
     """
-    print(f"Wysyłanie powiadomienia PUSH (przez Expo) do tokena: {token} dla miejsca: {sensor_id}")
+    logger.info(f"Wysyłanie powiadomienia PUSH (przez Expo) do tokena: {token} dla miejsca: {sensor_id}")
     try:
         requests.post("https://exp.host/--/api/v2/push/send", json={
             "to": token,
@@ -103,23 +106,67 @@ def send_push_notification(token: str, sensor_id: str):
             "body": f"Miejsce {sensor_id}, do którego nawigujesz, zostało właśnie zajęte.",
             "data": { "sensor_id": sensor_id, "action": "reroute" }
         })
-        print(f"Pomyślnie wysłano żądanie do Expo dla: {sensor_id}")
+        logger.info(f"Pomyślnie wysłano żądanie do Expo dla: {sensor_id}")
     except Exception as e:
-        print(f"BŁĄD KRYTYCZNY: Nie można wysłać PUSH przez Expo: {e}")
+        logger.error(f"BŁĄD KRYTYCZNY: Nie można wysłać PUSH przez Expo: {e}")
+
+
+# Endpoint dla APLIKACJI MOBILNEJ
+@app.post("/api/v1/obserwuj_miejsce")
+def obserwuj_miejsce(request: ObserwujRequest, db: Session = Depends(get_db)):
+    token = request.device_token
+    sensor_id = request.sensor_id
+    teraz = datetime.datetime.utcnow()
+
+    wpis = db.query(ObserwowaneMiejsca).filter(ObserwowaneMiejsca.device_token == token).first()
+    
+    if wpis:
+        wpis.sensor_id = sensor_id
+        wpis.czas_dodania = teraz
+    else:
+        nowy_obserwator = ObserwowaneMiejsca(
+            device_token=token,
+            sensor_id=sensor_id,
+            czas_dodania=teraz
+        )
+        db.add(nowy_obserwator)
+    
+    db.commit()
+    return {"status": "obserwowanie rozpoczęte", "miejsce": sensor_id}
 
 
 # Endpoint dla BRAMKI LILYGO
+# ❗️❗️❗️ KLUCZOWA ZMIANA: PRZYJMUJEMY SUROWE ŻĄDANIE ZAMIAST MODELU PYDANTIC ❗️❗️❗️
 @app.put("/api/v1/miejsce_parkingowe/aktualizuj", dependencies=[Depends(check_api_key)])
-def aktualizuj_miejsce(dane_z_bramki: StatusCzujnika, db: Session = Depends(get_db)):
+async def aktualizuj_miejsce(request: Request, db: Session = Depends(get_db)):
     teraz = datetime.datetime.utcnow()
+
+    # 1. Odbierz SUROWE dane z modemu
+    body_bytes = await request.body()
+    
+    # Przekształć bajty na string i usuń WSZYSTKIE białe znaki i znaki zerowe.
+    # To jest nasz "ostatni rzut" na pozbycie się zepsutego formatowania.
+    raw_json_str = body_bytes.decode('utf-8', errors='ignore').strip()
+    
+    # Logowanie surowej zawartości (może pomóc w debugowaniu na Render.com)
+    logger.info(f"Odebrano surowy payload: {repr(raw_json_str)}") 
+
+    try:
+        # 2. Ręcznie parsowanie JSON
+        dane = json.loads(raw_json_str)
+        dane_z_bramki = WymaganyFormat(**dane) # Walidacja Pydantic po parsowaniu
+
+    except (json.JSONDecodeError, TypeError, ValueError) as e:
+        logger.error(f"BŁĄD PARSOWANIA JSON: {e} | Surowe dane: {repr(raw_json_str)}")
+        raise HTTPException(status_code=400, detail=f"Niepoprawny format danych JSON. Szczegóły: {e}")
+
+    # 3. Przetwarzanie i konwersja danych (Jak wcześniej)
     sensor_id = dane_z_bramki.sensor_id
     
-    # ❗️❗️❗️ DODANO RĘCZNĄ KONWERSJĘ Z STRINGA NA INTEGER ❗️❗️❗️
     try:
         nowy_status = int(dane_z_bramki.status)
     except ValueError:
         raise HTTPException(status_code=400, detail="Status musi być liczbą całkowitą.")
-    # ❗️❗️❗️ KONIEC DODATKU ❗️❗️❗️
 
     # 1. Zapisz do Danych Historycznych
     nowy_rekord_historyczny = DaneHistoryczne(
@@ -147,7 +194,7 @@ def aktualizuj_miejsce(dane_z_bramki: StatusCzujnika, db: Session = Depends(get_
     
     # 3. Logika Powiadomień
     if poprzedni_status != 1 and nowy_status == 1:
-        print(f"Wykryto zajęcie miejsca: {sensor_id}. Sprawdzanie obserwatorów...")
+        logger.info(f"Wykryto zajęcie miejsca: {sensor_id}. Sprawdzanie obserwatorów...")
         
         limit_czasu_obserwacji = datetime.timedelta(minutes=30)
         obserwatorzy = db.query(ObserwowaneMiejsca).filter(
