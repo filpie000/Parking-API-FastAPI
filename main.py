@@ -298,7 +298,7 @@ def mqtt_listener_thread():
     try:
         mqtt_client.connect(MQTT_BROKER, MQTT_PORT, 60)
         # Pętla nasłuchująca w tle
-        mqtt_client.loop_forever()
+        mqtt_client.loop_start()
     except Exception as e:
         logger.error(f"BŁĄD połączenia z brokerem MQTT: {e}")
 
@@ -322,3 +322,4 @@ def shutdown_event():
     logger.info("Zamykanie klienta MQTT...")
     mqtt_client.loop_stop()
     mqtt_client.disconnect()
+
