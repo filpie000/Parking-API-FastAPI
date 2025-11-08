@@ -57,10 +57,11 @@ def get_db():
     finally:
         db.close()
 
-# === Definicja Klucza API (Bezpieczeństwo Bramki) ===
+# === Definicja Klucza API (Przywrócona weryfikacja) ===
 API_KEY = os.environ.get('API_KEY')
 async def check_api_key(x_api_key: str = Header(None)):
     if not API_KEY:
+        # Pozwalamy na kontynuację, jeśli zmienna środowiskowa nie jest ustawiona
         return
     if x_api_key != API_KEY:
         raise HTTPException(status_code=401, detail="Niepoprawny Klucz API")
@@ -78,7 +79,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Klasa Pydantic do celów wewnętrznych
+# Klasa Pydantic do walidacji danych po ręcznym parsowaniu
 class WymaganyFormat(BaseModel):
     sensor_id: str
     status: str 
