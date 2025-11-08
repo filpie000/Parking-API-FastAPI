@@ -145,9 +145,10 @@ async def aktualizuj_miejsce(request: Request, db: Session = Depends(get_db)):
     # 1. Odbierz SUROWE dane z modemu
     body_bytes = await request.body()
     
-    # Przekształć bajty na string i usuń WSZYSTKIE białe znaki i znaki zerowe.
-    # To jest nasz "ostatni rzut" na pozbycie się zepsutego formatowania.
-    raw_json_str = body_bytes.decode('utf-8', errors='ignore').strip()
+    # Przekształcenie bajtów na string przy użyciu latin-1, które gwarantuje
+    # konwersję każdego bajtu. Następnie usunięcie białych znaków i ręczne usunięcie \x00.
+    # To jest OSTATNIA LINIA OBRONY przed zepsutym kodowaniem SIM7600.
+    raw_json_str = body_bytes.decode('latin-1').strip().replace('\x00', '')
     
     # Logowanie surowej zawartości (może pomóc w debugowaniu na Render.com)
     logger.info(f"Odebrano surowy payload: {repr(raw_json_str)}") 
