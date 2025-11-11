@@ -144,7 +144,7 @@ def obserwuj_miejsce(request: ObserwujRequest, db: Session = Depends(get_db)):
     return {"status": "obserwowanie rozpoczęte", "miejsce": sensor_id}
 
 
-# ❗️❗️❗️ CAŁA FUNKCJA PONIŻEJ ZOSTAŁA ZASTĄPIONA UPROSZCZONĄ WERSJĄ ❗️❗️❗️
+# ❗️ GŁÓWNY ZAKTUALIZOWANY ENDPOINT STATYSTYK (WERSJA UPROSZCZONA)
 @app.post("/api/v1/statystyki/zajetosc")
 def pobierz_statystyki_zajetosci(zapytanie: StatystykiZapytanie, db: Session = Depends(get_db)):
     
@@ -200,7 +200,8 @@ def pobierz_statystyki_zajetosci(zapytanie: StatystykiZapytanie, db: Session = D
         else: # Normalny przedział (np. 09:00 - 11:00)
             if not (czas_poczatek <= czas_rekordu < czas_koniec):
                 continue
-  t         
+                
+        # ❗️❗️ POPRAWKA: Usunięto błądzący znak 't' z poprzedniej wersji ❗️❗️
         dane_pasujace.append(rekord.status)
 
     logger.info(f"Po filtrowaniu pasuje {len(dane_pasujace)} rekordów.")
@@ -351,7 +352,7 @@ async def startup_event():
     logger.info("Uruchamiam nasłuch MQTT...")
     thread = threading.Thread(target=mqtt_listener_thread)
     thread.daemon = True 
-    thread.start()
+  S thread.start()
 
 @app.on_event("shutdown")
 def shutdown_event():
