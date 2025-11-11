@@ -37,7 +37,6 @@ SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 
 # === Definicja Tabel ===
-# (Bez zmian)
 class AktualnyStan(Base):
     __tablename__ = "aktualny_stan"
     sensor_id = Column(String, primary_key=True, index=True)
@@ -97,7 +96,6 @@ class ObserwujRequest(BaseModel):
     sensor_id: str
     device_token: str
 
-# ❗️ ZUPEŁNIE NOWY, UPROSZCZONY MODEL ZAPYTANIA O STATYSTYKI
 class StatystykiZapytanie(BaseModel):
     sensor_id: Optional[str] = None
     selected_date: str  # Oczekuje stringa "YYYY-MM-DD"
@@ -105,7 +103,6 @@ class StatystykiZapytanie(BaseModel):
 
 # === Funkcje Pomocnicze ===
 def send_push_notification(token: str, sensor_id: str):
-    # ... (bez zmian) ...
     logger.info(f"Wysyłanie powiadomienia PUSH do: {token} dla: {sensor_id}")
     try:
         requests.post("https://exp.host/--/api/v2/push/send", json={
@@ -125,7 +122,6 @@ def read_root():
 
 @app.post("/api/v1/obserwuj_miejsce")
 def obserwuj_miejsce(request: ObserwujRequest, db: Session = Depends(get_db)):
-    # ... (bez zmian) ...
     token = request.device_token
     sensor_id = request.sensor_id
     teraz = datetime.datetime.now(datetime.UTC)
@@ -174,7 +170,6 @@ def pobierz_statystyki_zajetosci(zapytanie: StatystykiZapytanie, db: Session = D
     czas_koniec = get_time_with_offset(selected_hour, OFFSET_MINUT)
 
     # 3. Pobranie danych
-    # Wstępnie filtrujemy po sensor_id, aby nie ładować całej bazy do pamięci
     query = db.query(DaneHistoryczne).filter(
         DaneHistoryczne.sensor_id.startswith(zapytanie.sensor_id)
     )
@@ -201,7 +196,6 @@ def pobierz_statystyki_zajetosci(zapytanie: StatystykiZapytanie, db: Session = D
             if not (czas_poczatek <= czas_rekordu < czas_koniec):
                 continue
                 
-        # ❗️❗️ POPRAWKA: Usunięto błądzący znak 't' z tego miejsca ❗️❗️
         dane_pasujace.append(rekord.status)
 
     logger.info(f"Po filtrowaniu pasuje {len(dane_pasujace)} rekordów.")
@@ -224,13 +218,12 @@ def pobierz_statystyki_zajetosci(zapytanie: StatystykiZapytanie, db: Session = D
             "przedzial_czasu": f"{czas_poczatek.strftime('%H:%M')} - {czas_koniec.strftime('%H:%M')}",
             "procent_zajetosci": round(procent_zajetosci, 1),
             "liczba_pomiarow": liczba_pomiarow
-      _ }
+        }
     }
 
 
 # === FUNKCJA GŁÓWNA PRZETWARZANIA DANYCH ===
 def process_parking_update(dane_z_bramki: WymaganyFormat, db: Session, teraz: datetime.datetime):
-    # ... (bez zmian) ...
     sensor_id = dane_z_bramki.sensor_id
     nowy_status = dane_z_bramki.status
     nowy_rekord_historyczny = DaneHistoryczne(
@@ -277,7 +270,6 @@ def process_parking_update(dane_z_bramki: WymaganyFormat, db: Session, teraz: da
 # Endpoint dla BRAMKI (HTTP Fallback)
 @app.put("/api/v1/miejsce_parkingowe/aktualizuj", dependencies=[Depends(check_api_key)])
 async def aktualizuj_miejsce_http(request: Request, db: Session = Depends(get_db)):
-    # ... (bez zmian) ...
     teraz = datetime.datetime.now(datetime.UTC)
     body_bytes = await request.body()
     raw_json_str = body_bytes.decode('latin-1').strip().replace('\x00', '')
@@ -294,7 +286,6 @@ async def aktualizuj_miejsce_http(request: Request, db: Session = Depends(get_db
 # Endpoint dla APLIKACJI (Publiczny)
 @app.get("/api/v1/aktualny_stan")
 def pobierz_aktualny_stan(db: Session = Depends(get_db)):
-    # ... (bez zmian) ...
     teraz = datetime.datetime.now(datetime.UTC)
     limit_czasu_bramki = datetime.timedelta(minutes=15)
     bramki_offline = db.query(OstatniStanBramki).filter(
@@ -312,7 +303,6 @@ def pobierz_aktualny_stan(db: Session = Depends(get_db)):
 # =========================================================
 # === IMPLEMENTACJA KLIENTA MQTT ===
 # =========================================================
-# ... (bez zmian) ...
 mqtt_client = mqtt.Client()
 
 def on_connect(client, userdata, flags, rc):
@@ -341,7 +331,7 @@ def mqtt_listener_thread():
     mqtt_client.on_connect = on_connect
     mqtt_client.on_message = on_message
     try:
-        mqtt_client.connect(MQTT_BROKER, MQTT_PORT, 60)
+        mqtt_client.connect(MQTT_BROKER, MQTT_PORT, 60)
         mqtt_client.loop_start()
     except Exception as e:
         logger.error(f"BŁĄD połączenia z brokerem MQTT: {e}")
