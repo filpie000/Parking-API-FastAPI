@@ -11,57 +11,58 @@ from sqlalchemy.orm import sessionmaker, Session
 from pydantic import BaseModel
 import requests
 from fastapi.middleware.cors import CORSMiddleware
-import paho.mqtt.client as mqtt 
+import paho.mqtt.client as mqtt
 
-# Ustawienie loggera do diagnostyki
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# ===== KONFIGURACJA MQTT =====
+# Konfiguracja MQTT
 MQTT_BROKER = os.environ.get('MQTT_BROKER', 'broker.emqx.io')
 MQTT_PORT = int(os.environ.get('MQTT_PORT', 1883))
-MQTT_TOPIC_SUBSCRIBE = os.environ.get('MQTT_TOPIC', "parking/tester/status") 
+MQTT_TOPIC_SUBSCRIBE = os.environ.get('MQTT_TOPIC', "parking/tester/status")
 
-# === Konfiguracja Bazy Danych ===
+# Konfiguracja bazy danych
 DATABASE_URL = os.environ.get('DATABASE_URL')
 if DATABASE_URL and DATABASE_URL.startswith("postgres://"):
-    DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
+    DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
 
 if not DATABASE_URL:
-    DATABASE_URL = "sqlite:///./parking_data.db"
-    logger.warning("Brak DATABASE_URL, używam domyślnej bazy SQLite.")
-
+    DATABASE_URL = "sqlite:///./parking_data.db"
+    logger.warning("Brak DATABASE_URL, używam domyślnej bazy SQLite.")
 
 engine = create_engine(DATABASE_URL)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 
-# === Definicja Tabel ===
+# Definicje tabel
 class AktualnyStan(Base):
-    __tablename__ = "aktualny_stan"
-    sensor_id = Column(String, primary_key=True, index=True)
-    status = Column(Integer, default=0) 
-    ostatnia_aktualizacja = Column(DateTime, default=datetime.datetime.now(datetime.UTC))
+    __tablename__ = "aktualny_stan"
+    sensor_id = Column(String, primary_key=True, index=True)
+    status = Column(Integer, default=0)
+    ostatnia_aktualizacja = Column(DateTime, default=datetime.datetime.now(datetime.UTC))
 
 class DaneHistoryczne(Base):
-    __tablename__ = "dane_historyczne"
-    id = Column(Integer, primary_key=True, autoincrement=True)
-    czas_pomiaru = Column(DateTime, index=True)
-    sensor_id = Column(String, index=True)
-    status = Column(Integer)
+    __tablename__ = "dane_historyczne"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    czas_pomiaru = Column(DateTime, index=True)
+    sensor_id = Column(String, index=True)
+    status = Column(Integer)
 
 class OstatniStanBramki(Base):
-    __tablename__ = "ostatni_stan_bramki"
-    bramka_id = Column(String, primary_key=True, default="Bramka_A") 
-    ostatni_kontakt = Column(DateTime)
+    __tablename__ = "ostatni_stan_bramki"
+    bramka_id = Column(String, primary_key=True, default="Bramka_A")
+    ostatni_kontakt = Column(DateTime)
 
 class ObserwowaneMiejsca(Base):
-    __tablename__ = "obserwowane_miejsca"
-    device_token = Column(String, primary_key=True, index=True) 
-    sensor_id = Column(String, index=True)
-    czas_dodania = Column(DateTime, default=datetime.datetime.now(datetime.UTC))
+    __tablename__ = "obserwowane_miejsca"
+    device_token = Column(String, primary_key=True, index=True)
+    sensor_id = Column(String, index=True)
+    czas_dodania = Column(DateTime, default=datetime.datetime.now(datetime.UTC))
 
 Base.metadata.create_all(bind=engine)
+
+# ... (reszta kodu bez zbędnych spacji i znaków)
+
 
 def get_db():
     db = SessionLocal()
@@ -349,3 +350,4 @@ def shutdown_event():
     logger.info("Zamykanie klienta MQTT...")
     mqtt_client.loop_stop()
     mqtt_client.disconnect()
+
