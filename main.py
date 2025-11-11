@@ -224,7 +224,7 @@ def pobierz_statystyki_zajetosci(zapytanie: StatystykiZapytanie, db: Session = D
             "przedzial_czasu": f"{czas_poczatek.strftime('%H:%M')} - {czas_koniec.strftime('%H:%M')}",
             "procent_zajetosci": round(procent_zajetosci, 1),
             "liczba_pomiarow": liczba_pomiarow
-        }
+      _ }
     }
 
 
