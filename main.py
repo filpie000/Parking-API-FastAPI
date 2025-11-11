@@ -42,7 +42,6 @@ class AktualnyStan(Base):
     __tablename__ = "aktualny_stan"
     sensor_id = Column(String, primary_key=True, index=True)
     status = Column(Integer, default=0)
-    # ❗️ POPRAWKA TUTAJ
     ostatnia_aktualizacja = Column(DateTime, default=datetime.datetime.now(datetime.timezone.utc))
 
 class DaneHistoryczne(Base):
@@ -61,7 +60,6 @@ class ObserwowaneMiejsca(Base):
     __tablename__ = "obserwowane_miejsca"
     device_token = Column(String, primary_key=True, index=True)
     sensor_id = Column(String, index=True)
-    # ❗️ POPRAWKA TUTAJ
     czas_dodania = Column(DateTime, default=datetime.datetime.now(datetime.timezone.utc))
 
 Base.metadata.create_all(bind=engine)
@@ -144,7 +142,6 @@ def calculate_occupancy_stats(sensor_prefix: str, selected_date_obj: datetime.da
     dane_pasujace = []
     
     for rekord in wszystkie_dane_dla_sensora:
-        # Dodatkowe zabezpieczenie, jeśli jakimś cudem czas_pomiaru to None
         if not rekord.czas_pomiaru:
             continue
             
@@ -190,7 +187,6 @@ def read_root():
 def obserwuj_miejsce(request: ObserwujRequest, db: Session = Depends(get_db)):
     token = request.device_token
     sensor_id = request.sensor_id
-    # ❗️ POPRAWKA TUTAJ
     teraz = datetime.datetime.now(datetime.timezone.utc)
     wpis = db.query(ObserwowaneMiejsca).filter(ObserwowaneMiejsca.device_token == token).first()
     if wpis:
@@ -219,7 +215,6 @@ def pobierz_statystyki_zajetosci(zapytanie: StatystykiZapytanie, db: Session = D
     if not zapytanie.sensor_id:
          raise HTTPException(status_code=400, detail="Wymagany jest sensor_id (np. 'EURO' lub 'BUD').")
          
-    # Dodano try...except na wszelki wypadek
     try:
         wynik = calculate_occupancy_stats(zapytanie.sensor_id, selected_date_obj, selected_hour, db)
     except Exception as e:
@@ -230,17 +225,37 @@ def pobierz_statystyki_zajetosci(zapytanie: StatystykiZapytanie, db: Session = D
         "wynik_dynamiczny": wynik
     }
 
-# === ❗️ ENDPOINT PROGNOZ WSZYSTKICH MIEJSC (POPRAWIONY) ===
+# === ❗️ ZMODYFIKOWANY ENDPOINT PROGNOZ ===
 @app.get("/api/v1/prognoza/wszystkie_miejsca")
-def pobierz_prognoze_dla_wszystkich(db: Session = Depends(get_db)):
+def pobierz_prognoze_dla_wszystkich(
+    db: Session = Depends(get_db), 
+    target_date: Optional[str] = None, 
+    target_hour: Optional[int] = None
+):
+    """
+    Zwraca aktualną prognozę (procent zajętości) dla wszystkich zdefiniowanych grup sensorów.
+    Jeśli podano target_date i target_hour, używa ich.
+    W przeciwnym razie używa aktualnej daty i godziny UTC serwera.
+    """
     prognozy: Dict[str, float] = {}
-    
-    # ❗️ POPRAWKA TUTAJ
-    teraz_utc = datetime.datetime.now(datetime.timezone.utc)
-    selected_date_obj = teraz_utc.date()
-    selected_hour = teraz_utc.hour
-    
-    logger.info(f"Generowanie prognozy dla wszystkich grup dla: {selected_date_obj} @ {selected_hour}:00 UTC")
+    selected_date_obj = None
+    selected_hour = None
+
+    # Spróbuj użyć parametrów z zapytania
+    if target_date and target_hour is not None:
+        try:
+            selected_date_obj = datetime.datetime.strptime(target_date, "%Y-%m-%d").date()
+            selected_hour = int(target_hour)
+            logger.info(f"Używam dostarczonego czasu prognozy: {selected_date_obj} @ {selected_hour}:00")
+        except (ValueError, TypeError):
+            logger.warning(f"Niepoprawny format target_date ('{target_date}') lub target_hour ('{target_hour}'). Używam czasu 'teraz'.")
+
+    # Jeśli parametry nie zostały podane lub były błędne, użyj czasu 'teraz'
+    if not selected_date_obj:
+        teraz_utc = datetime.datetime.now(datetime.timezone.utc)
+        selected_date_obj = teraz_utc.date()
+        selected_hour = teraz_utc.hour
+        logger.info(f"Generowanie domyślnej prognozy (teraz) dla: {selected_date_obj} @ {selected_hour}:00 UTC")
 
     for grupa in GRUPY_SENSOROW:
         try:
@@ -278,7 +293,6 @@ def process_parking_update(dane_z_bramki: WymaganyFormat, db: Session, teraz: da
         limit_czasu_obserwacji = datetime.timedelta(minutes=30)
         obserwatorzy = db.query(ObserwowaneMiejsca).filter(
             ObserwowaneMiejsca.sensor_id == sensor_id,
-            # ❗️ POPRAWKA TUTAJ (używamy "teraz" zamiast wywoływać now())
             (teraz - ObserwowaneMiejsca.czas_dodania) < limit_czasu_obserwacji
         ).all()
         tokeny_do_usuniecia = []
@@ -306,7 +320,6 @@ def process_parking_update(dane_z_bramki: WymaganyFormat, db: Session, teraz: da
 # Endpoint dla BRAMKI (HTTP Fallback)
 @app.put("/api/v1/miejsce_parkingowe/aktualizuj", dependencies=[Depends(check_api_key)])
 async def aktualizuj_miejsce_http(request: Request, db: Session = Depends(get_db)):
-    # ❗️ POPRAWKA TUTAJ
     teraz = datetime.datetime.now(datetime.timezone.utc)
     body_bytes = await request.body()
     raw_json_str = body_bytes.decode('latin-1').strip().replace('\x00', '')
@@ -323,7 +336,6 @@ async def aktualizuj_miejsce_http(request: Request, db: Session = Depends(get_db
 # Endpoint dla APLIKACJI (Publiczny)
 @app.get("/api/v1/aktualny_stan")
 def pobierz_aktualny_stan(db: Session = Depends(get_db)):
-    # ❗️ POPRAWKA TUTAJ
     teraz = datetime.datetime.now(datetime.timezone.utc)
     
     for grupa in GRUPY_SENSOROW:
@@ -361,7 +373,6 @@ def on_connect(client, userdata, flags, rc):
         logger.error(f"Nie udało się połączyć z MQTT, kod: {rc}")
 
 def on_message(client, userdata, msg):
-    # ❗️ POPRAWKA TUTAJ
     teraz = datetime.datetime.now(datetime.timezone.utc)
     try:
         raw_json_str = msg.payload.decode('utf-8').strip().replace('\x00', '')
