@@ -13,8 +13,7 @@ from pydantic import BaseModel
 import requests
 from fastapi.middleware.cors import CORSMiddleware
 
-# NOWA BIBLIOTEKA DO MQTT
-import paho.mqtt.client as mqtt 
+import paho.mqtt.client as mqtt
 
 # Ustawienie loggera do diagnostyki
 logging.basicConfig(level=logging.INFO)
@@ -395,3 +394,4 @@ def shutdown_event():
     logger.info("Zamykanie klienta MQTT...")
     mqtt_client.loop_stop()
     mqtt_client.disconnect()
+
