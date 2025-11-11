@@ -201,7 +201,7 @@ def pobierz_statystyki_zajetosci(zapytanie: StatystykiZapytanie, db: Session = D
             if not (czas_poczatek <= czas_rekordu < czas_koniec):
                 continue
                 
-        # ❗️❗️ POPRAWKA: Usunięto błądzący znak 't' z poprzedniej wersji ❗️❗️
+        # ❗️❗️ POPRAWKA: Usunięto błądzący znak 't' z tego miejsca ❗️❗️
         dane_pasujace.append(rekord.status)
 
     logger.info(f"Po filtrowaniu pasuje {len(dane_pasujace)} rekordów.")
@@ -224,7 +224,7 @@ def pobierz_statystyki_zajetosci(zapytanie: StatystykiZapytanie, db: Session = D
             "przedzial_czasu": f"{czas_poczatek.strftime('%H:%M')} - {czas_koniec.strftime('%H:%M')}",
             "procent_zajetosci": round(procent_zajetosci, 1),
             "liczba_pomiarow": liczba_pomiarow
-        }
+        }
     }
 
 
@@ -341,7 +341,7 @@ def mqtt_listener_thread():
     mqtt_client.on_connect = on_connect
     mqtt_client.on_message = on_message
     try:
-        mqtt_client.connect(MQTT_BROKER, MQTT_PORT, 60)
+        mqtt_client.connect(MQTT_BROKER, MQTT_PORT, 60)
         mqtt_client.loop_start()
     except Exception as e:
         logger.error(f"BŁĄD połączenia z brokerem MQTT: {e}")
@@ -352,7 +352,7 @@ async def startup_event():
     logger.info("Uruchamiam nasłuch MQTT...")
     thread = threading.Thread(target=mqtt_listener_thread)
     thread.daemon = True 
-  S thread.start()
+    thread.start()
 
 @app.on_event("shutdown")
 def shutdown_event():
