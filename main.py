@@ -35,8 +35,6 @@ SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 
 # === STAŁE APLIKACJI ===
-# Musimy wiedzieć, jakie są główne grupy sensorów.
-# W dużej aplikacji powinno to być w bazie danych.
 GRUPY_SENSOROW = ["EURO", "BUD"]
 
 # Definicje tabel
@@ -44,7 +42,8 @@ class AktualnyStan(Base):
     __tablename__ = "aktualny_stan"
     sensor_id = Column(String, primary_key=True, index=True)
     status = Column(Integer, default=0)
-    ostatnia_aktualizacja = Column(DateTime, default=datetime.datetime.now(datetime.UTC))
+    # ❗️ POPRAWKA TUTAJ
+    ostatnia_aktualizacja = Column(DateTime, default=datetime.datetime.now(datetime.timezone.utc))
 
 class DaneHistoryczne(Base):
     __tablename__ = "dane_historyczne"
@@ -62,7 +61,8 @@ class ObserwowaneMiejsca(Base):
     __tablename__ = "obserwowane_miejsca"
     device_token = Column(String, primary_key=True, index=True)
     sensor_id = Column(String, index=True)
-    czas_dodania = Column(DateTime, default=datetime.datetime.now(datetime.UTC))
+    # ❗️ POPRAWKA TUTAJ
+    czas_dodania = Column(DateTime, default=datetime.datetime.now(datetime.timezone.utc))
 
 Base.metadata.create_all(bind=engine)
 
@@ -101,8 +101,8 @@ class ObserwujRequest(BaseModel):
 
 class StatystykiZapytanie(BaseModel):
     sensor_id: Optional[str] = None
-    selected_date: str  # Oczekuje stringa "YYYY-MM-DD"
-    selected_hour: int  # Oczekuje int 0-23
+    selected_date: str
+    selected_hour: int
 
 # === Funkcje Pomocnicze ===
 def send_push_notification(token: str, sensor_id: str):
@@ -118,58 +118,51 @@ def send_push_notification(token: str, sensor_id: str):
     except Exception as e:
         logger.error(f"BŁĄD KRYTYCZNY: Nie można wysłać PUSH przez Expo: {e}")
 
-# Funkcja pomocnicza do czasu
 def get_time_with_offset(base_hour, offset_minutes):
     base_dt = datetime.datetime(2000, 1, 1, base_hour, 0)
     offset_dt = base_dt + datetime.timedelta(minutes=offset_minutes)
     return offset_dt.time()
 
-# === NOWA WEWNĘTRZNA FUNKCJA DO OBLICZANIA STATYSTYK ===
+# === WEWNĘTRZNA FUNKCJA DO OBLICZANIA STATYSTYK ===
 def calculate_occupancy_stats(sensor_prefix: str, selected_date_obj: datetime.date, selected_hour: int, db: Session) -> dict:
-    """
-    Oblicza prognozę zajętości dla danej grupy sensorów, daty i godziny.
-    """
-    selected_weekday = selected_date_obj.weekday() # 0 = Poniedziałek, 6 = Niedziela
+    selected_weekday = selected_date_obj.weekday()
     
-    # 1. Definicja kategorii
     nazwy_dni = ["Poniedziałek", "Wtorek", "Środa", "Czwartek", "Piątek", "Sobota", "Niedziela"]
     kategoria_str = f"Dane historyczne dla: {nazwy_dni[selected_weekday]}"
-    dni_do_uwzglednienia = [selected_weekday] # Bierzemy pod uwagę *tylko* ten sam dzień tygodnia
+    dni_do_uwzglednienia = [selected_weekday]
 
-    # 2. Definicja okna czasu - stałe +/- 60 minut
     OFFSET_MINUT = 60
     czas_poczatek = get_time_with_offset(selected_hour, -OFFSET_MINUT)
     czas_koniec = get_time_with_offset(selected_hour, OFFSET_MINUT)
 
-    # 3. Pobranie danych
     query = db.query(DaneHistoryczne).filter(
         DaneHistoryczne.sensor_id.startswith(sensor_prefix)
     )
     
     wszystkie_dane_dla_sensora = query.all()
     
-    # 4. Filtrowanie w Pythonie
     dane_pasujace = []
     
     for rekord in wszystkie_dane_dla_sensora:
+        # Dodatkowe zabezpieczenie, jeśli jakimś cudem czas_pomiaru to None
+        if not rekord.czas_pomiaru:
+            continue
+            
         dzien_rekordu = rekord.czas_pomiaru.weekday()
         czas_rekordu = rekord.czas_pomiaru.time()
         
-        # A. Sprawdź, czy to ten sam dzień tygodnia
         if dzien_rekordu not in dni_do_uwzglednienia:
             continue
             
-        # B. Sprawdź, czy mieści się w oknie czasu
-        if czas_poczatek > czas_koniec: # Obsługa zawijania o północy (np. 23:00 - 01:00)
+        if czas_poczatek > czas_koniec:
             if not (czas_rekordu >= czas_poczatek or czas_rekordu < czas_koniec):
                 continue
-        else: # Normalny przedział (np. 09:00 - 11:00)
+        else:
             if not (czas_poczatek <= czas_rekordu < czas_koniec):
                 continue
                 
         dane_pasujace.append(rekord.status)
 
-    # 5. Obliczanie wyniku
     if not dane_pasujace:
         procent_zajetosci = 0
         liczba_pomiarow = 0
@@ -180,7 +173,6 @@ def calculate_occupancy_stats(sensor_prefix: str, selected_date_obj: datetime.da
         procent_zajetosci = (zajete / suma_pomiarow) * 100 if suma_pomiarow > 0 else 0
         liczba_pomiarow = len(dane_pasujace)
 
-    # 6. Zwracamy słownik z wynikiem
     return {
         "kategoria": kategoria_str,
         "przedzial_czasu": f"{czas_poczatek.strftime('%H:%M')} - {czas_koniec.strftime('%H:%M')}",
@@ -198,7 +190,8 @@ def read_root():
 def obserwuj_miejsce(request: ObserwujRequest, db: Session = Depends(get_db)):
     token = request.device_token
     sensor_id = request.sensor_id
-    teraz = datetime.datetime.now(datetime.UTC)
+    # ❗️ POPRAWKA TUTAJ
+    teraz = datetime.datetime.now(datetime.timezone.utc)
     wpis = db.query(ObserwowaneMiejsca).filter(ObserwowaneMiejsca.device_token == token).first()
     if wpis:
         wpis.sensor_id = sensor_id
@@ -214,7 +207,6 @@ def obserwuj_miejsce(request: ObserwujRequest, db: Session = Depends(get_db)):
     return {"status": "obserwowanie rozpoczęte", "miejsce": sensor_id}
 
 
-# ZAKTUALIZOWANY ENDPOINT STATYSTYK (wywołuje nową funkcję)
 @app.post("/api/v1/statystyki/zajetosc")
 def pobierz_statystyki_zajetosci(zapytanie: StatystykiZapytanie, db: Session = Depends(get_db)):
     
@@ -227,24 +219,24 @@ def pobierz_statystyki_zajetosci(zapytanie: StatystykiZapytanie, db: Session = D
     if not zapytanie.sensor_id:
          raise HTTPException(status_code=400, detail="Wymagany jest sensor_id (np. 'EURO' lub 'BUD').")
          
-    # Wywołaj zrefaktoryzowaną funkcję
-    wynik = calculate_occupancy_stats(zapytanie.sensor_id, selected_date_obj, selected_hour, db)
+    # Dodano try...except na wszelki wypadek
+    try:
+        wynik = calculate_occupancy_stats(zapytanie.sensor_id, selected_date_obj, selected_hour, db)
+    except Exception as e:
+        logger.error(f"Błąd przy /statystyki/zajetosc dla {zapytanie.sensor_id}: {e}")
+        raise HTTPException(status_code=500, detail=f"Wewnętrzny błąd serwera podczas obliczeń: {e}")
     
     return {
         "wynik_dynamiczny": wynik
     }
 
-# === ❗️ NOWY ENDPOINT DLA PROGNOZ WSZYSTKICH MIEJSC ===
+# === ❗️ ENDPOINT PROGNOZ WSZYSTKICH MIEJSC (POPRAWIONY) ===
 @app.get("/api/v1/prognoza/wszystkie_miejsca")
 def pobierz_prognoze_dla_wszystkich(db: Session = Depends(get_db)):
-    """
-    Zwraca aktualną prognozę (procent zajętości) dla wszystkich zdefiniowanych grup sensorów.
-    Używa aktualnej daty i godziny UTC serwera.
-    """
     prognozy: Dict[str, float] = {}
     
-    # Pobierz aktualny czas serwera w UTC
-    teraz_utc = datetime.datetime.now(datetime.UTC)
+    # ❗️ POPRAWKA TUTAJ
+    teraz_utc = datetime.datetime.now(datetime.timezone.utc)
     selected_date_obj = teraz_utc.date()
     selected_hour = teraz_utc.hour
     
@@ -256,9 +248,8 @@ def pobierz_prognoze_dla_wszystkich(db: Session = Depends(get_db)):
             prognozy[grupa] = wynik['procent_zajetosci']
         except Exception as e:
             logger.error(f"Błąd podczas obliczania prognozy dla grupy {grupa}: {e}")
-            prognozy[grupa] = 0.0 # Zwróć 0% (optymistycznie) w razie błędu
+            prognozy[grupa] = 0.0
 
-    # Zwraca słownik, np: {"EURO": 85.2, "BUD": 15.0}
     return prognozy
 
 
@@ -281,11 +272,13 @@ def process_parking_update(dane_z_bramki: WymaganyFormat, db: Session, teraz: da
             sensor_id=sensor_id, status=nowy_status, ostatnia_aktualizacja=teraz
         )
         db.add(nowe_miejsce)
+        
     if poprzedni_status != 1 and nowy_status == 1:
         logger.info(f"Wykryto zajęcie miejsca: {sensor_id}. Sprawdzanie obserwatorów...")
         limit_czasu_obserwacji = datetime.timedelta(minutes=30)
         obserwatorzy = db.query(ObserwowaneMiejsca).filter(
             ObserwowaneMiejsca.sensor_id == sensor_id,
+            # ❗️ POPRAWKA TUTAJ (używamy "teraz" zamiast wywoływać now())
             (teraz - ObserwowaneMiejsca.czas_dodania) < limit_czasu_obserwacji
         ).all()
         tokeny_do_usuniecia = []
@@ -298,7 +291,6 @@ def process_parking_update(dane_z_bramki: WymaganyFormat, db: Session, teraz: da
                 ObserwowaneMiejsca.device_token.in_(tokeny_do_usuniecia)
             ).delete(synchronize_session=False)
             
-    # Sprawdź, czy grupa sensorów jest w znanych grupach, zanim zaktualizujesz bramkę
     bramka_id_z_czujnika = sensor_id.split('_')[0] 
     if bramka_id_z_czujnika in GRUPY_SENSOROW:
         bramka_db = db.query(OstatniStanBramki).filter(OstatniStanBramki.bramka_id == bramka_id_z_czujnika).first()
@@ -314,7 +306,8 @@ def process_parking_update(dane_z_bramki: WymaganyFormat, db: Session, teraz: da
 # Endpoint dla BRAMKI (HTTP Fallback)
 @app.put("/api/v1/miejsce_parkingowe/aktualizuj", dependencies=[Depends(check_api_key)])
 async def aktualizuj_miejsce_http(request: Request, db: Session = Depends(get_db)):
-    teraz = datetime.datetime.now(datetime.UTC)
+    # ❗️ POPRAWKA TUTAJ
+    teraz = datetime.datetime.now(datetime.timezone.utc)
     body_bytes = await request.body()
     raw_json_str = body_bytes.decode('latin-1').strip().replace('\x00', '')
     logger.info(f"Odebrano surowy payload (HTTP): {repr(raw_json_str)}") 
@@ -330,9 +323,9 @@ async def aktualizuj_miejsce_http(request: Request, db: Session = Depends(get_db
 # Endpoint dla APLIKACJI (Publiczny)
 @app.get("/api/v1/aktualny_stan")
 def pobierz_aktualny_stan(db: Session = Depends(get_db)):
-    teraz = datetime.datetime.now(datetime.UTC)
+    # ❗️ POPRAWKA TUTAJ
+    teraz = datetime.datetime.now(datetime.timezone.utc)
     
-    # Inicjalizuj brakujące bramki w OstatniStanBramki, jeśli jeszcze nie istnieją
     for grupa in GRUPY_SENSOROW:
         istnieje = db.query(OstatniStanBramki).filter(OstatniStanBramki.bramka_id == grupa).first()
         if not istnieje:
@@ -349,7 +342,7 @@ def pobierz_aktualny_stan(db: Session = Depends(get_db)):
     for bramka in bramki_offline:
         db.query(AktualnyStan).filter(
             AktualnyStan.sensor_id.startswith(bramka.bramka_id)
-        ).update({"status": 2}) # Ustaw status 2 (Nieznany)
+        ).update({"status": 2})
     
     db.commit()
     wszystkie_miejsca = db.query(AktualnyStan).all()
@@ -368,7 +361,8 @@ def on_connect(client, userdata, flags, rc):
         logger.error(f"Nie udało się połączyć z MQTT, kod: {rc}")
 
 def on_message(client, userdata, msg):
-    teraz = datetime.datetime.now(datetime.UTC)
+    # ❗️ POPRAWKA TUTAJ
+    teraz = datetime.datetime.now(datetime.timezone.utc)
     try:
         raw_json_str = msg.payload.decode('utf-8').strip().replace('\x00', '')
         logger.info(f"ODEBRANO MQTT na temacie {msg.topic}: {repr(raw_json_str)}")
