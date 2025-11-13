@@ -4,7 +4,8 @@ import json
 import logging
 import threading
 from typing import Optional, List, Dict
-from zoneinfo import ZoneInfo  # <--- DODANY IMPORT
+from zoneinfo import ZoneInfo
+from datetime import date  # <--- Dodany import
 from fastapi import FastAPI, Depends, HTTPException, Header, Request
 from sqlalchemy import create_engine, Column, Integer, String, DateTime
 from sqlalchemy.ext.declarative import declarative_base
@@ -17,10 +18,8 @@ import paho.mqtt.client as mqtt
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# === KONFIGURACJA STREF CZASOWYCH (NOWE) ===
-# Używamy UTC do zapisu w bazie
+# === KONFIGURACJA STREF CZASOWYCH ===
 UTC = datetime.timezone.utc
-# Używamy PL_TZ do interpretacji zapytań użytkownika (np. "10:00 w poniedziałek")
 PL_TZ = ZoneInfo("Europe/Warsaw")
 
 # Konfiguracja MQTT
@@ -44,49 +43,77 @@ Base = declarative_base()
 # === STAŁE APLIKACJI ===
 GRUPY_SENSOROW = ["EURO", "BUD"]
 
-# === NOWA LOGIKA: SŁOWNIK DAT SPECJALNYCH ===
-# Format: (miesiąc, dzień) -> "Nazwa"
-DATY_SPECJALNE = {
-    (1, 1): "Nowy Rok",
-    (1, 6): "Trzech Króli",
-    (5, 1): "Święto Pracy",
-    (5, 3): "Święto Konstytucji 3 Maja",
-    (8, 15): "Święto Wojska Polskiego",
-    (11, 1): "Wszystkich Świętych",
-    (11, 11): "Święto Niepodległości",
-    (12, 24): "Wigilia",
-    (12, 25): "Boże Narodzenie (Dzień 1)",
-    (12, 26): "Boże Narodzenie (Dzień 2)",
-    (12, 31): "Sylwester",
+# === NOWA LOGIKA: RĘCZNA MAPA ŚWIĄT ===
+# To jest Twoje centrum zarządzania.
+# System sprawdzi tę mapę przy ZAPISIE i ODCZYCIE.
+# MUSISZ JĄ RĘCZNIE AKTUALIZOWAĆ na bieżące i przyszłe lata.
+#
+# Format: 
+#   date(ROK, M, D): "Nazwa Święta"
+#
+MANUALNA_MAPA_SWIAT = {
+    # --- Przykłady 2024 ---
+    date(2024, 3, 31): "Niedziela Wielkanocna",
+    date(2024, 4, 1): "Poniedziałek Wielkanocny",
+    date(2024, 5, 1): "Święto Pracy",
+    date(2024, 5, 3): "Święto Konstytucji 3 Maja",
+    date(2024, 5, 30): "Boże Ciało",
+    date(2024, 8, 15): "Święto Wojska Polskiego",
+    date(2024, 11, 1): "Wszystkich Świętych",
+    date(2024, 11, 11): "Święto Niepodległości",
+    date(2024, 12, 24): "Wigilia",
+    date(2024, 12, 25): "Boże Narodzenie",
+    date(2024, 12, 26): "Drugi Dzień Świąt",
+    date(2024, 12, 31): "Sylwester",
+
+    # --- Przykłady 2025 ---
+    date(2025, 1, 1): "Nowy Rok",
+    date(2025, 1, 6): "Trzech Króli",
+    date(2025, 4, 20): "Niedziela Wielkanocna",
+    date(2025, 4, 21): "Poniedziałek Wielkanocny",
+    # ... dodaj tutaj resztę świąt dla 2025 ...
+    date(2025, 12, 24): "Wigilia",
+    # ... itd.
 }
 
-# Definicje tabel (bez zmian z Twojego kodu)
+
+# === Definicje tabel ===
+
 class AktualnyStan(Base):
     __tablename__ = "aktualny_stan"
     sensor_id = Column(String, primary_key=True, index=True)
     status = Column(Integer, default=0)
-    # Zapisujemy domyślnie czas UTC
     ostatnia_aktualizacja = Column(DateTime, default=lambda: datetime.datetime.now(UTC))
 
 class DaneHistoryczne(Base):
     __tablename__ = "dane_historyczne"
     id = Column(Integer, primary_key=True, autoincrement=True)
-    czas_pomiaru = Column(DateTime, index=True) # Będzie zapisywany w UTC
+    czas_pomiaru = Column(DateTime, index=True) # Zwykłe dni (UTC)
     sensor_id = Column(String, index=True)
     status = Column(Integer)
+
+# === NOWA TABELA NA DANE ŚWIĄTECZNE ===
+class DaneSwieta(Base):
+    __tablename__ = "dane_swieta"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    czas_pomiaru = Column(DateTime, index=True) # Dane świąteczne (UTC)
+    sensor_id = Column(String, index=True)
+    status = Column(Integer)
+    # Kluczowa kolumna: przechowuje nazwę (np. "Wigilia")
+    nazwa_swieta = Column(String, index=True) 
 
 class OstatniStanBramki(Base):
     __tablename__ = "ostatni_stan_bramki"
     bramka_id = Column(String, primary_key=True, default="Bramka_A")
-    ostatni_kontakt = Column(DateTime) # Będzie zapisywany w UTC
+    ostatni_kontakt = Column(DateTime) # UTC
 
 class ObserwowaneMiejsca(Base):
     __tablename__ = "obserwowane_miejsca"
     device_token = Column(String, primary_key=True, index=True)
     sensor_id = Column(String, index=True)
-    # Zapisujemy domyślnie czas UTC
     czas_dodania = Column(DateTime, default=lambda: datetime.datetime.now(UTC))
 
+# Ta linia automatycznie utworzy nową tabelę `dane_swieta`
 Base.metadata.create_all(bind=engine)
 
 def get_db():
@@ -113,7 +140,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# === Modele Pydantic (bez zmian) ===
+# === Modele Pydantic ===
 class WymaganyFormat(BaseModel):
     sensor_id: str
     status: int 
@@ -127,7 +154,7 @@ class StatystykiZapytanie(BaseModel):
     selected_date: str
     selected_hour: int
 
-# === Funkcje Pomocnicze (bez zmian) ===
+# === Funkcje Pomocnicze ===
 def send_push_notification(token: str, sensor_id: str):
     logger.info(f"Wysyłanie powiadomienia PUSH do: {token} dla: {sensor_id}")
     try:
@@ -149,69 +176,64 @@ def get_time_with_offset(base_hour, offset_minutes):
 # === WEWNĘTRZNA FUNKCJA DO OBLICZANIA STATYSTYK (PODMIENIONA) ===
 def calculate_occupancy_stats(sensor_prefix: str, selected_date_obj: datetime.date, selected_hour: int, db: Session) -> dict:
     
-    # === NOWA LOGIKA SPRAWDZANIA ŚWIĄT ===
-    # Użytkownik wysyła datę, np. 24.12. Musimy sprawdzić, czy to święto
-    selected_weekday = selected_date_obj.weekday()
-    selected_month_day = (selected_date_obj.month, selected_date_obj.day)
+    # Sprawdzamy, czy wybrana data jest w naszej RĘCZNEJ mapie
+    nazwa_swieta = MANUALNA_MAPA_SWIAT.get(selected_date_obj)
     
-    # Sprawdzamy, czy wybrany dzień to święto z naszej listy
-    is_special_day = selected_month_day in DATY_SPECJALNE
-    
-    if is_special_day:
-        # Tryb "Święto": Użyj nazwy święta
-        nazwa_swieta = DATY_SPECJALNE[selected_month_day]
+    query = None
+    kategoria_str = ""
+
+    if nazwa_swieta:
+        # TRYB 1: Dzień specjalny (z mapy)
         kategoria_str = f"Dane historyczne dla: {nazwa_swieta}"
+        logger.info(f"Tryb statystyk: ŚWIĘTO. Szukam danych dla: {nazwa_swieta}")
+        # Przeszukujemy NOWĄ tabelę i filtrujemy po nazwie
+        query = db.query(DaneSwieta).filter(
+            DaneSwieta.sensor_id.startswith(sensor_prefix),
+            DaneSwieta.nazwa_swieta == nazwa_swieta
+        )
     else:
-        # Tryb "Normalny dzień": Użyj nazwy dnia tygodnia
+        # TRYB 2: Normalny dzień tygodnia
+        dzien_tygodnia_do_spr = selected_date_obj.weekday()
         nazwy_dni = ["Poniedziałek", "Wtorek", "Środa", "Czwartek", "Piątek", "Sobota", "Niedziela"]
-        kategoria_str = f"Dane historyczne dla: {nazwy_dni[selected_weekday]}"
-    # === KONIEC NOWEJ LOGIKI ===
+        kategoria_str = f"Dane historyczne dla: (Zwykły) {nazwy_dni[dzien_tygodnia_do_spr]}"
+        logger.info(f"Tryb statystyk: DZIEŃ TYGODNIA. Szukam: {dzien_tygodnia_do_spr}")
+        # Przeszukujemy STARĄ tabelę
+        query = db.query(DaneHistoryczne).filter(
+            DaneHistoryczne.sensor_id.startswith(sensor_prefix)
+        )
 
     OFFSET_MINUT = 60
-    # Obliczamy przedział czasu (to jest operacja na samych godzinach, strefa nie ma znaczenia)
     czas_poczatek = get_time_with_offset(selected_hour, -OFFSET_MINUT)
     czas_koniec = get_time_with_offset(selected_hour, OFFSET_MINUT)
 
-    query = db.query(DaneHistoryczne).filter(
-        DaneHistoryczne.sensor_id.startswith(sensor_prefix)
-    )
-    
     wszystkie_dane_dla_sensora = query.all()
     
     dane_pasujace = []
     
     for rekord in wszystkie_dane_dla_sensora:
-        if not rekord.czas_pomiaru:
-            continue
-            
-        # 1. Pobierz czas z bazy (jest w UTC)
+        # Konwersja stref (baza jest w UTC)
         czas_rekordu_dt_utc = rekord.czas_pomiaru
         if czas_rekordu_dt_utc.tzinfo is None:
-            # Jeśli baza (np. SQLite) zapisała jako "naive"
-            # zakładamy, że to był UTC (zgodnie z logiką zapisu)
             czas_rekordu_dt_utc = czas_rekordu_dt_utc.replace(tzinfo=UTC)
 
-        # 2. Konwertuj czas rekordu do strefy PL, aby sprawdzić datę i dzień
-        # To jest czas, który "widział" użytkownik w Polsce
+        # Konwertujemy do czasu PL
         czas_rekordu_dt_pl = czas_rekordu_dt_utc.astimezone(PL_TZ)
 
         # === NOWA LOGIKA FILTROWANIA REKORDÓW ===
-        if is_special_day:
-            # 1. Tryb "Święto": Porównaj (Miesiąc, Dzień)
-            rekord_month_day = (czas_rekordu_dt_pl.month, czas_rekordu_dt_pl.day)
-            # Sprawdź, czy rekord z historii to ta sama data (np. też 24.12)
-            if rekord_month_day != selected_month_day:
+        
+        if not nazwa_swieta:
+            # Jesteśmy w TRYBIE 2 (Dzień tygodnia)
+            # Musimy odfiltrować rekordy z innych dni tygodnia
+            if czas_rekordu_dt_pl.weekday() != dzien_tygodnia_do_spr:
                 continue
-        else:
-            # 2. Tryb "Normalny Dzień": Porównaj dzień tygodnia
-            dzien_rekordu = czas_rekordu_dt_pl.weekday()
-            # Sprawdź, czy rekord z historii to ten sam dzień tyg. (np. też środa)
-            if dzien_rekordu != selected_weekday:
-                continue
-        # === KONIEC NOWEJ LOGIKI ===
+        # else:
+            # Jesteśmy w TRYBIE 1 (Święto)
+            # SQL (query) już załatwił filtrowanie po `nazwa_swieta`
+            # Nie musimy nic więcej filtrować (oprócz godziny)
+            
+        # === KONIEC NOWEJ LOGIKI FILTROWANIA ===
         
         # Logika sprawdzania godziny (na czasie polskim)
-        # Porównujemy czas rekordu (w PL) z godzinami wysłanymi przez użytkownika (w PL)
         czas_rekordu = czas_rekordu_dt_pl.time()
         
         if czas_poczatek > czas_koniec:
@@ -241,7 +263,7 @@ def calculate_occupancy_stats(sensor_prefix: str, selected_date_obj: datetime.da
     }
 
 
-# === Endpointy (bez zmian z Twojego kodu) ===
+# === Endpointy (Statystyki i Prognozy wywołują nową funkcję) ===
 @app.get("/")
 def read_root():
     return {"status": "Parking API działa! Słucham MQTT na: " + MQTT_TOPIC_SUBSCRIBE}
@@ -251,6 +273,17 @@ def obserwuj_miejsce(request: ObserwujRequest, db: Session = Depends(get_db)):
     token = request.device_token
     sensor_id = request.sensor_id
     teraz = datetime.datetime.now(datetime.timezone.utc)
+    
+    # === POPRAWKA LUKI 1 (Check-then-Go) ===
+    # Sprawdzamy RZECZYWISTY stan miejsca PRZED obserwacją
+    miejsce_db = db.query(AktualnyStan).filter(AktualnyStan.sensor_id == sensor_id).first()
+    
+    if not miejsce_db or miejsce_db.status != 0:
+        logger.warning(f"Odrzucono obserwację dla {sensor_id} (token: ...{token[-5:]}). Stan: {miejsce_db.status if miejsce_db else 'Nieznany'}")
+        raise HTTPException(status_code=409, detail="Niestety, to miejsce zostało właśnie zajęte lub jest offline.")
+    
+    # === KONIEC POPRAWKI ===
+
     wpis = db.query(ObserwowaneMiejsca).filter(ObserwowaneMiejsca.device_token == token).first()
     if wpis:
         wpis.sensor_id = sensor_id
@@ -263,6 +296,7 @@ def obserwuj_miejsce(request: ObserwujRequest, db: Session = Depends(get_db)):
         )
         db.add(nowy_obserwator)
     db.commit()
+    logger.info(f"Rozpoczęto obserwację dla {sensor_id} (token: ...{token[-5:]})")
     return {"status": "obserwowanie rozpoczęte", "miejsce": sensor_id}
 
 
@@ -279,7 +313,7 @@ def pobierz_statystyki_zajetosci(zapytanie: StatystykiZapytanie, db: Session = D
          raise HTTPException(status_code=400, detail="Wymagany jest sensor_id (np. 'EURO' lub 'BUD').")
          
     try:
-        # Wywołujemy już nową, poprawioną funkcję
+        # Wywołujemy już nową funkcję statystyk
         wynik = calculate_occupancy_stats(zapytanie.sensor_id, selected_date_obj, selected_hour, db)
     except Exception as e:
         logger.error(f"Błąd przy /statystyki/zajetosc dla {zapytanie.sensor_id}: {e}")
@@ -289,51 +323,41 @@ def pobierz_statystyki_zajetosci(zapytanie: StatystykiZapytanie, db: Session = D
         "wynik_dynamiczny": wynik
     }
 
-# ENDPOINT PROGNOZ (bez zmian z Twojego kodu)
 @app.get("/api/v1/prognoza/wszystkie_miejsca")
 def pobierz_prognoze_dla_wszystkich(
     db: Session = Depends(get_db), 
     target_date: Optional[str] = None, 
     target_hour: Optional[int] = None
 ):
-    """
-    Zwraca aktualną prognozę (procent zajętości) dla wszystkich zdefiniowanych grup sensorów.
-    """
     prognozy: Dict[str, float] = {}
     selected_date_obj = None
     selected_hour = None
-    use_fallback = True # Domyślnie użyj czasu "teraz"
+    use_fallback = True 
 
-    # Krok 1: Spróbuj przetworzyć parametry wejściowe
     if target_date and target_hour is not None:
         try:
-            # Użyj int(target_hour), aby sprawdzić, czy to poprawna liczba
             selected_hour_int = int(target_hour) 
             selected_date_obj_parsed = datetime.datetime.strptime(target_date, "%Y-%m-%d").date()
             
-            # Jeśli wszystko się udało, ustaw parametry i wyłącz fallback
             selected_date_obj = selected_date_obj_parsed
             selected_hour = selected_hour_int
             use_fallback = False 
             logger.info(f"Używam dostarczonego czasu prognozy: {selected_date_obj} @ {selected_hour}:00")
             
         except (ValueError, TypeError):
-            # Jeśli parsowanie się nie uda (np. target_hour="" lub zła data),
-            # logujemy błąd i use_fallback pozostaje True.
             logger.warning(f"Niepoprawny format target_date ('{target_date}') lub target_hour ('{target_hour}'). Używam czasu 'teraz'.")
             use_fallback = True
 
-    # Krok 2: Jeśli parametry nie zostały podane LUB były błędne, użyj czasu "teraz"
     if use_fallback:
-        teraz_utc = datetime.datetime.now(datetime.timezone.utc)
-        selected_date_obj = teraz_utc.date()
-        selected_hour = teraz_utc.hour
-        logger.info(f"Generowanie domyślnej prognozy (teraz) dla: {selected_date_obj} @ {selected_hour}:00 utc")
+        # Zmieniamy na czas PL, aby poprawnie wybrać datę dla fallbacku
+        teraz_pl = datetime.datetime.now(PL_TZ)
+        selected_date_obj = teraz_pl.date()
+        selected_hour = teraz_pl.hour
+        logger.info(f"Generowanie domyślnej prognozy (teraz PL) dla: {selected_date_obj} @ {selected_hour}:00")
 
-    # Krok 3: Obliczenia (teraz 'selected_hour' na pewno nie jest None)
     for grupa in GRUPY_SENSOROW:
         try:
-            # Wywołujemy już nową, poprawioną funkcję
+            # Wywołujemy już nową funkcję statystyk
             wynik = calculate_occupancy_stats(grupa, selected_date_obj, selected_hour, db)
             prognozy[grupa] = wynik['procent_zajetosci']
         except Exception as e:
@@ -343,23 +367,46 @@ def pobierz_prognoze_dla_wszystkich(
     return prognozy
 
 
-# === FUNKCJA GŁÓWNA PRZETWARZANIA DANYCH (bez zmian z Twojego kodu) ===
-def process_parking_update(dane_z_bramki: WymaganyFormat, db: Session, teraz: datetime.datetime):
+# === FUNKCJA GŁÓWNA PRZETWARZANIA DANYCH (ZMODYFIKOWANA) ===
+def process_parking_update(dane_z_bramki: WymaganyFormat, db: Session, teraz_utc: datetime.datetime):
     sensor_id = dane_z_bramki.sensor_id
     nowy_status = dane_z_bramki.status
-    nowy_rekord_historyczny = DaneHistoryczne(
-        czas_pomiaru=teraz, sensor_id=sensor_id, status=nowy_status
-    )
-    db.add(nowy_rekord_historyczny)
+    
+    # === NOWY ROUTER DANYCH ===
+    # Sprawdzamy, czy dzisiejszy dzień (w PL) jest na liście świąt
+    teraz_pl_date = teraz_utc.astimezone(PL_TZ).date()
+    nazwa_swieta = MANUALNA_MAPA_SWIAT.get(teraz_pl_date)
+    
+    if nazwa_swieta:
+        # TRYB 1: Zapisz do tabeli świątecznej
+        logger.info(f"Zapis danych świątecznych ({nazwa_swieta}) dla {sensor_id}")
+        nowy_rekord = DaneSwieta(
+            czas_pomiaru=teraz_utc,
+            sensor_id=sensor_id,
+            status=nowy_status,
+            nazwa_swieta=nazwa_swieta 
+        )
+    else:
+        # TRYB 2: Zapisz do tabeli historycznej (zwykły dzień)
+        nowy_rekord = DaneHistoryczne(
+            czas_pomiaru=teraz_utc, 
+            sensor_id=sensor_id, 
+            status=nowy_status
+        )
+    
+    db.add(nowy_rekord)
+    # === KONIEC ROUTERA DANYCH ===
+
+    # Reszta funkcji (aktualizacja stanu, PUSH) pozostaje bez zmian
     miejsce_db = db.query(AktualnyStan).filter(AktualnyStan.sensor_id == sensor_id).first()
     poprzedni_status = -1
     if miejsce_db:
         poprzedni_status = miejsce_db.status
         miejsce_db.status = nowy_status
-        miejsce_db.ostatnia_aktualizacja = teraz
+        miejsce_db.ostatnia_aktualizacja = teraz_utc
     else:
         nowe_miejsce = AktualnyStan(
-            sensor_id=sensor_id, status=nowy_status, ostatnia_aktualizacja=teraz
+            sensor_id=sensor_id, status=nowy_status, ostatnia_aktualizacja=teraz_utc
         )
         db.add(nowe_miejsce)
         
@@ -368,7 +415,7 @@ def process_parking_update(dane_z_bramki: WymaganyFormat, db: Session, teraz: da
         limit_czasu_obserwacji = datetime.timedelta(minutes=30)
         obserwatorzy = db.query(ObserwowaneMiejsca).filter(
             ObserwowaneMiejsca.sensor_id == sensor_id,
-            (teraz - ObserwowaneMiejsca.czas_dodania) < limit_czasu_obserwacji
+            (teraz_utc - ObserwowaneMiejsca.czas_dodania) < limit_czasu_obserwacji
         ).all()
         tokeny_do_usuniecia = []
         for obserwator in obserwatorzy:
@@ -384,18 +431,18 @@ def process_parking_update(dane_z_bramki: WymaganyFormat, db: Session, teraz: da
     if bramka_id_z_czujnika in GRUPY_SENSOROW:
         bramka_db = db.query(OstatniStanBramki).filter(OstatniStanBramki.bramka_id == bramka_id_z_czujnika).first()
         if bramka_db:
-            bramka_db.ostatni_kontakt = teraz
+            bramka_db.ostatni_kontakt = teraz_utc
         else:
-            nowa_bramka = OstatniStanBramki(bramka_id=bramka_id_z_czujnika, ostatni_kontakt=teraz)
+            nowa_bramka = OstatniStanBramki(bramka_id=bramka_id_z_czujnika, ostatni_kontakt=teraz_utc)
             db.add(nowa_bramka)
     
     db.commit()
     return {"status": "zapisano"}
 
-# Endpoint dla BRAMKI (HTTP Fallback) (bez zmian z Twojego kodu)
+# Endpoint dla BRAMKI (HTTP Fallback)
 @app.put("/api/v1/miejsce_parkingowe/aktualizuj", dependencies=[Depends(check_api_key)])
 async def aktualizuj_miejsce_http(request: Request, db: Session = Depends(get_db)):
-    teraz = datetime.datetime.now(datetime.timezone.utc)
+    teraz = datetime.datetime.now(datetime.timezone.utc) # Zawsze UTC
     body_bytes = await request.body()
     raw_json_str = body_bytes.decode('latin-1').strip().replace('\x00', '')
     logger.info(f"Odebrano surowy payload (HTTP): {repr(raw_json_str)}") 
@@ -405,15 +452,15 @@ async def aktualizuj_miejsce_http(request: Request, db: Session = Depends(get_db
     except (json.JSONDecodeError, TypeError, ValueError) as e:
         logger.error(f"BŁĄD PARSOWANIA JSON (HTTP): {e} | Surowe dane: {repr(raw_json_str)}")
         raise HTTPException(status_code=400, detail=f"Niepoprawny format danych JSON. Szczegóły: {e}")
+    # Wywołujemy zmododyfikowaną funkcję
     return process_parking_update(dane_z_bramki, db, teraz)
 
 
-# Endpoint dla APLIKACJI (Publiczny) (bez zmian z Twojego kodu)
+# Endpoint dla APLIKACJI (Publiczny)
 @app.get("/api/v1/aktualny_stan")
 def pobierz_aktualny_stan(db: Session = Depends(get_db)):
-    teraz = datetime.datetime.now(datetime.timezone.utc)
+    teraz = datetime.datetime.now(datetime.timezone.utc) # Zawsze UTC
     
-    # Inicjalizuj brakujące bramki w OstatniStanBramki, jeśli jeszcze nie istnieją
     for grupa in GRUPY_SENSOROW:
         istnieje = db.query(OstatniStanBramki).filter(OstatniStanBramki.bramka_id == grupa).first()
         if not istnieje:
@@ -421,23 +468,32 @@ def pobierz_aktualny_stan(db: Session = Depends(get_db)):
             db.add(OstatniStanBramki(bramka_id=grupa, ostatni_kontakt=None))
             db.commit()
             
-    limit_czasu_bramki = datetime.timedelta(minutes=15) # <-- Wciąż 15 minut
+    # ZMIANA: Skrócenie limitu czasu do 3 minut
+    limit_czasu_bramki = datetime.timedelta(minutes=3)
+    
+    # Porównujemy z 'teraz' w UTC
     bramki_offline = db.query(OstatniStanBramki).filter(
         (OstatniStanBramki.ostatni_kontakt == None) |
         ((teraz - OstatniStanBramki.ostatni_kontakt) > limit_czasu_bramki)
     ).all()
     
-    for bramka in bramki_offline:
-        db.query(AktualnyStan).filter(
-            AktualnyStan.sensor_id.startswith(bramka.bramka_id)
-        ).update({"status": 2}) # Ustaw status 2 (Nieznany)
+    ids_bramki_offline = [b.bramka_id for b in bramki_offline]
+
+    if ids_bramki_offline:
+        logger.warning(f"Bramki offline: {ids_bramki_offline}. Ustawiam status 2.")
+        # Używamy pętli, aby update działał poprawnie
+        for b_id in ids_bramki_offline:
+            db.query(AktualnyStan).filter(
+                AktualnyStan.sensor_id.startswith(b_id),
+                AktualnyStan.status != 2 # Aktualizuj tylko jeśli nie jest już 2
+            ).update({"status": 2}, synchronize_session=False)
     
     db.commit()
     wszystkie_miejsca = db.query(AktualnyStan).all()
     return wszystkie_miejsca
 
 # =========================================================
-# === IMPLEMENTACJA KLIENTA MQTT (bez zmian z Twojego kodu) ===
+# === IMPLEMENTACJA KLIENTA MQTT ===
 # =========================================================
 mqtt_client = mqtt.Client()
 
@@ -449,13 +505,14 @@ def on_connect(client, userdata, flags, rc):
         logger.error(f"Nie udało się połączyć z MQTT, kod: {rc}")
 
 def on_message(client, userdata, msg):
-    teraz = datetime.datetime.now(datetime.timezone.utc)
+    teraz = datetime.datetime.now(datetime.timezone.utc) # Zawsze UTC
     try:
         raw_json_str = msg.payload.decode('utf-8').strip().replace('\x00', '')
         logger.info(f"ODEBRANO MQTT na temacie {msg.topic}: {repr(raw_json_str)}")
         dane = json.loads(raw_json_str)
         dane_z_bramki = WymaganyFormat(**dane) 
         db = next(get_db())
+        # Wywołujemy zmododyfikowaną funkcję
         process_parking_update(dane_z_bramki, db, teraz)
         db.close()
     except json.JSONDecodeError as e:
@@ -472,7 +529,7 @@ def mqtt_listener_thread():
     except Exception as e:
         logger.error(f"BŁĄD połączenia z brokerem MQTT: {e}")
 
-# === HOOKI STARTOWE I ZATRZYMUJĄCE (bez zmian z Twojego kodu) ===
+# === HOOKI STARTOWE I ZATRZYMUJĄCE ===
 @app.on_event("startup")
 async def startup_event():
     logger.info("Uruchamiam nasłuch MQTT...")
