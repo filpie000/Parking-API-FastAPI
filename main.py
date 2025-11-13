@@ -5,7 +5,7 @@ import logging
 import threading
 from typing import Optional, List, Dict
 from zoneinfo import ZoneInfo
-from datetime import date  # <--- Dodany import
+from datetime import date
 from fastapi import FastAPI, Depends, HTTPException, Header, Request
 from sqlalchemy import create_engine, Column, Integer, String, DateTime
 from sqlalchemy.ext.declarative import declarative_base
@@ -43,14 +43,7 @@ Base = declarative_base()
 # === STAŁE APLIKACJI ===
 GRUPY_SENSOROW = ["EURO", "BUD"]
 
-# === NOWA LOGIKA: RĘCZNA MAPA ŚWIĄT ===
-# To jest Twoje centrum zarządzania.
-# System sprawdzi tę mapę przy ZAPISIE i ODCZYCIE.
-# MUSISZ JĄ RĘCZNIE AKTUALIZOWAĆ na bieżące i przyszłe lata.
-#
-# Format: 
-#   date(ROK, M, D): "Nazwa Święta"
-#
+# === RĘCZNA MAPA ŚWIĄT ===
 MANUALNA_MAPA_SWIAT = {
     # --- 2023 ---
     date(2023, 1, 1): "Nowy Rok",
@@ -116,14 +109,12 @@ class DaneHistoryczne(Base):
     sensor_id = Column(String, index=True)
     status = Column(Integer)
 
-# === NOWA TABELA NA DANE ŚWIĄTECZNE ===
 class DaneSwieta(Base):
     __tablename__ = "dane_swieta"
     id = Column(Integer, primary_key=True, autoincrement=True)
     czas_pomiaru = Column(DateTime, index=True) # Dane świąteczne (UTC)
     sensor_id = Column(String, index=True)
     status = Column(Integer)
-    # Kluczowa kolumna: przechowuje nazwę (np. "Wigilia")
     nazwa_swieta = Column(String, index=True) 
 
 class OstatniStanBramki(Base):
@@ -137,7 +128,6 @@ class ObserwowaneMiejsca(Base):
     sensor_id = Column(String, index=True)
     czas_dodania = Column(DateTime, default=lambda: datetime.datetime.now(UTC))
 
-# Ta linia automatycznie utworzy nową tabelę `dane_swieta`
 Base.metadata.create_all(bind=engine)
 
 def get_db():
@@ -197,7 +187,7 @@ def get_time_with_offset(base_hour, offset_minutes):
     offset_dt = base_dt + datetime.timedelta(minutes=offset_minutes)
     return offset_dt.time()
 
-# === WEWNĘTRZNA FUNKCJA DO OBLICZANIA STATYSTYK (PODMIENIONA) ===
+# === WEWNĘTRZNA FUNKCJA DO OBLICZANIA STATYSTYK (ZAKTUALIZOWANA) ===
 def calculate_occupancy_stats(sensor_prefix: str, selected_date_obj: datetime.date, selected_hour: int, db: Session) -> dict:
     
     # Sprawdzamy, czy wybrana data jest w naszej RĘCZNEJ mapie
@@ -205,6 +195,8 @@ def calculate_occupancy_stats(sensor_prefix: str, selected_date_obj: datetime.da
     
     query = None
     kategoria_str = ""
+    # Lista dni tygodnia (0=Pon) do uwzględnienia w filtrze
+    dni_do_uwzglednienia = [] 
 
     if nazwa_swieta:
         # TRYB 1: Dzień specjalny (z mapy)
@@ -216,12 +208,27 @@ def calculate_occupancy_stats(sensor_prefix: str, selected_date_obj: datetime.da
             DaneSwieta.nazwa_swieta == nazwa_swieta
         )
     else:
-        # TRYB 2: Normalny dzień tygodnia
-        dzien_tygodnia_do_spr = selected_date_obj.weekday()
-        nazwy_dni = ["Poniedziałek", "Wtorek", "Środa", "Czwartek", "Piątek", "Sobota", "Niedziela"]
-        kategoria_str = f"Dane historyczne dla: (Zwykły) {nazwy_dni[dzien_tygodnia_do_spr]}"
-        logger.info(f"Tryb statystyk: DZIEŃ TYGODNIA. Szukam: {dzien_tygodnia_do_spr}")
-        # Przeszukujemy STARĄ tabelę
+        # TRYB 2: Normalny dzień tygodnia (NOWA LOGIKA GRUPOWANIA)
+        selected_weekday = selected_date_obj.weekday()
+        
+        if 0 <= selected_weekday <= 3: # Poniedziałek - Czwartek
+            kategoria_str = "Dane historyczne dla: Dni robocze (Pon-Czw)"
+            dni_do_uwzglednienia = [0, 1, 2, 3]
+            logger.info("Tryb statystyk: DNI ROBOCZE (Pon-Czw)")
+        elif selected_weekday == 4: # Piątek
+            kategoria_str = "Dane historyczne dla: Piątek"
+            dni_do_uwzglednienia = [4]
+            logger.info("Tryb statystyk: PIĄTEK")
+        elif selected_weekday == 5: # Sobota
+            kategoria_str = "Dane historyczne dla: Sobota"
+            dni_do_uwzglednienia = [5]
+            logger.info("Tryb statystyk: SOBOTA")
+        elif selected_weekday == 6: # Niedziela
+            kategoria_str = "Dane historyczne dla: Niedziela"
+            dni_do_uwzglednienia = [6]
+            logger.info("Tryb statystyk: NIEDZIELA")
+            
+        # Przeszukujemy STARĄ tabelę (DaneHistoryczne)
         query = db.query(DaneHistoryczne).filter(
             DaneHistoryczne.sensor_id.startswith(sensor_prefix)
         )
@@ -243,19 +250,19 @@ def calculate_occupancy_stats(sensor_prefix: str, selected_date_obj: datetime.da
         # Konwertujemy do czasu PL
         czas_rekordu_dt_pl = czas_rekordu_dt_utc.astimezone(PL_TZ)
 
-        # === NOWA LOGIKA FILTROWANIA REKORDÓW ===
+        # === ZAKTUALIZOWANA LOGIKA FILTROWANIA ===
         
         if not nazwa_swieta:
             # Jesteśmy w TRYBIE 2 (Dzień tygodnia)
-            # Musimy odfiltrować rekordy z innych dni tygodnia
-            if czas_rekordu_dt_pl.weekday() != dzien_tygodnia_do_spr:
+            # Sprawdzamy, czy dzień tygodnia rekordu należy do naszej grupy
+            rekord_weekday = czas_rekordu_dt_pl.weekday()
+            if rekord_weekday not in dni_do_uwzglednienia:
                 continue
         # else:
             # Jesteśmy w TRYBIE 1 (Święto)
             # SQL (query) już załatwił filtrowanie po `nazwa_swieta`
-            # Nie musimy nic więcej filtrować (oprócz godziny)
             
-        # === KONIEC NOWEJ LOGIKI FILTROWANIA ===
+        # === KONIEC LOGIKI FILTROWANIA ===
         
         # Logika sprawdzania godziny (na czasie polskim)
         czas_rekordu = czas_rekordu_dt_pl.time()
@@ -299,7 +306,6 @@ def obserwuj_miejsce(request: ObserwujRequest, db: Session = Depends(get_db)):
     teraz = datetime.datetime.now(datetime.timezone.utc)
     
     # === POPRAWKA LUKI 1 (Check-then-Go) ===
-    # Sprawdzamy RZECZYWISTY stan miejsca PRZED obserwacją
     miejsce_db = db.query(AktualnyStan).filter(AktualnyStan.sensor_id == sensor_id).first()
     
     if not miejsce_db or miejsce_db.status != 0:
@@ -397,7 +403,6 @@ def process_parking_update(dane_z_bramki: WymaganyFormat, db: Session, teraz_utc
     nowy_status = dane_z_bramki.status
     
     # === NOWY ROUTER DANYCH ===
-    # Sprawdzamy, czy dzisiejszy dzień (w PL) jest na liście świąt
     teraz_pl_date = teraz_utc.astimezone(PL_TZ).date()
     nazwa_swieta = MANUALNA_MAPA_SWIAT.get(teraz_pl_date)
     
@@ -421,7 +426,6 @@ def process_parking_update(dane_z_bramki: WymaganyFormat, db: Session, teraz_utc
     db.add(nowy_rekord)
     # === KONIEC ROUTERA DANYCH ===
 
-    # Reszta funkcji (aktualizacja stanu, PUSH) pozostaje bez zmian
     miejsce_db = db.query(AktualnyStan).filter(AktualnyStan.sensor_id == sensor_id).first()
     poprzedni_status = -1
     if miejsce_db:
@@ -566,4 +570,3 @@ def shutdown_event():
     logger.info("Zamykanie klienta MQTT...")
     mqtt_client.loop_stop()
     mqtt_client.disconnect()
-
