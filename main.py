@@ -60,7 +60,7 @@ class ObserwowaneMiejsca(Base):
     __tablename__ = "obserwowane_miejsca"
     device_token = Column(String, primary_key=True, index=True)
     sensor_id = Column(String, index=True)
-    czas_dodania = Column(DateTime, default=datetime.datetime.now(datetime.timezone.utc))
+    czas_dodania = Column(DateTime, default=datetime.datetime.now(datetime.timezone.utc+1))
 
 Base.metadata.create_all(bind=engine)
 
@@ -420,3 +420,4 @@ def shutdown_event():
     logger.info("Zamykanie klienta MQTT...")
     mqtt_client.loop_stop()
     mqtt_client.disconnect()
+
