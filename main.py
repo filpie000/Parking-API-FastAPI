@@ -42,7 +42,7 @@ class AktualnyStan(Base):
     __tablename__ = "aktualny_stan"
     sensor_id = Column(String, primary_key=True, index=True)
     status = Column(Integer, default=0)
-    ostatnia_aktualizacja = Column(DateTime, default=datetime.datetime.now(datetime.timezone.cet))
+    ostatnia_aktualizacja = Column(DateTime, default=datetime.datetime.now(datetime.timezone.utc))
 
 class DaneHistoryczne(Base):
     __tablename__ = "dane_historyczne"
@@ -60,7 +60,7 @@ class ObserwowaneMiejsca(Base):
     __tablename__ = "obserwowane_miejsca"
     device_token = Column(String, primary_key=True, index=True)
     sensor_id = Column(String, index=True)
-    czas_dodania = Column(DateTime, default=datetime.datetime.now(datetime.timezone.cet))
+    czas_dodania = Column(DateTime, default=datetime.datetime.now(datetime.timezone.utc))
 
 Base.metadata.create_all(bind=engine)
 
@@ -187,7 +187,7 @@ def read_root():
 def obserwuj_miejsce(request: ObserwujRequest, db: Session = Depends(get_db)):
     token = request.device_token
     sensor_id = request.sensor_id
-    teraz = datetime.datetime.now(datetime.timezone.cet)
+    teraz = datetime.datetime.now(datetime.timezone.utc)
     wpis = db.query(ObserwowaneMiejsca).filter(ObserwowaneMiejsca.device_token == token).first()
     if wpis:
         wpis.sensor_id = sensor_id
@@ -261,10 +261,10 @@ def pobierz_prognoze_dla_wszystkich(
 
     # Krok 2: Jeśli parametry nie zostały podane LUB były błędne, użyj czasu "teraz"
     if use_fallback:
-        teraz_cet = datetime.datetime.now(datetime.timezone.cet)
-        selected_date_obj = teraz_cet.date()
-        selected_hour = teraz_cet.hour
-        logger.info(f"Generowanie domyślnej prognozy (teraz) dla: {selected_date_obj} @ {selected_hour}:00 cet")
+        teraz_utc = datetime.datetime.now(datetime.timezone.utc)
+        selected_date_obj = teraz_utc.date()
+        selected_hour = teraz_utc.hour
+        logger.info(f"Generowanie domyślnej prognozy (teraz) dla: {selected_date_obj} @ {selected_hour}:00 utc")
 
     # Krok 3: Obliczenia (teraz 'selected_hour' na pewno nie jest None)
     for grupa in GRUPY_SENSOROW:
@@ -330,7 +330,7 @@ def process_parking_update(dane_z_bramki: WymaganyFormat, db: Session, teraz: da
 # Endpoint dla BRAMKI (HTTP Fallback)
 @app.put("/api/v1/miejsce_parkingowe/aktualizuj", dependencies=[Depends(check_api_key)])
 async def aktualizuj_miejsce_http(request: Request, db: Session = Depends(get_db)):
-    teraz = datetime.datetime.now(datetime.timezone.cet)
+    teraz = datetime.datetime.now(datetime.timezone.utc)
     body_bytes = await request.body()
     raw_json_str = body_bytes.decode('latin-1').strip().replace('\x00', '')
     logger.info(f"Odebrano surowy payload (HTTP): {repr(raw_json_str)}") 
@@ -346,7 +346,7 @@ async def aktualizuj_miejsce_http(request: Request, db: Session = Depends(get_db
 # Endpoint dla APLIKACJI (Publiczny)
 @app.get("/api/v1/aktualny_stan")
 def pobierz_aktualny_stan(db: Session = Depends(get_db)):
-    teraz = datetime.datetime.now(datetime.timezone.cet)
+    teraz = datetime.datetime.now(datetime.timezone.utc)
     
     # Inicjalizuj brakujące bramki w OstatniStanBramki, jeśli jeszcze nie istnieją
     for grupa in GRUPY_SENSOROW:
@@ -384,7 +384,7 @@ def on_connect(client, userdata, flags, rc):
         logger.error(f"Nie udało się połączyć z MQTT, kod: {rc}")
 
 def on_message(client, userdata, msg):
-    teraz = datetime.datetime.now(datetime.timezone.cet)
+    teraz = datetime.datetime.now(datetime.timezone.utc)
     try:
         raw_json_str = msg.payload.decode('utf-8').strip().replace('\x00', '')
         logger.info(f"ODEBRANO MQTT na temacie {msg.topic}: {repr(raw_json_str)}")
@@ -420,5 +420,6 @@ def shutdown_event():
     logger.info("Zamykanie klienta MQTT...")
     mqtt_client.loop_stop()
     mqtt_client.disconnect()
+
 
 
