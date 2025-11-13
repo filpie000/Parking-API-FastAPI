@@ -52,7 +52,24 @@ GRUPY_SENSOROW = ["EURO", "BUD"]
 #   date(ROK, M, D): "Nazwa Święta"
 #
 MANUALNA_MAPA_SWIAT = {
-    # --- Przykłady 2024 ---
+    # --- 2023 ---
+    date(2023, 1, 1): "Nowy Rok",
+    date(2023, 1, 6): "Trzech Króli",
+    date(2023, 4, 9): "Niedziela Wielkanocna",
+    date(2023, 4, 10): "Poniedziałek Wielkanocny",
+    date(2023, 5, 1): "Święto Pracy",
+    date(2023, 5, 3): "Święto Konstytucji 3 Maja",
+    date(2023, 6, 8): "Boże Ciało",
+    date(2023, 8, 15): "Święto Wojska Polskiego",
+    date(2023, 11, 1): "Wszystkich Świętych",
+    date(2023, 11, 11): "Święto Niepodległości",
+    date(2023, 12, 24): "Wigilia",
+    date(2023, 12, 25): "Boże Narodzenie",
+    date(2023, 12, 26): "Drugi Dzień Świąt",
+    date(2023, 12, 31): "Sylwester",
+    # --- 2024 ---
+    date(2024, 1, 1): "Nowy Rok",
+    date(2024, 1, 6): "Trzech Króli",
     date(2024, 3, 31): "Niedziela Wielkanocna",
     date(2024, 4, 1): "Poniedziałek Wielkanocny",
     date(2024, 5, 1): "Święto Pracy",
@@ -66,14 +83,21 @@ MANUALNA_MAPA_SWIAT = {
     date(2024, 12, 26): "Drugi Dzień Świąt",
     date(2024, 12, 31): "Sylwester",
 
-    # --- Przykłady 2025 ---
+    # --- 2025 ---
     date(2025, 1, 1): "Nowy Rok",
     date(2025, 1, 6): "Trzech Króli",
     date(2025, 4, 20): "Niedziela Wielkanocna",
     date(2025, 4, 21): "Poniedziałek Wielkanocny",
-    # ... dodaj tutaj resztę świąt dla 2025 ...
+    date(2025, 5, 1): "Święto Pracy",
+    date(2025, 5, 3): "Święto Konstytucji 3 Maja",
+    date(2025, 5, 30): "Boże Ciało",
+    date(2025, 8, 15): "Święto Wojska Polskiego",
+    date(2025, 11, 1): "Wszystkich Świętych",
+    date(2025, 11, 11): "Święto Niepodległości",
     date(2025, 12, 24): "Wigilia",
-    # ... itd.
+    date(2025, 12, 25): "Boże Narodzenie",
+    date(2025, 12, 26): "Drugi Dzień Świąt",
+    date(2025, 12, 31): "Sylwester",
 }
 
 
@@ -542,3 +566,4 @@ def shutdown_event():
     logger.info("Zamykanie klienta MQTT...")
     mqtt_client.loop_stop()
     mqtt_client.disconnect()
+
