@@ -56,13 +56,14 @@ MANUALNA_MAPA_SWIAT = {
 }
 
 
-# === Definicje tabel (Twoja oryginalna wersja, bez timezone=True) ===
+# === Definicje tabel (Oryginalna, "naiwna" struktura) ===
 
 class AktualnyStan(Base):
     __tablename__ = "aktualny_stan"
     sensor_id = Column(String, primary_key=True, index=True)
     status = Column(Integer, default=0)
-    ostatnia_aktualizacja = Column(DateTime, default=lambda: datetime.datetime.now(UTC))
+    # Ta kolumna będzie "naiwna", ale będziemy w niej zapisywać czas UTC
+    ostatnia_aktualizacja = Column(DateTime, default=datetime.datetime.utcnow)
 
 class DaneHistoryczne(Base):
     __tablename__ = "dane_historyczne"
@@ -79,14 +80,11 @@ class DaneSwieta(Base):
     status = Column(Integer)
     nazwa_swieta = Column(String, index=True) 
 
-# === USUNIĘTA TABELA OstatniStanBramki ===
-# (Zastąpiona nową logiką w /aktualny_stan)
-
 class ObserwowaneMiejsca(Base):
     __tablename__ = "obserwowane_miejsca"
     device_token = Column(String, primary_key=True, index=True)
     sensor_id = Column(String, index=True)
-    czas_dodania = Column(DateTime, default=lambda: datetime.datetime.now(UTC))
+    czas_dodania = Column(DateTime, default=datetime.datetime.utcnow)
 
 # =======================================================
 
@@ -189,7 +187,6 @@ def calculate_occupancy_stats(sensor_prefix: str, selected_date_obj: datetime.da
     
     for rekord in wszystkie_dane_dla_sensora:
         czas_rekordu_dt_utc = rekord.czas_pomiaru
-        # Baza przechowuje czas "naiwny" (bez strefy), więc traktujemy go jako UTC
         if czas_rekordu_dt_utc.tzinfo is None:
             czas_rekordu_dt_utc = czas_rekordu_dt_utc.replace(tzinfo=UTC)
         
@@ -237,7 +234,7 @@ def read_root():
 def obserwuj_miejsce(request: ObserwujRequest, db: Session = Depends(get_db)):
     token = request.device_token
     sensor_id = request.sensor_id
-    teraz = datetime.datetime.now(datetime.timezone.utc)
+    teraz = datetime.datetime.utcnow() # POPRAWKA: Używamy naiwnego UTC
     
     miejsce_db = db.query(AktualnyStan).filter(AktualnyStan.sensor_id == sensor_id).first()
     
@@ -314,12 +311,11 @@ def pobierz_prognoze_dla_wszystkich(
 
 
 # === UPROSZCZONA FUNKCJA PRZETWARZANIA DANYCH ===
-def process_parking_update(dane_z_bramki: dict, db: Session, teraz_utc: datetime.datetime):
+def process_parking_update(dane_z_bramki: dict, db: Session, teraz_utc_naiwny: datetime.datetime):
     
     # === SPRAWDŹ CZY TO WIADOMOŚĆ OD CZUJNIKA ===
     if "sensor_id" in dane_z_bramki:
         try:
-            # Waliduj format
             dane_czujnika = WymaganyFormat(**dane_z_bramki)
             sensor_id = dane_czujnika.sensor_id
             nowy_status = dane_czujnika.status
@@ -328,17 +324,19 @@ def process_parking_update(dane_z_bramki: dict, db: Session, teraz_utc: datetime
             return {"status": "błąd walidacji czujnika"}
 
         # Logika zapisu danych historycznych
-        teraz_pl_date = teraz_utc.astimezone(PL_TZ).date()
+        # Konwertujemy 'teraz_utc_naiwny' na 'świadomy', aby poprawnie obliczyć czas PL
+        teraz_utc_swiadomy = teraz_utc_naiwny.replace(tzinfo=UTC)
+        teraz_pl_date = teraz_utc_swiadomy.astimezone(PL_TZ).date()
         nazwa_swieta = MANUALNA_MAPA_SWIAT.get(teraz_pl_date)
         
         if nazwa_swieta:
             nowy_rekord = DaneSwieta(
-                czas_pomiaru=teraz_utc, sensor_id=sensor_id, 
+                czas_pomiaru=teraz_utc_naiwny, sensor_id=sensor_id, 
                 status=nowy_status, nazwa_swieta=nazwa_swieta
             )
         else:
             nowy_rekord = DaneHistoryczne(
-                czas_pomiaru=teraz_utc, sensor_id=sensor_id, status=nowy_status
+                czas_pomiaru=teraz_utc_naiwny, sensor_id=sensor_id, status=nowy_status
             )
         db.add(nowy_rekord)
         
@@ -348,10 +346,10 @@ def process_parking_update(dane_z_bramki: dict, db: Session, teraz_utc: datetime
         if miejsce_db:
             poprzedni_status = miejsce_db.status
             miejsce_db.status = nowy_status
-            miejsce_db.ostatnia_aktualizacja = teraz_utc
+            miejsce_db.ostatnia_aktualizacja = teraz_utc_naiwny
         else:
             nowe_miejsce = AktualnyStan(
-                sensor_id=sensor_id, status=nowy_status, ostatnia_aktualizacja=teraz_utc
+                sensor_id=sensor_id, status=nowy_status, ostatnia_aktualizacja=teraz_utc_naiwny
             )
             db.add(nowe_miejsce)
             
@@ -361,7 +359,8 @@ def process_parking_update(dane_z_bramki: dict, db: Session, teraz_utc: datetime
             limit_czasu_obserwacji = datetime.timedelta(minutes=30)
             obserwatorzy = db.query(ObserwowaneMiejsca).filter(
                 ObserwowaneMiejsca.sensor_id == sensor_id,
-                (teraz_utc - ObserwowaneMiejsca.czas_dodania) < limit_czasu_obserwacji
+                # Porównujemy dwa naiwne czasy UTC
+                (teraz_utc_naiwny - ObserwowaneMiejsca.czas_dodania) < limit_czasu_obserwacji
             ).all()
             tokeny_do_usuniecia = []
             for obserwator in obserwatorzy:
@@ -375,14 +374,10 @@ def process_parking_update(dane_z_bramki: dict, db: Session, teraz_utc: datetime
         db.commit()
         return {"status": "zapisano"}
 
-    # === IGNORUJ WIADOMOŚCI HEARTBEAT ===
     elif "gateway_id" in dane_z_bramki:
-        # Ta logika jest już niepotrzebna, ale zostawiamy ją, 
-        # aby bramki wysyłające heartbeat nie generowały błędu.
         logger.info(f"Odebrano i zignorowano heartbeat bramki: {dane_z_bramki.get('gateway_id')}")
         return {"status": "heartbeat zignorowany"}
     
-    # === OBSŁUGA INNYCH FORMATÓW ===
     else:
         logger.warning(f"Odebrano nieznany format danych: {dane_z_bramki}")
         return {"status": "nieznany format"}
@@ -391,7 +386,9 @@ def process_parking_update(dane_z_bramki: dict, db: Session, teraz_utc: datetime
 # Endpoint dla BRAMKI (HTTP Fallback)
 @app.put("/api/v1/miejsce_parkingowe/aktualizuj", dependencies=[Depends(check_api_key)])
 async def aktualizuj_miejsce_http(request: Request, db: Session = Depends(get_db)):
-    teraz = datetime.datetime.now(datetime.timezone.utc)
+    # === POPRAWKA ===
+    teraz_naiwny_utc = datetime.datetime.utcnow() # Używamy naiwnego UTC
+    
     body_bytes = await request.body()
     raw_json_str = body_bytes.decode('latin-1').strip().replace('\x00', '')
     logger.info(f"Odebrano surowy payload (HTTP): {repr(raw_json_str)}") 
@@ -403,16 +400,15 @@ async def aktualizuj_miejsce_http(request: Request, db: Session = Depends(get_db
         logger.error(f"BŁĄD PARSOWANIA/WALIDACJI JSON (HTTP): {e} | Surowe dane: {repr(raw_json_str)}")
         raise HTTPException(status_code=400, detail=f"Niepoprawny format danych JSON. Szczegóły: {e}")
         
-    return process_parking_update(dane, db, teraz)
+    return process_parking_update(dane, db, teraz_naiwny_utc)
 
 
-# === NOWY ENDPOINT DLA APLIKACJI (Publiczny) ===
+# === POPRAWIONY ENDPOINT DLA APLIKACJI (Publiczny) ===
 @app.get("/api/v1/aktualny_stan")
 def pobierz_aktualny_stan(db: Session = Depends(get_db)):
     
     # === KLUCZOWA ZMIANA ===
     # Używamy datetime.datetime.utcnow() (NAIWNY czas UTC)
-    # aby pasował do "naiwnych" czasów przechowywanych w bazie danych.
     teraz_naiwny_utc = datetime.datetime.utcnow() 
     
     limit_czasu = datetime.timedelta(minutes=3)
@@ -459,7 +455,8 @@ def on_connect(client, userdata, flags, rc):
 
 # === FUNKCJA on_message (przekazuje słownik) ===
 def on_message(client, userdata, msg):
-    teraz = datetime.datetime.now(datetime.timezone.utc) # Czas 'aware' dla zapisu
+    # === POPRAWKA ===
+    teraz_naiwny_utc = datetime.datetime.utcnow() # Używamy naiwnego UTC
     db = None 
     try:
         raw_json_str = msg.payload.decode('utf-8').strip().replace('\x00', '')
@@ -469,7 +466,7 @@ def on_message(client, userdata, msg):
         db = next(get_db())
         
         # Przekaż surowy słownik do nowej funkcji
-        process_parking_update(dane_slownik, db, teraz) 
+        process_parking_update(dane_slownik, db, teraz_naiwny_utc) 
         
     except json.JSONDecodeError as e:
         logger.error(f"BŁĄD PARSOWANIA JSON (MQTT): {e} | Surowe dane: {repr(raw_json_str)}")
