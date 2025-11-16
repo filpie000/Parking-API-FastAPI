@@ -399,10 +399,9 @@ async def aktualizuj_miejsce_http(request: Request, db: Session = Depends(get_db
 @app.get("/api/v1/aktualny_stan")
 def pobierz_aktualny_stan(db: Session = Depends(get_db)):
     
+    # 1. Obliczamy punkt odcięcia (teraz - 3 minuty) W PYTHONE
     teraz_naiwny_utc = datetime.datetime.utcnow() 
     limit_czasu = datetime.timedelta(minutes=3)
-    
-    # 1. Obliczamy punkt odcięcia (teraz - 3 minuty) W PYTHONE
     czas_odciecia = teraz_naiwny_utc - limit_czasu
     
     # 2. Znajdź wszystkie sensory, które mają status 0 lub 1
