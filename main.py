@@ -395,34 +395,45 @@ async def aktualizuj_miejsce_http(request: Request, db: Session = Depends(get_db
     return process_parking_update(dane, db, teraz_naiwny_utc)
 
 
-# === NOWY ENDPOINT DLA APLIKACJI (Publiczny) ===
+# === OSTATECZNA POPRAWKA ENDPOINTU DLA APLIKACJI ===
 @app.get("/api/v1/aktualny_stan")
 def pobierz_aktualny_stan(db: Session = Depends(get_db)):
     
-    teraz_naiwny_utc = datetime.datetime.utcnow() 
+    # 1. Ustalamy punkt odcięcia (teraz minus 3 minuty)
+    #    Używamy `utcnow()` dla spójności z zapisem.
+    teraz_naiwny_utc = datetime.datetime.utcnow()
     limit_czasu = datetime.timedelta(minutes=3)
+    czas_odciecia = teraz_naiwny_utc - limit_czasu
     
-    # 1. Znajdź sensory, które są "przestarzałe"
+    # 2. Znajdź wszystkie sensory, które nie są 'Nieznane',
+    #    ale ich ostatnia aktualizacja jest starsza niż nasz 'czas_odciecia'
+    #    LUB jest pusta (NULL).
+    
+    #    To zapytanie jest proste i niezawodne:
+    #    SELECT * FROM aktualny_stan 
+    #    WHERE status != 2 
+    #    AND (ostatnia_aktualizacja IS NULL OR ostatnia_aktualizacja < 'YYYY-MM-DD HH:MM:SS')
+    
     sensory_offline = db.query(AktualnyStan).filter(
         AktualnyStan.status != 2, 
         (
             (AktualnyStan.ostatnia_aktualizacja == None) |
-            (teraz_naiwny_utc - AktualnyStan.ostatnia_aktualizacja > limit_czasu)
+            (AktualnyStan.ostatnia_aktualizacja < czas_odciecia)
         )
     ).all()
 
-    # 2. Zaktualizuj je w pętli (bardziej niezawodne niż bulk update)
+    # 3. Zaktualizuj je w pętli (bardziej niezawodne niż bulk update)
     if sensory_offline:
         ids_do_zmiany = [s.sensor_id for s in sensory_offline]
         logger.warning(f"Sensory offline (brak aktualizacji > 3 min): {ids_do_zmiany}. Ustawiam status 2.")
         
         for sensor in sensory_offline:
             sensor.status = 2
-            sensor.ostatnia_aktualizacja = teraz_naiwny_utc
+            sensor.ostatnia_aktualizacja = teraz_naiwny_utc # Zaktualizuj też czas, by nie sprawdzać w kółko
         
         db.commit() # Zapisz zmiany
     
-    # 3. Zwróć *cały* stan (już zaktualizowany)
+    # 4. Zwróć *cały* stan (już zaktualizowany)
     wszystkie_miejsca = db.query(AktualnyStan).all()
     return wszystkie_miejsca
 
