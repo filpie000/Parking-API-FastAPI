@@ -114,7 +114,7 @@ app = FastAPI(title="Parking API")
 @app.get("/")
 def read_root():
     """Zwraca komunikat powitalny na głównym adresie URL."""
-    return {"message": "Witaj! API do parkingu działa poprawnie."}
+    return {"API działa poprawnie."}
 
 app.add_middleware(
     CORSMiddleware,
@@ -490,3 +490,4 @@ def shutdown_event():
     logger.info("Zatrzymywanie klienta MQTT...")
     mqtt_client.loop_stop()
     mqtt_client.disconnect()
+
