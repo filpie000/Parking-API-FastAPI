@@ -365,19 +365,29 @@ async def aktualizuj_miejsce_http(request: Request, db: Session = Depends(get_db
 
 @app.get("/api/v1/aktualny_stan")
 @app.get("/api/v1/aktualny_stan")
+@app.get("/api/v1/aktualny_stan")
 def pobierz_aktualny_stan(db: Session = Depends(get_db)):
 
-    # wszystkie czasy traktujemy jako UTC
     teraz_utc = datetime.datetime.utcnow()
     czas_odciecia = teraz_utc - datetime.timedelta(minutes=3)
 
-    wszystkie = db.query(AktualnyStan).all()
+    sensory = db.query(AktualnyStan).all()
     zmiany = []
 
-    for sensor in wszystkie:
-        ost = sensor.ostatnia_aktualizacja  # to jest UTC BEZ TZ
+    for sensor in sensory:
+        ost = sensor.ostatnia_aktualizacja
 
-        if ost is None or ost < czas_odciecia:
+        if ost is None:
+            sensor.status = 2
+            sensor.ostatnia_aktualizacja = teraz_utc
+            zmiany.append(sensor.sensor_id)
+            continue
+
+        # traktujemy zapisane wartości jako CZAS POLSKI
+        ost_pl = ost.replace(tzinfo=PL_TZ)
+        ost_utc = ost_pl.astimezone(datetime.timezone.utc)
+
+        if ost_utc < czas_odciecia:
             sensor.status = 2
             sensor.ostatnia_aktualizacja = teraz_utc
             zmiany.append(sensor.sensor_id)
@@ -386,6 +396,7 @@ def pobierz_aktualny_stan(db: Session = Depends(get_db)):
         db.commit()
 
     return db.query(AktualnyStan).all()
+
 
 
 # === MQTT ===
@@ -427,4 +438,5 @@ async def startup_event():
 def shutdown_event():
     mqtt_client.loop_stop()
     mqtt_client.disconnect()
+
 
