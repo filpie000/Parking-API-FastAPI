@@ -7,7 +7,6 @@ from typing import Optional, List, Dict
 from zoneinfo import ZoneInfo
 from datetime import date
 from fastapi import FastAPI, Depends, HTTPException, Header, Request
-# Importujemy 'DateTime' bezpośrednio z sqlalchemy, aby użyć opcji timezone=True
 from sqlalchemy import create_engine, Column, Integer, String, DateTime
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, Session
@@ -42,7 +41,7 @@ SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 
 # === STAŁE APLIKACJI ===
-GRUPY_SENSOROW = ["EURO", "BUD"] # Nadal potrzebne do prognoz
+GRUPY_SENSOROW = ["EURO", "BUD"]
 
 # === RĘCZNA MAPA ŚWIĄT ===
 MANUALNA_MAPA_SWIAT = {
@@ -57,37 +56,37 @@ MANUALNA_MAPA_SWIAT = {
 }
 
 
-# === Definicje tabel (z POPRAWKĄ timezone=True) ===
+# === Definicje tabel (Twoja oryginalna wersja, bez timezone=True) ===
 
 class AktualnyStan(Base):
     __tablename__ = "aktualny_stan"
     sensor_id = Column(String, primary_key=True, index=True)
     status = Column(Integer, default=0)
-    ostatnia_aktualizacja = Column(DateTime(timezone=True), default=lambda: datetime.datetime.now(UTC))
+    ostatnia_aktualizacja = Column(DateTime, default=lambda: datetime.datetime.now(UTC))
 
 class DaneHistoryczne(Base):
     __tablename__ = "dane_historyczne"
     id = Column(Integer, primary_key=True, autoincrement=True)
-    czas_pomiaru = Column(DateTime(timezone=True), index=True) 
+    czas_pomiaru = Column(DateTime, index=True) 
     sensor_id = Column(String, index=True)
     status = Column(Integer)
 
 class DaneSwieta(Base):
     __tablename__ = "dane_swieta"
     id = Column(Integer, primary_key=True, autoincrement=True)
-    czas_pomiaru = Column(DateTime(timezone=True), index=True) 
+    czas_pomiaru = Column(DateTime, index=True) 
     sensor_id = Column(String, index=True)
     status = Column(Integer)
     nazwa_swieta = Column(String, index=True) 
 
 # === USUNIĘTA TABELA OstatniStanBramki ===
-# (Już nie jest potrzebna)
+# (Zastąpiona nową logiką w /aktualny_stan)
 
 class ObserwowaneMiejsca(Base):
     __tablename__ = "obserwowane_miejsca"
     device_token = Column(String, primary_key=True, index=True)
     sensor_id = Column(String, index=True)
-    czas_dodania = Column(DateTime(timezone=True), default=lambda: datetime.datetime.now(UTC))
+    czas_dodania = Column(DateTime, default=lambda: datetime.datetime.now(UTC))
 
 # =======================================================
 
@@ -190,8 +189,10 @@ def calculate_occupancy_stats(sensor_prefix: str, selected_date_obj: datetime.da
     
     for rekord in wszystkie_dane_dla_sensora:
         czas_rekordu_dt_utc = rekord.czas_pomiaru
+        # Baza przechowuje czas "naiwny" (bez strefy), więc traktujemy go jako UTC
         if czas_rekordu_dt_utc.tzinfo is None:
             czas_rekordu_dt_utc = czas_rekordu_dt_utc.replace(tzinfo=UTC)
+        
         czas_rekordu_dt_pl = czas_rekordu_dt_utc.astimezone(PL_TZ)
 
         if not nazwa_swieta:
@@ -376,6 +377,8 @@ def process_parking_update(dane_z_bramki: dict, db: Session, teraz_utc: datetime
 
     # === IGNORUJ WIADOMOŚCI HEARTBEAT ===
     elif "gateway_id" in dane_z_bramki:
+        # Ta logika jest już niepotrzebna, ale zostawiamy ją, 
+        # aby bramki wysyłające heartbeat nie generowały błędu.
         logger.info(f"Odebrano i zignorowano heartbeat bramki: {dane_z_bramki.get('gateway_id')}")
         return {"status": "heartbeat zignorowany"}
     
@@ -395,43 +398,46 @@ async def aktualizuj_miejsce_http(request: Request, db: Session = Depends(get_db
     
     try:
         dane = json.loads(raw_json_str)
-        # Szybka walidacja, czy to format czujnika
         _ = WymaganyFormat(**dane) 
     except Exception as e: 
         logger.error(f"BŁĄD PARSOWANIA/WALIDACJI JSON (HTTP): {e} | Surowe dane: {repr(raw_json_str)}")
         raise HTTPException(status_code=400, detail=f"Niepoprawny format danych JSON. Szczegóły: {e}")
         
-    # Przekazujemy 'dane' (słownik)
     return process_parking_update(dane, db, teraz)
 
 
 # === NOWY ENDPOINT DLA APLIKACJI (Publiczny) ===
 @app.get("/api/v1/aktualny_stan")
 def pobierz_aktualny_stan(db: Session = Depends(get_db)):
-    teraz = datetime.datetime.now(datetime.timezone.utc) # Czas 'aware'
+    
+    # === KLUCZOWA ZMIANA ===
+    # Używamy datetime.datetime.utcnow() (NAIWNY czas UTC)
+    # aby pasował do "naiwnych" czasów przechowywanych w bazie danych.
+    teraz_naiwny_utc = datetime.datetime.utcnow() 
+    
     limit_czasu = datetime.timedelta(minutes=3)
     
     # 1. Znajdź wszystkie sensory, które nie są 'Nieznane' (status 0 lub 1)
     #    ALE ich ostatnia aktualizacja jest starsza niż 3 minuty LUB jest pusta (NULL).
-    #    Używamy `AktualnyStan.ostatnia_aktualizacja` (kolumna `timezone=True`)
     
+    # To zapytanie porównuje teraz dwa "naiwne" czasy, co jest poprawne.
     sensory_offline = db.query(AktualnyStan).filter(
-        AktualnyStan.status != 2, # Sprawdź tylko te, które obecnie są 0 lub 1
+        AktualnyStan.status != 2, 
         (
-            (AktualnyStan.ostatnia_aktualizacja == None) |  # Jeśli nigdy nie raportowały
-            (teraz - AktualnyStan.ostatnia_aktualizacja > limit_czasu) # Jeśli raportowały dawno temu
+            (AktualnyStan.ostatnia_aktualizacja == None) |
+            (teraz_naiwny_utc - AktualnyStan.ostatnia_aktualizacja > limit_czasu)
         )
-    ).all() # Pobierz listę
+    ).all()
 
     # 2. Jeśli znaleziono takie sensory, zaktualizuj je
     if sensory_offline:
         ids_do_zmiany = [s.sensor_id for s in sensory_offline]
         logger.warning(f"Sensory offline (brak aktualizacji > 3 min): {ids_do_zmiany}. Ustawiam status 2.")
         
-        # Używamy pętli, aby update działał poprawnie (chociaż update na query też by zadziałał)
+        # Aktualizujemy status na 2 i timestamp, aby nie sprawdzać ich ponownie
         db.query(AktualnyStan).filter(
             AktualnyStan.sensor_id.in_(ids_do_zmiany)
-        ).update({"status": 2, "ostatnia_aktualizacja": teraz}, synchronize_session=False)
+        ).update({"status": 2, "ostatnia_aktualizacja": teraz_naiwny_utc}, synchronize_session=False)
         
         db.commit()
     
@@ -453,7 +459,7 @@ def on_connect(client, userdata, flags, rc):
 
 # === FUNKCJA on_message (przekazuje słownik) ===
 def on_message(client, userdata, msg):
-    teraz = datetime.datetime.now(datetime.timezone.utc)
+    teraz = datetime.datetime.now(datetime.timezone.utc) # Czas 'aware' dla zapisu
     db = None 
     try:
         raw_json_str = msg.payload.decode('utf-8').strip().replace('\x00', '')
