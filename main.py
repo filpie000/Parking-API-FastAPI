@@ -395,45 +395,45 @@ async def aktualizuj_miejsce_http(request: Request, db: Session = Depends(get_db
     return process_parking_update(dane, db, teraz_naiwny_utc)
 
 
-# === OSTATECZNA POPRAWKA ENDPOINTU DLA APLIKACJI ===
+# === POPRAWIONY ENDPOINT DLA APLIKACJI (Publiczny) ===
 @app.get("/api/v1/aktualny_stan")
 def pobierz_aktualny_stan(db: Session = Depends(get_db)):
     
-    # 1. Ustalamy punkt odcięcia (teraz minus 3 minuty)
-    #    Używamy `utcnow()` dla spójności z zapisem.
-    teraz_naiwny_utc = datetime.datetime.utcnow()
+    teraz_naiwny_utc = datetime.datetime.utcnow() 
     limit_czasu = datetime.timedelta(minutes=3)
+    
+    # 1. Obliczamy punkt odcięcia (teraz - 3 minuty) W PYTHONE
     czas_odciecia = teraz_naiwny_utc - limit_czasu
     
-    # 2. Znajdź wszystkie sensory, które nie są 'Nieznane',
-    #    ale ich ostatnia aktualizacja jest starsza niż nasz 'czas_odciecia'
-    #    LUB jest pusta (NULL).
-    
-    #    To zapytanie jest proste i niezawodne:
-    #    SELECT * FROM aktualny_stan 
-    #    WHERE status != 2 
-    #    AND (ostatnia_aktualizacja IS NULL OR ostatnia_aktualizacja < 'YYYY-MM-DD HH:MM:SS')
-    
-    sensory_offline = db.query(AktualnyStan).filter(
-        AktualnyStan.status != 2, 
-        (
-            (AktualnyStan.ostatnia_aktualizacja == None) |
-            (AktualnyStan.ostatnia_aktualizacja < czas_odciecia)
-        )
+    # 2. Znajdź wszystkie sensory, które mają status 0 lub 1
+    sensory_do_sprawdzenia = db.query(AktualnyStan).filter(
+        AktualnyStan.status != 2
     ).all()
-
-    # 3. Zaktualizuj je w pętli (bardziej niezawodne niż bulk update)
-    if sensory_offline:
-        ids_do_zmiany = [s.sensor_id for s in sensory_offline]
-        logger.warning(f"Sensory offline (brak aktualizacji > 3 min): {ids_do_zmiany}. Ustawiam status 2.")
-        
-        for sensor in sensory_offline:
-            sensor.status = 2
-            sensor.ostatnia_aktualizacja = teraz_naiwny_utc # Zaktualizuj też czas, by nie sprawdzać w kółko
-        
-        db.commit() # Zapisz zmiany
     
-    # 4. Zwróć *cały* stan (już zaktualizowany)
+    ids_do_zmiany = []
+    
+    # 3. Sprawdź je w pętli w Pythonie (nie w SQL)
+    #    To jest "głupie", ale niezawodne i omija błędy stref czasowych.
+    for sensor in sensory_do_sprawdzenia:
+        if sensor.ostatnia_aktualizacja is None:
+            # Jeśli nigdy nie raportował, oznacz jako nieznany
+            ids_do_zmiany.append(sensor.sensor_id)
+            sensor.status = 2
+            sensor.ostatnia_aktualizacja = teraz_naiwny_utc
+        
+        elif sensor.ostatnia_aktualizacja < czas_odciecia:
+            # Jeśli jest przestarzały, oznacz jako nieznany
+            ids_do_zmiany.append(sensor.sensor_id)
+            sensor.status = 2
+            sensor.ostatnia_aktualizacja = teraz_naiwny_utc # Zaktualizuj czas, by nie sprawdzać w kółko
+
+    # 4. Jeśli znaleziono jakiekolwiek sensory do zmiany, zrób commit
+    if ids_do_zmiany:
+        logger.warning(f"Sensory offline (brak aktualizacji > 3 min): {ids_do_zmiany}. Ustawiam status 2.")
+        db.commit() # Zapisz zmiany w bazie
+    
+    # 5. Zwróć *cały* stan
+    #    Używamy nowego zapytania, aby mieć 100% pewności, że dane są świeże
     wszystkie_miejsca = db.query(AktualnyStan).all()
     return wszystkie_miejsca
 
