@@ -397,44 +397,39 @@ async def aktualizuj_miejsce_http(request: Request, db: Session = Depends(get_db
 
 # === POPRAWIONY ENDPOINT DLA APLIKACJI (Publiczny) ===
 @app.get("/api/v1/aktualny_stan")
+@app.get("/api/v1/aktualny_stan")
 def pobierz_aktualny_stan(db: Session = Depends(get_db)):
-    
-    # 1. Obliczamy punkt odcięcia (teraz - 3 minuty) W PYTHONE
-    teraz_naiwny_utc = datetime.datetime.utcnow() 
+    teraz_naiwny_utc = datetime.datetime.utcnow()
     limit_czasu = datetime.timedelta(minutes=3)
     czas_odciecia = teraz_naiwny_utc - limit_czasu
-    
-    # 2. Znajdź wszystkie sensory, które mają status 0 lub 1
-    sensory_do_sprawdzenia = db.query(AktualnyStan).filter(
-        AktualnyStan.status != 2
-    ).all()
-    
-    ids_do_zmiany = []
-    
-    # 3. Sprawdź je w pętli w Pythonie (nie w SQL)
-    #    To jest "głupie", ale niezawodne i omija błędy stref czasowych.
-    for sensor in sensory_do_sprawdzenia:
-        if sensor.ostatnia_aktualizacja is None:
-            # Jeśli nigdy nie raportował, oznacz jako nieznany
-            ids_do_zmiany.append(sensor.sensor_id)
+
+    # Pobierz wszystkie rekordy
+    wszystkie_sensory = db.query(AktualnyStan).all()
+
+    zmienione_sensory = []
+
+    for sensor in wszystkie_sensory:
+        ost = sensor.ostatnia_aktualizacja
+
+        # Jeżeli brak timestampu → uznaj za offline
+        if ost is None:
             sensor.status = 2
             sensor.ostatnia_aktualizacja = teraz_naiwny_utc
-        
-        elif sensor.ostatnia_aktualizacja < czas_odciecia:
-            # Jeśli jest przestarzały, oznacz jako nieznany
-            ids_do_zmiany.append(sensor.sensor_id)
-            sensor.status = 2
-            sensor.ostatnia_aktualizacja = teraz_naiwny_utc # Zaktualizuj czas, by nie sprawdzać w kółko
+            zmienione_sensory.append(sensor.sensor_id)
+            continue
 
-    # 4. Jeśli znaleziono jakiekolwiek sensory do zmiany, zrób commit
-    if ids_do_zmiany:
-        logger.warning(f"Sensory offline (brak aktualizacji > 3 min): {ids_do_zmiany}. Ustawiam status 2.")
-        db.commit() # Zapisz zmiany w bazie
-    
-    # 5. Zwróć *cały* stan
-    #    Używamy nowego zapytania, aby mieć 100% pewności, że dane są świeże
-    wszystkie_miejsca = db.query(AktualnyStan).all()
-    return wszystkie_miejsca
+        # Jeśli timestamp był zapisany jako naiwne UTC → nie ruszaj stref czasowych
+        if ost < czas_odciecia:
+            sensor.status = 2
+            sensor.ostatnia_aktualizacja = teraz_naiwny_utc
+            zmienione_sensory.append(sensor.sensor_id)
+
+    if zmienione_sensory:
+        logger.warning(f"Sensory OFFLINE (>3 min): {zmienione_sensory}")
+        db.commit()
+
+    return db.query(AktualnyStan).all()
+
 
 # =========================================================
 # === IMPLEMENTACJA KLIENTA MQTT ===
@@ -491,3 +486,4 @@ def shutdown_event():
     logger.info("Zamykanie klienta MQTT...")
     mqtt_client.loop_stop()
     mqtt_client.disconnect()
+
