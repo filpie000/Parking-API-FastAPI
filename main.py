@@ -374,6 +374,7 @@ def pobierz_prognoze_dla_wszystkich(
 
 
 # === NOWA FUNKCJA GŁÓWNA PRZETWARZANIA DANYCH (obsługuje dict) ===
+# === FUNKCJA GŁÓWNA PRZETWARZANIA DANYCH (Z LOGIKĄ "BUDZENIA") ===
 def process_parking_update(dane_z_bramki: dict, db: Session, teraz_utc: datetime.datetime):
     
     bramka_id_z_czujnika = "" # Domyślnie puste
@@ -390,19 +391,29 @@ def process_parking_update(dane_z_bramki: dict, db: Session, teraz_utc: datetime
         
         if bramka_id_z_czujnika in GRUPY_SENSOROW:
             logger.info(f"Odebrano heartbeat od bramki: {gateway_id_str} (Grupa: {bramka_id_z_czujnika})")
-            # Przechodzimy do kroku 3 (Aktualizacja OstatniStanBramki)
+
+            # === NOWA LOGIKA: "Obudź" sensory ze statusu 2 ===
+            # Skoro bramka żyje, jej sensory nie są już "Nieznane".
+            # Ustawiamy je domyślnie na 0 (Wolne). 
+            # Zostaną one nadpisane, gdy tylko czujnik wyśle prawdziwy status 1.
+            logger.info(f"Gateway {bramka_id_z_czujnika} jest ONLINE. Resetowanie statusu '2' (Nieznany) na '0' (Wolne)...")
+            db.query(AktualnyStan).filter(
+                AktualnyStan.sensor_id.startswith(bramka_id_z_czujnika),
+                AktualnyStan.status == 2 # Zmień tylko te, które utknęły na "Nieznany"
+            ).update({"status": 0}, synchronize_session=False)
+            # === KONIEC NOWEJ LOGIKI ===
+
         else:
             logger.warning(f"Odebrano heartbeat od nieznanej bramki: {gateway_id_str}")
             return {"status": "nieznana bramka"}
 
     # === 2. SPRAWDŹ CZY TO WIADOMOŚĆ OD CZUJNIKA ===
     elif "sensor_id" in dane_z_bramki:
-        # Dopiero tutaj robimy walidację Pydantic
         try:
             dane_czujnika = WymaganyFormat(**dane_z_bramki)
             sensor_id = dane_czujnika.sensor_id
             nowy_status = dane_czujnika.status
-        except Exception as e: # Przechwyć błąd walidacji (np. jeśli ktoś wyśle {"sensor_id": "TEST", "status": "online"})
+        except Exception as e: 
             logger.error(f"Błąd walidacji Pydantic dla wiadomości z czujnika: {e} | Dane: {dane_z_bramki}")
             return {"status": "błąd walidacji czujnika"}
 
@@ -452,7 +463,6 @@ def process_parking_update(dane_z_bramki: dict, db: Session, teraz_utc: datetime
                     ObserwowaneMiejsca.device_token.in_(tokeny_do_usuniecia)
                 ).delete(synchronize_session=False)
         
-        # Pobierz grupę z sensor_id (np. "BUD")
         bramka_id_z_czujnika = sensor_id.split('_')[0] 
     
     else:
@@ -460,7 +470,6 @@ def process_parking_update(dane_z_bramki: dict, db: Session, teraz_utc: datetime
         return {"status": "nieznany format"}
 
     # === 3. AKTUALIZACJA OSTATNIEGO KONTAKTU (WSPÓLNE DLA OBU TYPÓW WIADOMOŚCI) ===
-    # Ta część wykona się dla Heartbeatu (krok 1) LUB dla wiadomości z czujnika (krok 2)
     if bramka_id_z_czujnika in GRUPY_SENSOROW:
         bramka_db = db.query(OstatniStanBramki).filter(OstatniStanBramki.bramka_id == bramka_id_z_czujnika).first()
         if bramka_db:
@@ -471,7 +480,6 @@ def process_parking_update(dane_z_bramki: dict, db: Session, teraz_utc: datetime
     
     db.commit()
     return {"status": "zapisano"}
-
 
 # Endpoint dla BRAMKI (HTTP Fallback)
 @app.put("/api/v1/miejsce_parkingowe/aktualizuj", dependencies=[Depends(check_api_key)])
@@ -591,3 +599,4 @@ def shutdown_event():
     logger.info("Zamykanie klienta MQTT...")
     mqtt_client.loop_stop()
     mqtt_client.disconnect()
+
