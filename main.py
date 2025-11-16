@@ -60,6 +60,8 @@ MANUALNA_MAPA_SWIAT = {
 }
 
 # === Tabele ===
+# WAŻNE: DateTime(timezone=True) wymaga, aby kolumna w bazie danych
+# obsługiwała strefę czasową (np. 'timestamp with time zone' w PostgreSQL).
 
 class AktualnyStan(Base):
     __tablename__ = "aktualny_stan"
@@ -107,6 +109,12 @@ async def check_api_key(x_api_key: str = Header(None)):
         raise HTTPException(status_code=401, detail="Niepoprawny Klucz API")
 
 app = FastAPI(title="Parking API")
+
+# === ENDPOINT GŁÓWNY (/) ===
+@app.get("/")
+def read_root():
+    """Zwraca komunikat powitalny na głównym adresie URL."""
+    return {"message": "Witaj! API do parkingu działa poprawnie."}
 
 app.add_middleware(
     CORSMiddleware,
