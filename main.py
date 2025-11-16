@@ -7,7 +7,7 @@ from typing import Optional, List, Dict
 from zoneinfo import ZoneInfo
 from datetime import date
 from fastapi import FastAPI, Depends, HTTPException, Header, Request
-# WAŻNA ZMIANA: Importujemy 'DateTime' bezpośrednio z sqlalchemy, aby użyć opcji timezone=True
+# Importujemy 'DateTime' bezpośrednio z sqlalchemy, aby użyć opcji timezone=True
 from sqlalchemy import create_engine, Column, Integer, String, DateTime
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, Session
@@ -42,7 +42,7 @@ SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 
 # === STAŁE APLIKACJI ===
-GRUPY_SENSOROW = ["EURO", "BUD"]
+GRUPY_SENSOROW = ["EURO", "BUD"] # Nadal potrzebne do prognoz
 
 # === RĘCZNA MAPA ŚWIĄT ===
 MANUALNA_MAPA_SWIAT = {
@@ -57,43 +57,36 @@ MANUALNA_MAPA_SWIAT = {
 }
 
 
-# === Definicje tabel (Z POPRAWKĄ timezone=True) ===
+# === Definicje tabel (z POPRAWKĄ timezone=True) ===
 
 class AktualnyStan(Base):
     __tablename__ = "aktualny_stan"
     sensor_id = Column(String, primary_key=True, index=True)
     status = Column(Integer, default=0)
-    # POPRAWKA:
     ostatnia_aktualizacja = Column(DateTime(timezone=True), default=lambda: datetime.datetime.now(UTC))
 
 class DaneHistoryczne(Base):
     __tablename__ = "dane_historyczne"
     id = Column(Integer, primary_key=True, autoincrement=True)
-    # POPRAWKA:
-    czas_pomiaru = Column(DateTime(timezone=True), index=True) # Zwykłe dni (UTC)
+    czas_pomiaru = Column(DateTime(timezone=True), index=True) 
     sensor_id = Column(String, index=True)
     status = Column(Integer)
 
 class DaneSwieta(Base):
     __tablename__ = "dane_swieta"
     id = Column(Integer, primary_key=True, autoincrement=True)
-    # POPRAWKA:
-    czas_pomiaru = Column(DateTime(timezone=True), index=True) # Dane świąteczne (UTC)
+    czas_pomiaru = Column(DateTime(timezone=True), index=True) 
     sensor_id = Column(String, index=True)
     status = Column(Integer)
     nazwa_swieta = Column(String, index=True) 
 
-class OstatniStanBramki(Base):
-    __tablename__ = "ostatni_stan_bramki"
-    bramka_id = Column(String, primary_key=True) # Usunięty zbędny default
-    # POPRAWKA:
-    ostatni_kontakt = Column(DateTime(timezone=True)) # UTC
+# === USUNIĘTA TABELA OstatniStanBramki ===
+# (Już nie jest potrzebna)
 
 class ObserwowaneMiejsca(Base):
     __tablename__ = "obserwowane_miejsca"
     device_token = Column(String, primary_key=True, index=True)
     sensor_id = Column(String, index=True)
-    # POPRAWKA:
     czas_dodania = Column(DateTime(timezone=True), default=lambda: datetime.datetime.now(UTC))
 
 # =======================================================
@@ -148,7 +141,6 @@ def send_push_notification(token: str, sensor_id: str):
             "body": f"Miejsce {sensor_id}, do którego nawigujesz, zostało właśnie zajęte. Kliknij, aby znaleźć nowe.",
             "data": { "sensor_id": sensor_id, "action": "reroute" } 
         })
-        logger.info(f"Pomyślnie wysłano żądanie do Expo dla: {sensor_id}")
     except Exception as e:
         logger.error(f"BŁĄD KRYTYCZNY: Nie można wysłać PUSH przez Expo: {e}")
 
@@ -161,34 +153,30 @@ def get_time_with_offset(base_hour, offset_minutes):
 def calculate_occupancy_stats(sensor_prefix: str, selected_date_obj: datetime.date, selected_hour: int, db: Session) -> dict:
     
     nazwa_swieta = MANUALNA_MAPA_SWIAT.get(selected_date_obj)
-    
     query = None
     kategoria_str = ""
     dni_do_uwzglednienia = [] 
 
     if nazwa_swieta:
         kategoria_str = f"Dane historyczne dla: {nazwa_swieta}"
-        logger.info(f"Tryb statystyk: ŚWIĘTO. Szukam danych dla: {nazwa_swieta}")
         query = db.query(DaneSwieta).filter(
             DaneSwieta.sensor_id.startswith(sensor_prefix),
             DaneSwieta.nazwa_swieta == nazwa_swieta
         )
     else:
         selected_weekday = selected_date_obj.weekday()
-        
-        if 0 <= selected_weekday <= 3: # Poniedziałek - Czwartek
+        if 0 <= selected_weekday <= 3: 
             kategoria_str = "Dane historyczne dla: Dni robocze (Pon-Czw)"
             dni_do_uwzglednienia = [0, 1, 2, 3]
-        elif selected_weekday == 4: # Piątek
+        elif selected_weekday == 4:
             kategoria_str = "Dane historyczne dla: Piątek"
             dni_do_uwzglednienia = [4]
-        elif selected_weekday == 5: # Sobota
+        elif selected_weekday == 5:
             kategoria_str = "Dane historyczne dla: Sobota"
             dni_do_uwzglednienia = [5]
-        elif selected_weekday == 6: # Niedziela
+        elif selected_weekday == 6:
             kategoria_str = "Dane historyczne dla: Niedziela"
             dni_do_uwzglednienia = [6]
-            
         query = db.query(DaneHistoryczne).filter(
             DaneHistoryczne.sensor_id.startswith(sensor_prefix)
         )
@@ -203,9 +191,7 @@ def calculate_occupancy_stats(sensor_prefix: str, selected_date_obj: datetime.da
     for rekord in wszystkie_dane_dla_sensora:
         czas_rekordu_dt_utc = rekord.czas_pomiaru
         if czas_rekordu_dt_utc.tzinfo is None:
-            # To jest fallback, ale dzięki (timezone=True) nie powinien być potrzebny
             czas_rekordu_dt_utc = czas_rekordu_dt_utc.replace(tzinfo=UTC)
-
         czas_rekordu_dt_pl = czas_rekordu_dt_utc.astimezone(PL_TZ)
 
         if not nazwa_swieta:
@@ -221,7 +207,6 @@ def calculate_occupancy_stats(sensor_prefix: str, selected_date_obj: datetime.da
         else:
             if not (czas_poczatek <= czas_rekordu < czas_koniec):
                 continue
-                
         dane_pasujace.append(rekord.status)
 
     if not dane_pasujace:
@@ -256,7 +241,7 @@ def obserwuj_miejsce(request: ObserwujRequest, db: Session = Depends(get_db)):
     miejsce_db = db.query(AktualnyStan).filter(AktualnyStan.sensor_id == sensor_id).first()
     
     if not miejsce_db or miejsce_db.status != 0:
-        logger.warning(f"Odrzucono obserwację dla {sensor_id} (token: ...{token[-5:]}). Stan: {miejsce_db.status if miejsce_db else 'Nieznany'}")
+        logger.warning(f"Odrzucono obserwację dla {sensor_id}. Stan: {miejsce_db.status if miejsce_db else 'Nieznany'}")
         raise HTTPException(status_code=409, detail="Niestety, to miejsce zostało właśnie zajęte lub jest offline.")
     
     wpis = db.query(ObserwowaneMiejsca).filter(ObserwowaneMiejsca.device_token == token).first()
@@ -271,7 +256,7 @@ def obserwuj_miejsce(request: ObserwujRequest, db: Session = Depends(get_db)):
         )
         db.add(nowy_obserwator)
     db.commit()
-    logger.info(f"Rozpoczęto obserwację dla {sensor_id} (token: ...{token[-5:]})")
+    logger.info(f"Rozpoczęto obserwację dla {sensor_id}")
     return {"status": "obserwowanie rozpoczęte", "miejsce": sensor_id}
 
 
@@ -310,7 +295,6 @@ def pobierz_prognoze_dla_wszystkich(
             selected_hour = selected_hour_int
             use_fallback = False 
         except (ValueError, TypeError):
-            logger.warning(f"Niepoprawny format target_date ('{target_date}') lub target_hour ('{target_hour}'). Używam czasu 'teraz'.")
             use_fallback = True
 
     if use_fallback:
@@ -328,37 +312,13 @@ def pobierz_prognoze_dla_wszystkich(
     return prognozy
 
 
-# === FUNKCJA GŁÓWNA PRZETWARZANIA DANYCH (obsługuje dict) ===
+# === UPROSZCZONA FUNKCJA PRZETWARZANIA DANYCH ===
 def process_parking_update(dane_z_bramki: dict, db: Session, teraz_utc: datetime.datetime):
     
-    bramka_id_z_czujnika = "" 
-
-    # === 1. SPRAWDŹ CZY TO HEARTBEAT BRAMKI ===
-    if "gateway_id" in dane_z_bramki:
-        gateway_id_str = dane_z_bramki.get("gateway_id")
-        
-        if gateway_id_str == "Gate_1_BUD":
-            bramka_id_z_czujnika = "BUD"
-        elif gateway_id_str == "Gate_2_EURO":
-            bramka_id_z_czujnika = "EURO"
-        
-        if bramka_id_z_czujnika in GRUPY_SENSOROW:
-            logger.info(f"Odebrano heartbeat od bramki: {gateway_id_str} (Grupa: {bramka_id_z_czujnika})")
-
-            # === LOGIKA "BUDZENIA" SENSORÓW (z poprzedniej rozmowy) ===
-            logger.info(f"Gateway {bramka_id_z_czujnika} jest ONLINE. Resetowanie statusu '2' (Nieznany) na '0' (Wolne)...")
-            db.query(AktualnyStan).filter(
-                AktualnyStan.sensor_id.startswith(bramka_id_z_czujnika),
-                AktualnyStan.status == 2 
-            ).update({"status": 0}, synchronize_session=False)
-
-        else:
-            logger.warning(f"Odebrano heartbeat od nieznanej bramki: {gateway_id_str}")
-            return {"status": "nieznana bramka"}
-
-    # === 2. SPRAWDŹ CZY TO WIADOMOŚĆ OD CZUJNIKA ===
-    elif "sensor_id" in dane_z_bramki:
+    # === SPRAWDŹ CZY TO WIADOMOŚĆ OD CZUJNIKA ===
+    if "sensor_id" in dane_z_bramki:
         try:
+            # Waliduj format
             dane_czujnika = WymaganyFormat(**dane_z_bramki)
             sensor_id = dane_czujnika.sensor_id
             nowy_status = dane_czujnika.status
@@ -366,6 +326,7 @@ def process_parking_update(dane_z_bramki: dict, db: Session, teraz_utc: datetime
             logger.error(f"Błąd walidacji Pydantic dla wiadomości z czujnika: {e} | Dane: {dane_z_bramki}")
             return {"status": "błąd walidacji czujnika"}
 
+        # Logika zapisu danych historycznych
         teraz_pl_date = teraz_utc.astimezone(PL_TZ).date()
         nazwa_swieta = MANUALNA_MAPA_SWIAT.get(teraz_pl_date)
         
@@ -380,6 +341,7 @@ def process_parking_update(dane_z_bramki: dict, db: Session, teraz_utc: datetime
             )
         db.add(nowy_rekord)
         
+        # Logika aktualizacji AktualnyStan (UPSERT)
         miejsce_db = db.query(AktualnyStan).filter(AktualnyStan.sensor_id == sensor_id).first()
         poprzedni_status = -1
         if miejsce_db:
@@ -392,6 +354,7 @@ def process_parking_update(dane_z_bramki: dict, db: Session, teraz_utc: datetime
             )
             db.add(nowe_miejsce)
             
+        # Logika powiadomień PUSH
         if poprzedni_status != 1 and nowy_status == 1:
             logger.info(f"Wykryto zajęcie miejsca: {sensor_id}. Sprawdzanie obserwatorów...")
             limit_czasu_obserwacji = datetime.timedelta(minutes=30)
@@ -408,23 +371,18 @@ def process_parking_update(dane_z_bramki: dict, db: Session, teraz_utc: datetime
                     ObserwowaneMiejsca.device_token.in_(tokeny_do_usuniecia)
                 ).delete(synchronize_session=False)
         
-        bramka_id_z_czujnika = sensor_id.split('_')[0] 
+        db.commit()
+        return {"status": "zapisano"}
+
+    # === IGNORUJ WIADOMOŚCI HEARTBEAT ===
+    elif "gateway_id" in dane_z_bramki:
+        logger.info(f"Odebrano i zignorowano heartbeat bramki: {dane_z_bramki.get('gateway_id')}")
+        return {"status": "heartbeat zignorowany"}
     
+    # === OBSŁUGA INNYCH FORMATÓW ===
     else:
         logger.warning(f"Odebrano nieznany format danych: {dane_z_bramki}")
         return {"status": "nieznany format"}
-
-    # === 3. AKTUALIZACJA OSTATNIEGO KONTAKTU (WSPÓLNE DLA OBU TYPÓW WIADOMOŚCI) ===
-    if bramka_id_z_czujnika in GRUPY_SENSOROW:
-        bramka_db = db.query(OstatniStanBramki).filter(OstatniStanBramki.bramka_id == bramka_id_z_czujnika).first()
-        if bramka_db:
-            bramka_db.ostatni_kontakt = teraz_utc
-        else:
-            nowa_bramka = OstatniStanBramki(bramka_id=bramka_id_z_czujnika, ostatni_kontakt=teraz_utc)
-            db.add(nowa_bramka)
-    
-    db.commit()
-    return {"status": "zapisano"}
 
 
 # Endpoint dla BRAMKI (HTTP Fallback)
@@ -437,48 +395,47 @@ async def aktualizuj_miejsce_http(request: Request, db: Session = Depends(get_db
     
     try:
         dane = json.loads(raw_json_str)
-        # Walidujemy, czy to poprawny format czujnika
+        # Szybka walidacja, czy to format czujnika
         _ = WymaganyFormat(**dane) 
     except Exception as e: 
         logger.error(f"BŁĄD PARSOWANIA/WALIDACJI JSON (HTTP): {e} | Surowe dane: {repr(raw_json_str)}")
         raise HTTPException(status_code=400, detail=f"Niepoprawny format danych JSON. Szczegóły: {e}")
         
-    # Przekazujemy 'dane' (słownik), a nie obiekt Pydantic
+    # Przekazujemy 'dane' (słownik)
     return process_parking_update(dane, db, teraz)
 
 
-# Endpoint dla APLIKACJI (Publiczny)
+# === NOWY ENDPOINT DLA APLIKACJI (Publiczny) ===
 @app.get("/api/v1/aktualny_stan")
 def pobierz_aktualny_stan(db: Session = Depends(get_db)):
-    teraz = datetime.datetime.now(datetime.timezone.utc) # Ten czas jest 'aware'
+    teraz = datetime.datetime.now(datetime.timezone.utc) # Czas 'aware'
+    limit_czasu = datetime.timedelta(minutes=3)
     
-    for grupa in GRUPY_SENSOROW:
-        istnieje = db.query(OstatniStanBramki).filter(OstatniStanBramki.bramka_id == grupa).first()
-        if not istnieje:
-            logger.info(f"Inicjalizuję status bramki dla: {grupa}")
-            # Zapisujemy None, co jest OK
-            db.add(OstatniStanBramki(bramka_id=grupa, ostatni_kontakt=None))
-            db.commit()
-            
-    limit_czasu_bramki = datetime.timedelta(minutes=3)
+    # 1. Znajdź wszystkie sensory, które nie są 'Nieznane' (status 0 lub 1)
+    #    ALE ich ostatnia aktualizacja jest starsza niż 3 minuty LUB jest pusta (NULL).
+    #    Używamy `AktualnyStan.ostatnia_aktualizacja` (kolumna `timezone=True`)
     
-    # Porównujemy 'teraz' (aware) z 'OstatniStanBramki.ostatni_kontakt' (teraz też aware)
-    bramki_offline = db.query(OstatniStanBramki).filter(
-        (OstatniStanBramki.ostatni_kontakt == None) |
-        ((teraz - OstatniStanBramki.ostatni_kontakt) > limit_czasu_bramki)
-    ).all()
-    
-    ids_bramki_offline = [b.bramka_id for b in bramki_offline]
+    sensory_offline = db.query(AktualnyStan).filter(
+        AktualnyStan.status != 2, # Sprawdź tylko te, które obecnie są 0 lub 1
+        (
+            (AktualnyStan.ostatnia_aktualizacja == None) |  # Jeśli nigdy nie raportowały
+            (teraz - AktualnyStan.ostatnia_aktualizacja > limit_czasu) # Jeśli raportowały dawno temu
+        )
+    ).all() # Pobierz listę
 
-    if ids_bramki_offline:
-        logger.warning(f"Bramki offline: {ids_bramki_offline}. Ustawiam status 2.")
-        for b_id in ids_bramki_offline:
-            db.query(AktualnyStan).filter(
-                AktualnyStan.sensor_id.startswith(b_id),
-                AktualnyStan.status != 2 
-            ).update({"status": 2}, synchronize_session=False)
+    # 2. Jeśli znaleziono takie sensory, zaktualizuj je
+    if sensory_offline:
+        ids_do_zmiany = [s.sensor_id for s in sensory_offline]
+        logger.warning(f"Sensory offline (brak aktualizacji > 3 min): {ids_do_zmiany}. Ustawiam status 2.")
+        
+        # Używamy pętli, aby update działał poprawnie (chociaż update na query też by zadziałał)
+        db.query(AktualnyStan).filter(
+            AktualnyStan.sensor_id.in_(ids_do_zmiany)
+        ).update({"status": 2, "ostatnia_aktualizacja": teraz}, synchronize_session=False)
+        
+        db.commit()
     
-    db.commit()
+    # 3. Zwróć *cały* stan (już zaktualizowany)
     wszystkie_miejsca = db.query(AktualnyStan).all()
     return wszystkie_miejsca
 
@@ -494,7 +451,7 @@ def on_connect(client, userdata, flags, rc):
     else:
         logger.error(f"Nie udało się połączyć z MQTT, kod: {rc}")
 
-# === NOWA FUNKCJA on_message (nie waliduje, tylko przekazuje) ===
+# === FUNKCJA on_message (przekazuje słownik) ===
 def on_message(client, userdata, msg):
     teraz = datetime.datetime.now(datetime.timezone.utc)
     db = None 
