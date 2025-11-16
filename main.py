@@ -18,9 +18,15 @@ import paho.mqtt.client as mqtt
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Strefy czasowe
+# === Strefy czasowe ===
+# Zawsze używaj świadomych obiektów datetime!
 UTC = datetime.timezone.utc
 PL_TZ = ZoneInfo("Europe/Warsaw")
+
+# Funkcja pomocnicza do pobierania aktualnego czasu UTC
+def now_utc() -> datetime.datetime:
+    """Zwraca aktualny czas jako świadomy obiekt UTC."""
+    return datetime.datetime.now(UTC)
 
 # MQTT
 MQTT_BROKER = os.environ.get('MQTT_BROKER', 'broker.emqx.io')
@@ -59,19 +65,22 @@ class AktualnyStan(Base):
     __tablename__ = "aktualny_stan"
     sensor_id = Column(String, primary_key=True, index=True)
     status = Column(Integer, default=0)
-    ostatnia_aktualizacja = Column(DateTime, default=datetime.datetime.utcnow)
+    # Zapisuj domyślnie jako świadomy UTC
+    ostatnia_aktualizacja = Column(DateTime(timezone=True), default=now_utc)
 
 class DaneHistoryczne(Base):
     __tablename__ = "dane_historyczne"
     id = Column(Integer, primary_key=True, autoincrement=True)
-    czas_pomiaru = Column(DateTime, index=True)
+    # Zapisuj jako świadomy UTC
+    czas_pomiaru = Column(DateTime(timezone=True), index=True)
     sensor_id = Column(String, index=True)
     status = Column(Integer)
 
 class DaneSwieta(Base):
     __tablename__ = "dane_swieta"
     id = Column(Integer, primary_key=True, autoincrement=True)
-    czas_pomiaru = Column(DateTime, index=True)
+    # Zapisuj jako świadomy UTC
+    czas_pomiaru = Column(DateTime(timezone=True), index=True)
     sensor_id = Column(String, index=True)
     status = Column(Integer)
     nazwa_swieta = Column(String, index=True)
@@ -80,7 +89,8 @@ class ObserwowaneMiejsca(Base):
     __tablename__ = "obserwowane_miejsca"
     device_token = Column(String, primary_key=True, index=True)
     sensor_id = Column(String, index=True)
-    czas_dodania = Column(DateTime, default=datetime.datetime.utcnow)
+    # Zapisuj jako świadomy UTC
+    czas_dodania = Column(DateTime(timezone=True), default=now_utc)
 
 Base.metadata.create_all(bind=engine)
 
@@ -139,7 +149,7 @@ def send_push_notification(token: str, sensor_id: str):
     except Exception as e:
         logger.error(f"Błąd podczas wysyłania PUSH: {e}")
 
-# === STATYSTYKI (bez zmian) ===
+# === STATYSTYKI (Poprawiona obsługa stref czasowych) ===
 
 def get_time_with_offset(base_hour, offset_minutes):
     base_dt = datetime.datetime(2000, 1, 1, base_hour, 0)
@@ -184,10 +194,14 @@ def calculate_occupancy_stats(sensor_prefix: str, selected_date_obj: datetime.da
     dane_pasujace = []
 
     for rekord in wszystkie:
-        czas_utc = rekord.czas_pomiaru
-        if czas_utc.tzinfo is None:
-            czas_utc = czas_utc.replace(tzinfo=UTC)
-        czas_pl = czas_utc.astimezone(PL_TZ)
+        czas_rekordu_db = rekord.czas_pomiaru # Jest to świadomy UTC (nowe dane) lub naiwny PL (stare dane)
+
+        if czas_rekordu_db.tzinfo is None:
+            # STARE DANE: Traktujemy jako naiwny czas polski
+            czas_pl = czas_rekordu_db.replace(tzinfo=PL_TZ)
+        else:
+            # NOWE DANE: Zapisane jako świadomy UTC, konwertujemy do PL
+            czas_pl = czas_rekordu_db.astimezone(PL_TZ)
 
         if not nazwa_swieta:
             if czas_pl.weekday() not in dni_do_uwzglednienia:
@@ -223,13 +237,13 @@ def calculate_occupancy_stats(sensor_prefix: str, selected_date_obj: datetime.da
         "liczba_pomiarow": suma
     }
 
-# === ENDPOINT: OBSERWACJA ===
+# === ENDPOINT: OBSERWACJA (Zapisuje świadomy UTC) ===
 
 @app.post("/api/v1/obserwuj_miejsce")
 def obserwuj_miejsce(request: ObserwujRequest, db: Session = Depends(get_db)):
     token = request.device_token
     sensor_id = request.sensor_id
-    teraz = datetime.datetime.now(PL_TZ).replace(tzinfo=None)
+    teraz_utc = now_utc() # Używamy świadomego UTC
 
     miejsce = db.query(AktualnyStan).filter(AktualnyStan.sensor_id == sensor_id).first()
     if not miejsce or miejsce.status != 0:
@@ -238,9 +252,9 @@ def obserwuj_miejsce(request: ObserwujRequest, db: Session = Depends(get_db)):
     wpis = db.query(ObserwowaneMiejsca).filter(ObserwowaneMiejsca.device_token == token).first()
     if wpis:
         wpis.sensor_id = sensor_id
-        wpis.czas_dodania = teraz
+        wpis.czas_dodania = teraz_utc # Zapisz świadomy UTC
     else:
-        db.add(ObserwowaneMiejsca(device_token=token, sensor_id=sensor_id, czas_dodania=teraz))
+        db.add(ObserwowaneMiejsca(device_token=token, sensor_id=sensor_id, czas_dodania=teraz_utc)) # Zapisz świadomy UTC
 
     db.commit()
     return {"status": "ok"}
@@ -265,17 +279,19 @@ def pobierz_statystyki(z: StatystykiZapytanie, db: Session = Depends(get_db)):
 @app.get("/api/v1/prognoza/wszystkie_miejsca")
 def pobierz_prognoze(db: Session = Depends(get_db), target_date: Optional[str] = None, target_hour: Optional[int] = None):
     prognozy = {}
+    
+    teraz_pl = now_utc().astimezone(PL_TZ) # Pobierz aktualny czas w PL
 
     if target_date and target_hour is not None:
         try:
             dt = datetime.datetime.strptime(target_date, "%Y-%m-%d").date()
             hour = int(target_hour)
         except:
-            dt = datetime.datetime.now(PL_TZ).date()
-            hour = datetime.datetime.now(PL_TZ).hour
+            dt = teraz_pl.date()
+            hour = teraz_pl.hour
     else:
-        dt = datetime.datetime.now(PL_TZ).date()
-        hour = datetime.datetime.now(PL_TZ).hour
+        dt = teraz_pl.date()
+        hour = teraz_pl.hour
 
     for grupa in GRUPY_SENSOROW:
         try:
@@ -286,26 +302,32 @@ def pobierz_prognoze(db: Session = Depends(get_db), target_date: Optional[str] =
 
     return prognozy
 
-# === PRZETWARZANIE DANYCH Z BRAMKI ===
+# === PRZETWARZANIE DANYCH Z BRAMKI (Zapisuje świadomy UTC) ===
 
-def process_parking_update(dane: dict, db: Session, teraz_pl: datetime.datetime):
+def process_parking_update(dane: dict, db: Session):
+    """Przetwarza dane i zapisuje do bazy używając świadomego czasu UTC."""
+    
+    teraz_utc = now_utc() # Czas zapisu (zawsze UTC)
+    teraz_pl = teraz_utc.astimezone(PL_TZ) # Czas dla logiki (np. sprawdzanie świąt)
+
     if "sensor_id" in dane:
         dane_cz = WymaganyFormat(**dane)
         sensor_id = dane_cz.sensor_id
         nowy_status = dane_cz.status
 
+        # Sprawdzamy święto na podstawie daty w Polsce
         nazwa_swieta = MANUALNA_MAPA_SWIAT.get(teraz_pl.date())
 
         if nazwa_swieta:
             db.add(DaneSwieta(
-                czas_pomiaru=teraz_pl,
+                czas_pomiaru=teraz_utc, # Zapisz świadomy UTC
                 sensor_id=sensor_id,
                 status=nowy_status,
                 nazwa_swieta=nazwa_swieta
             ))
         else:
             db.add(DaneHistoryczne(
-                czas_pomiaru=teraz_pl,
+                czas_pomiaru=teraz_utc, # Zapisz świadomy UTC
                 sensor_id=sensor_id,
                 status=nowy_status
             ))
@@ -316,19 +338,21 @@ def process_parking_update(dane: dict, db: Session, teraz_pl: datetime.datetime)
         if miejsce:
             poprzedni = miejsce.status
             miejsce.status = nowy_status
-            miejsce.ostatnia_aktualizacja = teraz_pl
+            miejsce.ostatnia_aktualizacja = teraz_utc # Zapisz świadomy UTC
         else:
             db.add(AktualnyStan(
                 sensor_id=sensor_id,
                 status=nowy_status,
-                ostatnia_aktualizacja=teraz_pl
+                ostatnia_aktualizacja=teraz_utc # Zapisz świadomy UTC
             ))
 
         if poprzedni != 1 and nowy_status == 1:
             limit = datetime.timedelta(minutes=30)
+            
+            # Porównujemy świadomy czas UTC z bazy ze świadomym czasem UTC
             obserwatorzy = db.query(ObserwowaneMiejsca).filter(
                 ObserwowaneMiejsca.sensor_id == sensor_id,
-                (teraz_pl - ObserwowaneMiejsca.czas_dodania) < limit
+                (teraz_utc - ObserwowaneMiejsca.czas_dodania) < limit
             ).all()
 
             for o in obserwatorzy:
@@ -352,49 +376,57 @@ def process_parking_update(dane: dict, db: Session, teraz_pl: datetime.datetime)
 @app.put("/api/v1/miejsce_parkingowe/aktualizuj", dependencies=[Depends(check_api_key)])
 async def aktualizuj_miejsce_http(request: Request, db: Session = Depends(get_db)):
     raw = (await request.body()).decode("latin-1").replace("\x00", "")
-    teraz_pl = datetime.datetime.now(PL_TZ).replace(tzinfo=None)
-
+    
     try:
         dane = json.loads(raw)
     except:
         raise HTTPException(status_code=400, detail="Zły JSON")
+    
+    # Przekazujemy do zrefaktoryzowanej funkcji, która sama pobierze czas
+    return process_parking_update(dane, db)
 
-    return process_parking_update(dane, db, teraz_pl)
+# === POPRAWIONY ENDPOINT: AKTUALNY STAN (Logika 3 minut) ===
 
-# === POPRAWIONY ENDPOINT: AKTUALNY STAN ===
-
-@app.get("/api/v1/aktualny_stan")
-@app.get("/api/v1/aktualny_stan")
 @app.get("/api/v1/aktualny_stan")
 def pobierz_aktualny_stan(db: Session = Depends(get_db)):
 
-    teraz_utc = datetime.datetime.utcnow()
+    # Zawsze używaj świadomego czasu UTC do porównań
+    teraz_utc = now_utc()
     czas_odciecia = teraz_utc - datetime.timedelta(minutes=3)
 
     sensory = db.query(AktualnyStan).all()
     zmiany = []
 
     for sensor in sensory:
-        ost = sensor.ostatnia_aktualizacja
+        ost = sensor.ostatnia_aktualizacja # Powinien być świadomy UTC lub None
+        
+        jest_offline = False
 
         if ost is None:
-            sensor.status = 2
-            sensor.ostatnia_aktualizacja = teraz_utc
-            zmiany.append(sensor.sensor_id)
-            continue
+            # Nigdy nie zaktualizowany
+            jest_offline = True
+        else:
+            ost_utc = ost
+            if ost.tzinfo is None:
+                # STARE DANE: Były zapisane jako naiwny czas PL. Konwertujemy.
+                logger.warning(f"Sensor {sensor.sensor_id} ma stary, naiwny znacznik czasu. Konwertowanie.")
+                ost_utc = ost.replace(tzinfo=PL_TZ).astimezone(UTC)
 
-        # traktujemy zapisane wartości jako CZAS POLSKI
-        ost_pl = ost.replace(tzinfo=PL_TZ)
-        ost_utc = ost_pl.astimezone(datetime.timezone.utc)
+            # Teraz ost_utc jest na pewno świadomym czasem UTC
+            if ost_utc < czas_odciecia:
+                jest_offline = True
 
-        if ost_utc < czas_odciecia:
+        if jest_offline and sensor.status != 2:
             sensor.status = 2
-            sensor.ostatnia_aktualizacja = teraz_utc
+            # Aktualizujemy czas, aby nie spamować bazy danych przy każdym odświeżeniu
+            sensor.ostatnia_aktualizacja = teraz_utc 
             zmiany.append(sensor.sensor_id)
 
     if zmiany:
+        logger.info(f"Oznaczono {len(zmiany)} sensorów jako offline (status 2).")
         db.commit()
 
+    # Zwróć wszystkie sensory (ze zaktualizowanymi statusami)
     return db.query(AktualnyStan).all()
 
 
@@ -407,26 +439,37 @@ def on_connect(client, userdata, flags, rc):
     if rc == 0:
         logger.info("MQTT połączone")
         client.subscribe(MQTT_TOPIC_SUBSCRIBE)
+    else:
+        logger.error(f"Błąd połączenia MQTT, kod: {rc}")
 
 def on_message(client, userdata, msg):
     raw = msg.payload.decode("utf-8").replace("\x00", "")
-    teraz_pl = datetime.datetime.now(PL_TZ).replace(tzinfo=None)
-
+    
     try:
         dane = json.loads(raw)
-    except:
-        logger.error("Zły JSON MQTT")
+    except Exception as e:
+        logger.error(f"Zły JSON MQTT: {e} | Payload: {raw}")
         return
 
-    db = next(get_db())
-    process_parking_update(dane, db, teraz_pl)
-    db.close()
+    db = None
+    try:
+        db = next(get_db())
+        # Przekazujemy do zrefaktoryzowanej funkcji, która sama pobierze czas
+        process_parking_update(dane, db)
+    except Exception as e:
+        logger.error(f"Błąd podczas przetwarzania wiadomości MQTT: {e}")
+    finally:
+        if db:
+            db.close()
 
 def mqtt_listener_thread():
-    mqtt_client.on_connect = on_connect
-    mqtt_client.on_message = on_message
-    mqtt_client.connect(MQTT_BROKER, MQTT_PORT, 60)
-    mqtt_client.loop_start()
+    try:
+        mqtt_client.on_connect = on_connect
+        mqtt_client.on_message = on_message
+        mqtt_client.connect(MQTT_BROKER, MQTT_PORT, 60)
+        mqtt_client.loop_start()
+    except Exception as e:
+        logger.error(f"Nie można uruchomić wątku MQTT: {e}")
 
 @app.on_event("startup")
 async def startup_event():
@@ -436,7 +479,6 @@ async def startup_event():
 
 @app.on_event("shutdown")
 def shutdown_event():
+    logger.info("Zatrzymywanie klienta MQTT...")
     mqtt_client.loop_stop()
     mqtt_client.disconnect()
-
-
