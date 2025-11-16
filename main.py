@@ -187,28 +187,23 @@ def get_time_with_offset(base_hour, offset_minutes):
     offset_dt = base_dt + datetime.timedelta(minutes=offset_minutes)
     return offset_dt.time()
 
-# === WEWNĘTRZNA FUNKCJA DO OBLICZANIA STATYSTYK (ZAKTUALIZOWANA) ===
+# === WEWNĘTRZNA FUNKCJA DO OBLICZANIA STATYSTYK ===
 def calculate_occupancy_stats(sensor_prefix: str, selected_date_obj: datetime.date, selected_hour: int, db: Session) -> dict:
     
-    # Sprawdzamy, czy wybrana data jest w naszej RĘCZNEJ mapie
     nazwa_swieta = MANUALNA_MAPA_SWIAT.get(selected_date_obj)
     
     query = None
     kategoria_str = ""
-    # Lista dni tygodnia (0=Pon) do uwzględnienia w filtrze
     dni_do_uwzglednienia = [] 
 
     if nazwa_swieta:
-        # TRYB 1: Dzień specjalny (z mapy)
         kategoria_str = f"Dane historyczne dla: {nazwa_swieta}"
         logger.info(f"Tryb statystyk: ŚWIĘTO. Szukam danych dla: {nazwa_swieta}")
-        # Przeszukujemy NOWĄ tabelę i filtrujemy po nazwie
         query = db.query(DaneSwieta).filter(
             DaneSwieta.sensor_id.startswith(sensor_prefix),
             DaneSwieta.nazwa_swieta == nazwa_swieta
         )
     else:
-        # TRYB 2: Normalny dzień tygodnia (NOWA LOGIKA GRUPOWANIA)
         selected_weekday = selected_date_obj.weekday()
         
         if 0 <= selected_weekday <= 3: # Poniedziałek - Czwartek
@@ -228,7 +223,6 @@ def calculate_occupancy_stats(sensor_prefix: str, selected_date_obj: datetime.da
             dni_do_uwzglednienia = [6]
             logger.info("Tryb statystyk: NIEDZIELA")
             
-        # Przeszukujemy STARĄ tabelę (DaneHistoryczne)
         query = db.query(DaneHistoryczne).filter(
             DaneHistoryczne.sensor_id.startswith(sensor_prefix)
         )
@@ -242,29 +236,17 @@ def calculate_occupancy_stats(sensor_prefix: str, selected_date_obj: datetime.da
     dane_pasujace = []
     
     for rekord in wszystkie_dane_dla_sensora:
-        # Konwersja stref (baza jest w UTC)
         czas_rekordu_dt_utc = rekord.czas_pomiaru
         if czas_rekordu_dt_utc.tzinfo is None:
             czas_rekordu_dt_utc = czas_rekordu_dt_utc.replace(tzinfo=UTC)
 
-        # Konwertujemy do czasu PL
         czas_rekordu_dt_pl = czas_rekordu_dt_utc.astimezone(PL_TZ)
 
-        # === ZAKTUALIZOWANA LOGIKA FILTROWANIA ===
-        
         if not nazwa_swieta:
-            # Jesteśmy w TRYBIE 2 (Dzień tygodnia)
-            # Sprawdzamy, czy dzień tygodnia rekordu należy do naszej grupy
             rekord_weekday = czas_rekordu_dt_pl.weekday()
             if rekord_weekday not in dni_do_uwzglednienia:
                 continue
-        # else:
-            # Jesteśmy w TRYBIE 1 (Święto)
-            # SQL (query) już załatwił filtrowanie po `nazwa_swieta`
-            
-        # === KONIEC LOGIKI FILTROWANIA ===
         
-        # Logika sprawdzania godziny (na czasie polskim)
         czas_rekordu = czas_rekordu_dt_pl.time()
         
         if czas_poczatek > czas_koniec:
@@ -305,15 +287,12 @@ def obserwuj_miejsce(request: ObserwujRequest, db: Session = Depends(get_db)):
     sensor_id = request.sensor_id
     teraz = datetime.datetime.now(datetime.timezone.utc)
     
-    # === POPRAWKA LUKI 1 (Check-then-Go) ===
     miejsce_db = db.query(AktualnyStan).filter(AktualnyStan.sensor_id == sensor_id).first()
     
     if not miejsce_db or miejsce_db.status != 0:
         logger.warning(f"Odrzucono obserwację dla {sensor_id} (token: ...{token[-5:]}). Stan: {miejsce_db.status if miejsce_db else 'Nieznany'}")
         raise HTTPException(status_code=409, detail="Niestety, to miejsce zostało właśnie zajęte lub jest offline.")
     
-    # === KONIEC POPRAWKI ===
-
     wpis = db.query(ObserwowaneMiejsca).filter(ObserwowaneMiejsca.device_token == token).first()
     if wpis:
         wpis.sensor_id = sensor_id
@@ -340,10 +319,9 @@ def pobierz_statystyki_zajetosci(zapytanie: StatystykiZapytanie, db: Session = D
         raise HTTPException(status_code=400, detail="Niepoprawny format daty. Oczekiwano YYYY-MM-DD.")
         
     if not zapytanie.sensor_id:
-         raise HTTPException(status_code=400, detail="Wymagany jest sensor_id (np. 'EURO' lub 'BUD').")
-         
+        raise HTTPException(status_code=400, detail="Wymagany jest sensor_id (np. 'EURO' lub 'BUD').")
+            
     try:
-        # Wywołujemy już nową funkcję statystyk
         wynik = calculate_occupancy_stats(zapytanie.sensor_id, selected_date_obj, selected_hour, db)
     except Exception as e:
         logger.error(f"Błąd przy /statystyki/zajetosc dla {zapytanie.sensor_id}: {e}")
@@ -379,7 +357,6 @@ def pobierz_prognoze_dla_wszystkich(
             use_fallback = True
 
     if use_fallback:
-        # Zmieniamy na czas PL, aby poprawnie wybrać datę dla fallbacku
         teraz_pl = datetime.datetime.now(PL_TZ)
         selected_date_obj = teraz_pl.date()
         selected_hour = teraz_pl.hour
@@ -387,7 +364,6 @@ def pobierz_prognoze_dla_wszystkich(
 
     for grupa in GRUPY_SENSOROW:
         try:
-            # Wywołujemy już nową funkcję statystyk
             wynik = calculate_occupancy_stats(grupa, selected_date_obj, selected_hour, db)
             prognozy[grupa] = wynik['procent_zajetosci']
         except Exception as e:
@@ -397,65 +373,94 @@ def pobierz_prognoze_dla_wszystkich(
     return prognozy
 
 
-# === FUNKCJA GŁÓWNA PRZETWARZANIA DANYCH (ZMODYFIKOWANA) ===
-def process_parking_update(dane_z_bramki: WymaganyFormat, db: Session, teraz_utc: datetime.datetime):
-    sensor_id = dane_z_bramki.sensor_id
-    nowy_status = dane_z_bramki.status
+# === NOWA FUNKCJA GŁÓWNA PRZETWARZANIA DANYCH (obsługuje dict) ===
+def process_parking_update(dane_z_bramki: dict, db: Session, teraz_utc: datetime.datetime):
     
-    # === NOWY ROUTER DANYCH ===
-    teraz_pl_date = teraz_utc.astimezone(PL_TZ).date()
-    nazwa_swieta = MANUALNA_MAPA_SWIAT.get(teraz_pl_date)
-    
-    if nazwa_swieta:
-        # TRYB 1: Zapisz do tabeli świątecznej
-        logger.info(f"Zapis danych świątecznych ({nazwa_swieta}) dla {sensor_id}")
-        nowy_rekord = DaneSwieta(
-            czas_pomiaru=teraz_utc,
-            sensor_id=sensor_id,
-            status=nowy_status,
-            nazwa_swieta=nazwa_swieta 
-        )
-    else:
-        # TRYB 2: Zapisz do tabeli historycznej (zwykły dzień)
-        nowy_rekord = DaneHistoryczne(
-            czas_pomiaru=teraz_utc, 
-            sensor_id=sensor_id, 
-            status=nowy_status
-        )
-    
-    db.add(nowy_rekord)
-    # === KONIEC ROUTERA DANYCH ===
+    bramka_id_z_czujnika = "" # Domyślnie puste
 
-    miejsce_db = db.query(AktualnyStan).filter(AktualnyStan.sensor_id == sensor_id).first()
-    poprzedni_status = -1
-    if miejsce_db:
-        poprzedni_status = miejsce_db.status
-        miejsce_db.status = nowy_status
-        miejsce_db.ostatnia_aktualizacja = teraz_utc
-    else:
-        nowe_miejsce = AktualnyStan(
-            sensor_id=sensor_id, status=nowy_status, ostatnia_aktualizacja=teraz_utc
-        )
-        db.add(nowe_miejsce)
+    # === 1. SPRAWDŹ CZY TO HEARTBEAT BRAMKI ===
+    if "gateway_id" in dane_z_bramki:
+        gateway_id_str = dane_z_bramki.get("gateway_id")
         
-    if poprzedni_status != 1 and nowy_status == 1:
-        logger.info(f"Wykryto zajęcie miejsca: {sensor_id}. Sprawdzanie obserwatorów...")
-        limit_czasu_obserwacji = datetime.timedelta(minutes=30)
-        obserwatorzy = db.query(ObserwowaneMiejsca).filter(
-            ObserwowaneMiejsca.sensor_id == sensor_id,
-            (teraz_utc - ObserwowaneMiejsca.czas_dodania) < limit_czasu_obserwacji
-        ).all()
-        tokeny_do_usuniecia = []
-        for obserwator in obserwatorzy:
-            send_push_notification(obserwator.device_token, obserwator.sensor_id)
-            tokeny_do_usuniecia.append(obserwator.device_token)
-            logger.info(f"Wysłano powiadomienie do tokena {obserwator.device_token[:5]}... dla miejsca {sensor_id}")
-        if tokeny_do_usuniecia:
-            db.query(ObserwowaneMiejsca).filter(
-                ObserwowaneMiejsca.device_token.in_(tokeny_do_usuniecia)
-            ).delete(synchronize_session=False)
+        # Zmapuj ID bramki na grupę czujników (KLUCZOWE!)
+        if gateway_id_str == "Gate_1_BUD":
+            bramka_id_z_czujnika = "BUD"
+        elif gateway_id_str == "Gate_2_EURO":
+            bramka_id_z_czujnika = "EURO"
+        
+        if bramka_id_z_czujnika in GRUPY_SENSOROW:
+            logger.info(f"Odebrano heartbeat od bramki: {gateway_id_str} (Grupa: {bramka_id_z_czujnika})")
+            # Przechodzimy do kroku 3 (Aktualizacja OstatniStanBramki)
+        else:
+            logger.warning(f"Odebrano heartbeat od nieznanej bramki: {gateway_id_str}")
+            return {"status": "nieznana bramka"}
+
+    # === 2. SPRAWDŹ CZY TO WIADOMOŚĆ OD CZUJNIKA ===
+    elif "sensor_id" in dane_z_bramki:
+        # Dopiero tutaj robimy walidację Pydantic
+        try:
+            dane_czujnika = WymaganyFormat(**dane_z_bramki)
+            sensor_id = dane_czujnika.sensor_id
+            nowy_status = dane_czujnika.status
+        except Exception as e: # Przechwyć błąd walidacji (np. jeśli ktoś wyśle {"sensor_id": "TEST", "status": "online"})
+            logger.error(f"Błąd walidacji Pydantic dla wiadomości z czujnika: {e} | Dane: {dane_z_bramki}")
+            return {"status": "błąd walidacji czujnika"}
+
+        # Logika zapisu danych historycznych
+        teraz_pl_date = teraz_utc.astimezone(PL_TZ).date()
+        nazwa_swieta = MANUALNA_MAPA_SWIAT.get(teraz_pl_date)
+        
+        if nazwa_swieta:
+            nowy_rekord = DaneSwieta(
+                czas_pomiaru=teraz_utc, sensor_id=sensor_id, 
+                status=nowy_status, nazwa_swieta=nazwa_swieta
+            )
+        else:
+            nowy_rekord = DaneHistoryczne(
+                czas_pomiaru=teraz_utc, sensor_id=sensor_id, status=nowy_status
+            )
+        db.add(nowy_rekord)
+        
+        # Logika aktualizacji AktualnyStan
+        miejsce_db = db.query(AktualnyStan).filter(AktualnyStan.sensor_id == sensor_id).first()
+        poprzedni_status = -1
+        if miejsce_db:
+            poprzedni_status = miejsce_db.status
+            miejsce_db.status = nowy_status
+            miejsce_db.ostatnia_aktualizacja = teraz_utc
+        else:
+            nowe_miejsce = AktualnyStan(
+                sensor_id=sensor_id, status=nowy_status, ostatnia_aktualizacja=teraz_utc
+            )
+            db.add(nowe_miejsce)
             
-    bramka_id_z_czujnika = sensor_id.split('_')[0] 
+        # Logika powiadomień PUSH
+        if poprzedni_status != 1 and nowy_status == 1:
+            logger.info(f"Wykryto zajęcie miejsca: {sensor_id}. Sprawdzanie obserwatorów...")
+            limit_czasu_obserwacji = datetime.timedelta(minutes=30)
+            obserwatorzy = db.query(ObserwowaneMiejsca).filter(
+                ObserwowaneMiejsca.sensor_id == sensor_id,
+                (teraz_utc - ObserwowaneMiejsca.czas_dodania) < limit_czasu_obserwacji
+            ).all()
+            tokeny_do_usuniecia = []
+            for obserwator in obserwatorzy:
+                send_push_notification(obserwator.device_token, obserwator.sensor_id)
+                tokeny_do_usuniecia.append(obserwator.device_token)
+                logger.info(f"Wysłano powiadomienie do tokena {obserwator.device_token[:5]}... dla miejsca {sensor_id}")
+            if tokeny_do_usuniecia:
+                db.query(ObserwowaneMiejsca).filter(
+                    ObserwowaneMiejsca.device_token.in_(tokeny_do_usuniecia)
+                ).delete(synchronize_session=False)
+        
+        # Pobierz grupę z sensor_id (np. "BUD")
+        bramka_id_z_czujnika = sensor_id.split('_')[0] 
+    
+    else:
+        logger.warning(f"Odebrano nieznany format danych: {dane_z_bramki}")
+        return {"status": "nieznany format"}
+
+    # === 3. AKTUALIZACJA OSTATNIEGO KONTAKTU (WSPÓLNE DLA OBU TYPÓW WIADOMOŚCI) ===
+    # Ta część wykona się dla Heartbeatu (krok 1) LUB dla wiadomości z czujnika (krok 2)
     if bramka_id_z_czujnika in GRUPY_SENSOROW:
         bramka_db = db.query(OstatniStanBramki).filter(OstatniStanBramki.bramka_id == bramka_id_z_czujnika).first()
         if bramka_db:
@@ -467,6 +472,7 @@ def process_parking_update(dane_z_bramki: WymaganyFormat, db: Session, teraz_utc
     db.commit()
     return {"status": "zapisano"}
 
+
 # Endpoint dla BRAMKI (HTTP Fallback)
 @app.put("/api/v1/miejsce_parkingowe/aktualizuj", dependencies=[Depends(check_api_key)])
 async def aktualizuj_miejsce_http(request: Request, db: Session = Depends(get_db)):
@@ -474,14 +480,19 @@ async def aktualizuj_miejsce_http(request: Request, db: Session = Depends(get_db
     body_bytes = await request.body()
     raw_json_str = body_bytes.decode('latin-1').strip().replace('\x00', '')
     logger.info(f"Odebrano surowy payload (HTTP): {repr(raw_json_str)}") 
+    
     try:
+        # 1. Sparsuj do słownika
         dane = json.loads(raw_json_str)
-        dane_z_bramki = WymaganyFormat(**dane) 
-    except (json.JSONDecodeError, TypeError, ValueError) as e:
-        logger.error(f"BŁĄD PARSOWANIA JSON (HTTP): {e} | Surowe dane: {repr(raw_json_str)}")
+        # 2. Waliduj (to zgłosi błąd, jeśli format jest zły)
+        _ = WymaganyFormat(**dane) 
+        
+    except (json.JSONDecodeError, TypeError, ValueError, Exception) as e: # Przechwyć błędy parsowania I walidacji Pydantic
+        logger.error(f"BŁĄD PARSOWANIA/WALIDACJI JSON (HTTP): {e} | Surowe dane: {repr(raw_json_str)}")
         raise HTTPException(status_code=400, detail=f"Niepoprawny format danych JSON. Szczegóły: {e}")
-    # Wywołujemy zmododyfikowaną funkcję
-    return process_parking_update(dane_z_bramki, db, teraz)
+        
+    # 3. Przekaż słownik 'dane' do nowej funkcji
+    return process_parking_update(dane, db, teraz)
 
 
 # Endpoint dla APLIKACJI (Publiczny)
@@ -532,21 +543,31 @@ def on_connect(client, userdata, flags, rc):
     else:
         logger.error(f"Nie udało się połączyć z MQTT, kod: {rc}")
 
+# === NOWA FUNKCJA on_message (nie waliduje, tylko przekazuje) ===
 def on_message(client, userdata, msg):
     teraz = datetime.datetime.now(datetime.timezone.utc) # Zawsze UTC
+    db = None # Inicjalizujemy db jako None
     try:
         raw_json_str = msg.payload.decode('utf-8').strip().replace('\x00', '')
         logger.info(f"ODEBRANO MQTT na temacie {msg.topic}: {repr(raw_json_str)}")
-        dane = json.loads(raw_json_str)
-        dane_z_bramki = WymaganyFormat(**dane) 
+        
+        # 1. Parsuj do słownika (dict), a NIE do WymaganyFormat
+        dane_slownik = json.loads(raw_json_str)
         db = next(get_db())
-        # Wywołujemy zmododyfikowaną funkcję
-        process_parking_update(dane_z_bramki, db, teraz)
-        db.close()
+        
+        # 2. Przekaż surowy słownik do funkcji process_parking_update
+        #    To ona zdecyduje, co z tym zrobić.
+        process_parking_update(dane_slownik, db, teraz) 
+        
     except json.JSONDecodeError as e:
         logger.error(f"BŁĄD PARSOWANIA JSON (MQTT): {e} | Surowe dane: {repr(raw_json_str)}")
     except Exception as e:
-        logger.error(f"BŁĄD KRYTYCZNY przetwarzania wiadomości MQTT: {e}")
+        # Przechwyć błędy z process_parking_update
+        logger.error(f"BŁĄD KRYTYCZNY przetwarzania wiadomości MQTT: {e}", exc_info=True)
+    finally:
+        # Upewnij się, że sesja DB jest zawsze zamykana
+        if db:
+            db.close()
 
 def mqtt_listener_thread():
     mqtt_client.on_connect = on_connect
