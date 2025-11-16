@@ -3,6 +3,7 @@ import datetime
 import json
 import logging
 import threading
+import time # Importujemy 'time' do spania wątku
 from typing import Optional, List, Dict
 from zoneinfo import ZoneInfo
 from datetime import date
@@ -19,13 +20,10 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # === Strefy czasowe ===
-# Zawsze używaj świadomych obiektów datetime!
 UTC = datetime.timezone.utc
 PL_TZ = ZoneInfo("Europe/Warsaw")
 
-# Funkcja pomocnicza do pobierania aktualnego czasu UTC
 def now_utc() -> datetime.datetime:
-    """Zwraca aktualny czas jako świadomy obiekt UTC."""
     return datetime.datetime.now(UTC)
 
 # MQTT
@@ -48,7 +46,6 @@ Base = declarative_base()
 
 # Stałe
 GRUPY_SENSOROW = ["EURO", "BUD"]
-
 MANUALNA_MAPA_SWIAT = {
     date(2024, 11, 1): "Wszystkich Świętych",
     date(2024, 11, 11): "Święto Niepodległości",
@@ -60,20 +57,15 @@ MANUALNA_MAPA_SWIAT = {
 }
 
 # === Tabele ===
-# WAŻNE: DateTime(timezone=True) wymaga, aby kolumna w bazie danych
-# obsługiwała strefę czasową (np. 'timestamp with time zone' w PostgreSQL).
-
 class AktualnyStan(Base):
     __tablename__ = "aktualny_stan"
     sensor_id = Column(String, primary_key=True, index=True)
     status = Column(Integer, default=0)
-    # Zapisuj domyślnie jako świadomy UTC
     ostatnia_aktualizacja = Column(DateTime(timezone=True), default=now_utc)
 
 class DaneHistoryczne(Base):
     __tablename__ = "dane_historyczne"
     id = Column(Integer, primary_key=True, autoincrement=True)
-    # Zapisuj jako świadomy UTC
     czas_pomiaru = Column(DateTime(timezone=True), index=True)
     sensor_id = Column(String, index=True)
     status = Column(Integer)
@@ -81,7 +73,6 @@ class DaneHistoryczne(Base):
 class DaneSwieta(Base):
     __tablename__ = "dane_swieta"
     id = Column(Integer, primary_key=True, autoincrement=True)
-    # Zapisuj jako świadomy UTC
     czas_pomiaru = Column(DateTime(timezone=True), index=True)
     sensor_id = Column(String, index=True)
     status = Column(Integer)
@@ -91,7 +82,6 @@ class ObserwowaneMiejsca(Base):
     __tablename__ = "obserwowane_miejsca"
     device_token = Column(String, primary_key=True, index=True)
     sensor_id = Column(String, index=True)
-    # Zapisuj jako świadomy UTC
     czas_dodania = Column(DateTime(timezone=True), default=now_utc)
 
 Base.metadata.create_all(bind=engine)
@@ -110,11 +100,70 @@ async def check_api_key(x_api_key: str = Header(None)):
 
 app = FastAPI(title="Parking API")
 
+# === NOWA LOGIKA TŁA (SPRAWDZANIE STANU) ===
+
+# Flaga do bezpiecznego zatrzymywania wątków
+shutdown_event_flag = threading.Event()
+
+def check_stale_sensors():
+    """
+    Funkcja, która sprawdza "nieświeże" sensory i ustawia im status 2.
+    Ta funkcja jest wywoływana w oddzielnym wątku i tworzy własną sesję DB.
+    """
+    db = None
+    try:
+        # KRYTYCZNE: Wątek musi stworzyć własną, nową sesję DB.
+        db = SessionLocal()
+        
+        teraz_utc = now_utc()
+        czas_odciecia = teraz_utc - datetime.timedelta(minutes=3)
+        
+        logger.info(f"TŁO: Sprawdzam sensory, które nie były aktualizowane od {czas_odciecia}...")
+
+        # Znajdź sensory, które:
+        # 1. NIE są już oznaczone jako offline (status != 2)
+        # 2. Ich 'ostatnia_aktualizacja' jest starsza niż 'czas_odciecia'
+        sensory_do_aktualizacji = db.query(AktualnyStan).filter(
+            AktualnyStan.status != 2,
+            (AktualnyStan.ostatnia_aktualizacja < czas_odciecia) | (AktualnyStan.ostatnia_aktualizacja == None)
+        ).all()
+
+        if sensory_do_aktualizacji:
+            logger.info(f"TŁO: Znaleziono {len(sensory_do_aktualizacji)} przestarzałych sensorów. Ustawiam status 2.")
+            for sensor in sensory_do_aktualizacji:
+                sensor.status = 2
+                sensor.ostatnia_aktualizacja = teraz_utc # Zapisujemy czas sprawdzenia
+            db.commit()
+        else:
+             logger.info("TŁO: Wszystkie sensory są aktualne.")
+
+    except Exception as e:
+        logger.error(f"TŁO: Błąd podczas sprawdzania sensorów: {e}")
+        if db:
+            db.rollback()
+    finally:
+        # KRYTYCZNE: Zawsze zamykaj sesję w wątku.
+        if db:
+            db.close()
+
+def sensor_checker_thread():
+    """
+    Główna pętla wątku sprawdzającego.
+    Uruchamia `check_stale_sensors()` co 30 sekund.
+    """
+    while not shutdown_event_flag.is_set():
+        check_stale_sensors()
+        # Czekaj 30 sekund, ale sprawdzaj flagę co sekundę,
+        # aby umożliwić szybkie zamknięcie aplikacji
+        shutdown_event_flag.wait(30)
+    logger.info("TŁO: Wątek sprawdzający zakończył działanie.")
+
+
 # === ENDPOINT GŁÓWNY (/) ===
 @app.get("/")
 def read_root():
     """Zwraca komunikat powitalny na głównym adresie URL."""
-    return {"API działa poprawnie."}
+    return {"message": "API działa poprawnie."} # Zwracamy poprawny JSON
 
 app.add_middleware(
     CORSMiddleware,
@@ -125,7 +174,6 @@ app.add_middleware(
 )
 
 # === MODELE ===
-
 class WymaganyFormat(BaseModel):
     sensor_id: str
     status: int
@@ -140,7 +188,6 @@ class StatystykiZapytanie(BaseModel):
     selected_hour: int
 
 # === PUSH ===
-
 def send_push_notification(token: str, sensor_id: str):
     logger.info(f"Wysyłam PUSH do {token} (sensor: {sensor_id})")
     try:
@@ -157,8 +204,7 @@ def send_push_notification(token: str, sensor_id: str):
     except Exception as e:
         logger.error(f"Błąd podczas wysyłania PUSH: {e}")
 
-# === STATYSTYKI (Poprawiona obsługa stref czasowych) ===
-
+# === STATYSTYKI (bez zmian) ===
 def get_time_with_offset(base_hour, offset_minutes):
     base_dt = datetime.datetime(2000, 1, 1, base_hour, 0)
     offset_dt = base_dt + datetime.timedelta(minutes=offset_minutes)
@@ -202,13 +248,10 @@ def calculate_occupancy_stats(sensor_prefix: str, selected_date_obj: datetime.da
     dane_pasujace = []
 
     for rekord in wszystkie:
-        czas_rekordu_db = rekord.czas_pomiaru # Jest to świadomy UTC (nowe dane) lub naiwny PL (stare dane)
-
+        czas_rekordu_db = rekord.czas_pomiaru
         if czas_rekordu_db.tzinfo is None:
-            # STARE DANE: Traktujemy jako naiwny czas polski
             czas_pl = czas_rekordu_db.replace(tzinfo=PL_TZ)
         else:
-            # NOWE DANE: Zapisane jako świadomy UTC, konwertujemy do PL
             czas_pl = czas_rekordu_db.astimezone(PL_TZ)
 
         if not nazwa_swieta:
@@ -216,14 +259,12 @@ def calculate_occupancy_stats(sensor_prefix: str, selected_date_obj: datetime.da
                 continue
 
         czas_rek = czas_pl.time()
-
         if czas_poczatek > czas_koniec:
             if not (czas_rek >= czas_poczatek or czas_rek < czas_koniec):
                 continue
         else:
             if not (czas_poczatek <= czas_rek < czas_koniec):
                 continue
-
         dane_pasujace.append(rekord.status)
 
     if not dane_pasujace:
@@ -245,29 +286,24 @@ def calculate_occupancy_stats(sensor_prefix: str, selected_date_obj: datetime.da
         "liczba_pomiarow": suma
     }
 
-# === ENDPOINT: OBSERWACJA (Zapisuje świadomy UTC) ===
+# === ENDPOINTY (bez zmian) ===
 
 @app.post("/api/v1/obserwuj_miejsce")
 def obserwuj_miejsce(request: ObserwujRequest, db: Session = Depends(get_db)):
     token = request.device_token
     sensor_id = request.sensor_id
-    teraz_utc = now_utc() # Używamy świadomego UTC
-
+    teraz_utc = now_utc()
     miejsce = db.query(AktualnyStan).filter(AktualnyStan.sensor_id == sensor_id).first()
     if not miejsce or miejsce.status != 0:
         raise HTTPException(status_code=409, detail="Miejsce zajęte lub offline.")
-
     wpis = db.query(ObserwowaneMiejsca).filter(ObserwowaneMiejsca.device_token == token).first()
     if wpis:
         wpis.sensor_id = sensor_id
-        wpis.czas_dodania = teraz_utc # Zapisz świadomy UTC
+        wpis.czas_dodania = teraz_utc
     else:
-        db.add(ObserwowaneMiejsca(device_token=token, sensor_id=sensor_id, czas_dodania=teraz_utc)) # Zapisz świadomy UTC
-
+        db.add(ObserwowaneMiejsca(device_token=token, sensor_id=sensor_id, czas_dodania=teraz_utc))
     db.commit()
     return {"status": "ok"}
-
-# === ENDPOINT: STATYSTYKI ===
 
 @app.post("/api/v1/statystyki/zajetosc")
 def pobierz_statystyki(z: StatystykiZapytanie, db: Session = Depends(get_db)):
@@ -275,21 +311,15 @@ def pobierz_statystyki(z: StatystykiZapytanie, db: Session = Depends(get_db)):
         selected_date = datetime.datetime.strptime(z.selected_date, "%Y-%m-%d").date()
     except:
         raise HTTPException(status_code=400, detail="Zły format daty")
-
     if not z.sensor_id:
         raise HTTPException(status_code=400, detail="Brak sensor_id")
-
     wynik = calculate_occupancy_stats(z.sensor_id, selected_date, z.selected_hour, db)
     return {"wynik": wynik}
-
-# === ENDPOINT: PROGNOZA ===
 
 @app.get("/api/v1/prognoza/wszystkie_miejsca")
 def pobierz_prognoze(db: Session = Depends(get_db), target_date: Optional[str] = None, target_hour: Optional[int] = None):
     prognozy = {}
-    
-    teraz_pl = now_utc().astimezone(PL_TZ) # Pobierz aktualny czas w PL
-
+    teraz_pl = now_utc().astimezone(PL_TZ)
     if target_date and target_hour is not None:
         try:
             dt = datetime.datetime.strptime(target_date, "%Y-%m-%d").date()
@@ -300,144 +330,86 @@ def pobierz_prognoze(db: Session = Depends(get_db), target_date: Optional[str] =
     else:
         dt = teraz_pl.date()
         hour = teraz_pl.hour
-
     for grupa in GRUPY_SENSOROW:
         try:
             wynik = calculate_occupancy_stats(grupa, dt, hour, db)
             prognozy[grupa] = wynik["procent_zajetosci"]
         except:
             prognozy[grupa] = 0.0
-
     return prognozy
 
-# === PRZETWARZANIE DANYCH Z BRAMKI (Zapisuje świadomy UTC) ===
+# === PRZETWARZANIE DANYCH (bez zmian) ===
 
 def process_parking_update(dane: dict, db: Session):
-    """Przetwarza dane i zapisuje do bazy używając świadomego czasu UTC."""
-    
-    teraz_utc = now_utc() # Czas zapisu (zawsze UTC)
-    teraz_pl = teraz_utc.astimezone(PL_TZ) # Czas dla logiki (np. sprawdzanie świąt)
-
+    teraz_utc = now_utc()
+    teraz_pl = teraz_utc.astimezone(PL_TZ)
     if "sensor_id" in dane:
         dane_cz = WymaganyFormat(**dane)
         sensor_id = dane_cz.sensor_id
         nowy_status = dane_cz.status
-
-        # Sprawdzamy święto na podstawie daty w Polsce
         nazwa_swieta = MANUALNA_MAPA_SWIAT.get(teraz_pl.date())
-
         if nazwa_swieta:
             db.add(DaneSwieta(
-                czas_pomiaru=teraz_utc, # Zapisz świadomy UTC
+                czas_pomiaru=teraz_utc,
                 sensor_id=sensor_id,
                 status=nowy_status,
                 nazwa_swieta=nazwa_swieta
             ))
         else:
             db.add(DaneHistoryczne(
-                czas_pomiaru=teraz_utc, # Zapisz świadomy UTC
+                czas_pomiaru=teraz_utc,
                 sensor_id=sensor_id,
                 status=nowy_status
             ))
-
         miejsce = db.query(AktualnyStan).filter(AktualnyStan.sensor_id == sensor_id).first()
         poprzedni = -1
-
         if miejsce:
             poprzedni = miejsce.status
             miejsce.status = nowy_status
-            miejsce.ostatnia_aktualizacja = teraz_utc # Zapisz świadomy UTC
+            miejsce.ostatnia_aktualizacja = teraz_utc
         else:
             db.add(AktualnyStan(
                 sensor_id=sensor_id,
                 status=nowy_status,
-                ostatnia_aktualizacja=teraz_utc # Zapisz świadomy UTC
+                ostatnia_aktualizacja=teraz_utc
             ))
-
         if poprzedni != 1 and nowy_status == 1:
             limit = datetime.timedelta(minutes=30)
-            
-            # Porównujemy świadomy czas UTC z bazy ze świadomym czasem UTC
             obserwatorzy = db.query(ObserwowaneMiejsca).filter(
                 ObserwowaneMiejsca.sensor_id == sensor_id,
                 (teraz_utc - ObserwowaneMiejsca.czas_dodania) < limit
             ).all()
-
             for o in obserwatorzy:
                 send_push_notification(o.device_token, o.sensor_id)
-
             if obserwatorzy:
                 db.query(ObserwowaneMiejsca).filter(
                     ObserwowaneMiejsca.device_token.in_([o.device_token for o in obserwatorzy])
                 ).delete(synchronize_session=False)
-
         db.commit()
         return {"status": "ok"}
-
     elif "gateway_id" in dane:
         return {"status": "heartbeat"}
-
     return {"status": "unknown"}
-
-# === HTTP Fallback ===
 
 @app.put("/api/v1/miejsce_parkingowe/aktualizuj", dependencies=[Depends(check_api_key)])
 async def aktualizuj_miejsce_http(request: Request, db: Session = Depends(get_db)):
     raw = (await request.body()).decode("latin-1").replace("\x00", "")
-    
     try:
         dane = json.loads(raw)
     except:
         raise HTTPException(status_code=400, detail="Zły JSON")
-    
-    # Przekazujemy do zrefaktoryzowanej funkcji, która sama pobierze czas
     return process_parking_update(dane, db)
 
-# === POPRAWIONY ENDPOINT: AKTUALNY STAN (Logika 3 minut) ===
+# === UPROSZCZONY ENDPOINT: AKTUALNY STAN ===
+# Usunęliśmy całą logikę sprawdzania.
+# Teraz ten endpoint tylko odczytuje dane, które są 
+# aktualizowane przez wątek w tle.
 
 @app.get("/api/v1/aktualny_stan")
 def pobierz_aktualny_stan(db: Session = Depends(get_db)):
-
-    # Zawsze używaj świadomego czasu UTC do porównań
-    teraz_utc = now_utc()
-    czas_odciecia = teraz_utc - datetime.timedelta(minutes=3)
-
-    sensory = db.query(AktualnyStan).all()
-    zmiany = []
-
-    for sensor in sensory:
-        ost = sensor.ostatnia_aktualizacja # Powinien być świadomy UTC lub None
-        
-        jest_offline = False
-
-        if ost is None:
-            # Nigdy nie zaktualizowany
-            jest_offline = True
-        else:
-            ost_utc = ost
-            if ost.tzinfo is None:
-                # STARE DANE: Były zapisane jako naiwny czas PL. Konwertujemy.
-                logger.warning(f"Sensor {sensor.sensor_id} ma stary, naiwny znacznik czasu. Konwertowanie.")
-                ost_utc = ost.replace(tzinfo=PL_TZ).astimezone(UTC)
-
-            # Teraz ost_utc jest na pewno świadomym czasem UTC
-            if ost_utc < czas_odciecia:
-                jest_offline = True
-
-        if jest_offline and sensor.status != 2:
-            sensor.status = 2
-            # Aktualizujemy czas, aby nie spamować bazy danych przy każdym odświeżeniu
-            sensor.ostatnia_aktualizacja = teraz_utc 
-            zmiany.append(sensor.sensor_id)
-
-    if zmiany:
-        logger.info(f"Oznaczono {len(zmiany)} sensorów jako offline (status 2).")
-        db.commit()
-
-    # Zwróć wszystkie sensory (ze zaktualizowanymi statusami)
+    logger.info("API: Pobieram aktualny stan z bazy danych.")
+    # Po prostu zwróć to, co jest w bazie. Wątek w tle dba o statusy.
     return db.query(AktualnyStan).all()
-
-
 
 # === MQTT ===
 
@@ -445,27 +417,24 @@ mqtt_client = mqtt.Client()
 
 def on_connect(client, userdata, flags, rc):
     if rc == 0:
-        logger.info("MQTT połączone")
+        logger.info("MQTT: Połączone")
         client.subscribe(MQTT_TOPIC_SUBSCRIBE)
     else:
-        logger.error(f"Błąd połączenia MQTT, kod: {rc}")
+        logger.error(f"MQTT: Błąd połączenia, kod: {rc}")
 
 def on_message(client, userdata, msg):
     raw = msg.payload.decode("utf-8").replace("\x00", "")
-    
     try:
         dane = json.loads(raw)
     except Exception as e:
-        logger.error(f"Zły JSON MQTT: {e} | Payload: {raw}")
+        logger.error(f"MQTT: Zły JSON: {e} | Payload: {raw}")
         return
-
     db = None
     try:
         db = next(get_db())
-        # Przekazujemy do zrefaktoryzowanej funkcji, która sama pobierze czas
         process_parking_update(dane, db)
     except Exception as e:
-        logger.error(f"Błąd podczas przetwarzania wiadomości MQTT: {e}")
+        logger.error(f"MQTT: Błąd podczas przetwarzania wiadomości: {e}")
     finally:
         if db:
             db.close()
@@ -477,17 +446,38 @@ def mqtt_listener_thread():
         mqtt_client.connect(MQTT_BROKER, MQTT_PORT, 60)
         mqtt_client.loop_start()
     except Exception as e:
-        logger.error(f"Nie można uruchomić wątku MQTT: {e}")
-
-@app.on_event("startup")
-async def startup_event():
-    thread = threading.Thread(target=mqtt_listener_thread)
-    thread.daemon = True
-    thread.start()
-
-@app.on_event("shutdown")
-def shutdown_event():
-    logger.info("Zatrzymywanie klienta MQTT...")
+        logger.error(f"MQTT: Nie można uruchomić wątku: {e}")
+    
+    # Ta pętla utrzymuje wątek przy życiu i pozwala mu reagować na flagę
+    while not shutdown_event_flag.is_set():
+        time.sleep(1) # Śpij krótko, aby nie obciążać CPU
+    
+    logger.info("MQTT: Wątek słuchacza zakończył działanie.")
     mqtt_client.loop_stop()
     mqtt_client.disconnect()
 
+
+# === ZARZĄDZANIE STARTUP/SHUTDOWN ===
+# Zmieniamy, aby uruchomić OBA wątki
+
+@app.on_event("startup")
+async def startup_event():
+    # Uruchom wątek MQTT
+    thread_mqtt = threading.Thread(target=mqtt_listener_thread)
+    thread_mqtt.daemon = True # Wątek zamknie się, jeśli główny program padnie
+    thread_mqtt.start()
+    
+    # Uruchom nasz nowy wątek do sprawdzania sensorów
+    thread_checker = threading.Thread(target=sensor_checker_thread)
+    thread_checker.daemon = True
+    thread_checker.start()
+
+
+@app.on_event("shutdown")
+def shutdown_event():
+    logger.info("Zatrzymywanie aplikacji...")
+    # Ustaw flagę, która da znać *wszystkim* wątkom, że mają się zamknąć
+    shutdown_event_flag.set()
+    logger.info("Wysłano sygnał zamknięcia do wątków.")
+    # Dajmy wątkom chwilę na zamknięcie się
+    time.sleep(1.5)
