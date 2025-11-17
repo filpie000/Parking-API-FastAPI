@@ -517,9 +517,6 @@ async def process_parking_update(dane: dict, db: Session):
         
     return {"status": "unknown format"}
 
-# === [USUNIĘTO] Endpoint HTTP PUT ===
-# (Usunięto funkcję 'aktualizuj_miejsce_http', aby wymusić komunikację binarną)
-
 # === Endpoint GET stanu (Początkowe ładowanie dla App.js) ===
 @app.get("/api/v1/aktualny_stan")
 async def pobierz_aktualny_stan(db: Session = Depends(get_db)):
@@ -558,7 +555,7 @@ def on_connect(client, userdata, flags, rc):
     else:
         logger.error(f"MQTT: Błąd połączenia, kod: {rc}")
 
-# === [ZMIANA] Logika MQTT (3-Bajtowy Format Binarny) ===
+# === Logika MQTT (3-Bajtowy Format Binarny) ===
 # Jedyna droga zapisu stanu do bazy
 def on_message(client, userdata, msg):
     # Oczekujemy 3-bajtowego payloadu:
