@@ -623,3 +623,4 @@ def shutdown_event():
     shutdown_event_flag.set()
     logger.info("Wysłano sygnał zamknięcia do wątków.")
     time.sleep(1.5)
+
