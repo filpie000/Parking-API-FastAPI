@@ -46,6 +46,7 @@ SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 
 # === [OPTYMALIZACJA] Konfiguracja Redis ===
+# Redis przechowuje tymczasowe raporty (cache statystyk)
 REDIS_URL = os.environ.get('REDIS_URL')
 redis_client = None
 if REDIS_URL:
@@ -59,7 +60,7 @@ if REDIS_URL:
 else:
     logger.warning("Brak REDIS_URL. Cache będzie wyłączony.")
 
-# === [ZMIANA] Słownik Mapowania Sensorów (MQTT Binarnie -> API) ===
+# === Słownik Mapowania Sensorów (MQTT Binarnie -> API) ===
 # Klucz (int): ID wysyłane przez MQTT (teraz do 65535)
 # Wartość (str): Pełne ID używane w bazie danych i API
 SENSOR_MAP = {
@@ -78,7 +79,7 @@ SENSOR_MAP = {
 # === Stałe ===
 GRUPY_SENSOROW = ["EURO", "BUD"]
 
-# === [ZMIANA] Rozszerzona Mapa Świąt 2023-2025 ===
+# === Rozszerzona Mapa Świąt 2023-2025 ===
 MANUALNA_MAPA_SWIAT = {
     # --- 2023 ---
     date(2023, 11, 1): "Wszystkich Świętych",
@@ -154,8 +155,6 @@ def get_db():
         yield db
     finally:
         db.close()
-
-# === USUNIĘTO API_KEY i check_api_key (nie są już używane) ===
 
 app = FastAPI(title="Parking API")
 
@@ -258,7 +257,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# === MODELE ===
+# === MODELE (dla API) ===
 class WymaganyFormat(BaseModel):
     sensor_id: str
     status: int
@@ -334,10 +333,11 @@ def calculate_occupancy_stats(sensor_prefix: str, selected_date_obj: datetime.da
     for rekord in wszystkie:
         czas_rekordu_db = rekord.czas_pomiaru
 
-        # === [POPRAWKA] Zabezpieczenie przed 'None' (NULL) w bazie ===
+        # === [KLUCZOWA POPRAWKA] ===
+        # Zabezpieczenie przed 'None' (NULL) w bazie, które powodowało błąd 500
         if not czas_rekordu_db:
             logger.warning(f"Pominięto rekord (ID: {rekord.id}) z powodu braku daty (NULL w bazie)")
-            continue
+            continue 
         # === KONIEC POPRAWKI ===
 
         if czas_rekordu_db.tzinfo is None:
@@ -377,7 +377,7 @@ def calculate_occupancy_stats(sensor_prefix: str, selected_date_obj: datetime.da
         "liczba_pomiarow": suma
     }
 
-# === ENDPOINTY (Statyczne) ===
+# === ENDPOINTY (dla aplikacji mobilnej, używają JSON) ===
 
 @app.post("/api/v1/obserwuj_miejsce")
 def obserwuj_miejsce(request: ObserwujRequest, db: Session = Depends(get_db)):
@@ -398,7 +398,7 @@ def obserwuj_miejsce(request: ObserwujRequest, db: Session = Depends(get_db)):
 
 @app.post("/api/v1/statystyki/zajetosc")
 def pobierz_statystyki(z: StatystykiZapytanie, db: Session = Depends(get_db)):
-    # To jest endpoint API dla frontendu, on NADAL UŻYWA JSON
+    # 1. Sprawdź Cache (Redis)
     if redis_client:
         cache_key = f"stats:{z.sensor_id}:{z.selected_date}:{z.selected_hour}"
         try:
@@ -409,6 +409,7 @@ def pobierz_statystyki(z: StatystykiZapytanie, db: Session = Depends(get_db)):
         except Exception as e:
             logger.error(f"CACHE: Błąd odczytu z Redis: {e}")
             
+    # 2. Cache Miss - Oblicz
     logger.info(f"CACHE: Brak w cache, obliczam statystyki dla: {cache_key}")
     try:
         selected_date = datetime.datetime.strptime(z.selected_date, "%Y-%m-%d").date()
@@ -417,8 +418,10 @@ def pobierz_statystyki(z: StatystykiZapytanie, db: Session = Depends(get_db)):
     if not z.sensor_id:
         raise HTTPException(status_code=400, detail="Brak sensor_id")
     
+    # Wywołaj funkcję z poprawką (zabezpieczeniem przed NULL)
     wynik = calculate_occupancy_stats(z.sensor_id, selected_date, z.selected_hour, db)
     
+    # 3. Zapisz w Cache na 1 godzinę
     if redis_client:
         try:
             redis_client.set(cache_key, json.dumps(wynik), ex=3600)
@@ -443,6 +446,7 @@ def pobierz_prognoze(db: Session = Depends(get_db), target_date: Optional[str] =
         hour = teraz_pl.hour
     for grupa in GRUPY_SENSOROW:
         try:
+            # Wywołaj funkcję z poprawką (zabezpieczeniem przed NULL)
             wynik = calculate_occupancy_stats(grupa, dt, hour, db)
             prognozy[grupa] = wynik["procent_zajetosci"]
         except:
@@ -511,10 +515,10 @@ async def process_parking_update(dane: dict, db: Session):
             
         return {"status": "ok"}
         
-    return {"status": "unknown format"} # Zmieniono fallback
+    return {"status": "unknown format"}
 
 # === [USUNIĘTO] Endpoint HTTP PUT ===
-# (Usunięto funkcję 'aktualizuj_miejsce_http')
+# (Usunięto funkcję 'aktualizuj_miejsce_http', aby wymusić komunikację binarną)
 
 # === Endpoint GET stanu (Początkowe ładowanie dla App.js) ===
 @app.get("/api/v1/aktualny_stan")
@@ -555,6 +559,7 @@ def on_connect(client, userdata, flags, rc):
         logger.error(f"MQTT: Błąd połączenia, kod: {rc}")
 
 # === [ZMIANA] Logika MQTT (3-Bajtowy Format Binarny) ===
+# Jedyna droga zapisu stanu do bazy
 def on_message(client, userdata, msg):
     # Oczekujemy 3-bajtowego payloadu:
     # Bajt 0: ID Sensora (Starszy bajt, ang. High Byte)
