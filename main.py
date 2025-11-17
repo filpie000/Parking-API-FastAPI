@@ -6,7 +6,7 @@ import threading
 import time
 from typing import Optional, List, Dict
 from zoneinfo import ZoneInfo
-from datetime import date 
+from datetime import date
 from fastapi import FastAPI, Depends, HTTPException, Header, Request, WebSocket, WebSocketDisconnect
 from sqlalchemy import create_engine, Column, Integer, String, DateTime
 from sqlalchemy.ext.declarative import declarative_base
@@ -15,8 +15,8 @@ from pydantic import BaseModel
 import requests
 from fastapi.middleware.cors import CORSMiddleware
 import paho.mqtt.client as mqtt
-import redis 
-import asyncio 
+import redis
+import asyncio
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -73,7 +73,7 @@ SENSOR_MAP = {
     7: "BUD_3",
     8: "BUD_4",
     # Przykład dla ID > 255 (dlatego użyliśmy 3 bajtów)
-    500: "TEST_PARKING_500", 
+    500: "TEST_PARKING_500",
 }
 
 # === Stałe ===
@@ -100,9 +100,9 @@ MANUALNA_MAPA_SWIAT = {
 
     # --- 2025 ---
     date(2025, 1, 1): "Nowy Rok",
-    date(2025, 4, 18): "Wielki Piątek", 
-    date(2025, 4, 20): "Wielkanoc", 
-    date(2025, 4, 21): "Poniedziałek Wielkanocny", 
+    date(2025, 4, 18): "Wielki Piątek",
+    date(2025, 4, 20): "Wielkanoc",
+    date(2025, 4, 21): "Poniedziałek Wielkanocny",
     date(2025, 11, 1): "Wszystkich Świętych",
     date(2025, 11, 11): "Święto Niepodległości",
     date(2025, 12, 24): "Wigilia",
@@ -211,7 +211,7 @@ def check_stale_sensors():
             for sensor in sensory_do_aktualizacji:
                 sensor.status = 2
                 sensor.ostatnia_aktualizacja = teraz_utc
-                zmiany_do_broadcastu.append(sensor.to_dict()) 
+                zmiany_do_broadcastu.append(sensor.to_dict())
 
             db.commit()
             
@@ -240,7 +240,7 @@ def sensor_checker_thread():
     logger.info("TŁO: Wątek sprawdzający uruchomiony.")
     while not shutdown_event_flag.is_set():
         check_stale_sensors()
-        shutdown_event_flag.wait(30) 
+        shutdown_event_flag.wait(30)
     logger.info("TŁO: Wątek sprawdzający zakończył działanie.")
 
 
@@ -337,7 +337,7 @@ def calculate_occupancy_stats(sensor_prefix: str, selected_date_obj: datetime.da
         # Zabezpieczenie przed 'None' (NULL) w bazie, które powodowało błąd 500
         if not czas_rekordu_db:
             logger.warning(f"Pominięto rekord (ID: {rekord.id}) z powodu braku daty (NULL w bazie)")
-            continue 
+            continue
         # === KONIEC POPRAWKI ===
 
         if czas_rekordu_db.tzinfo is None:
@@ -458,7 +458,7 @@ def pobierz_prognoze(db: Session = Depends(get_db), target_date: Optional[str] =
 async def process_parking_update(dane: dict, db: Session):
     teraz_utc = now_utc()
     teraz_pl = teraz_utc.astimezone(PL_TZ)
-    zmiana_stanu = None 
+    zmiana_stanu = None
     
     if "sensor_id" in dane:
         dane_cz = WymaganyFormat(**dane)
@@ -563,7 +563,7 @@ def on_message(client, userdata, msg):
     # Bajt 1: ID Sensora (Młodszy bajt, ang. Low Byte)
     # Bajt 2: Status (0, 1, lub 2)
     raw_payload = msg.payload
-    dane = {} 
+    dane = {}
 
     try:
         if len(raw_payload) != 3:
