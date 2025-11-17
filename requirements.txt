@@ -4,5 +4,6 @@ sqlalchemy
 psycopg2-binary
 requests
 paho-mqtt
+redis
 
 
