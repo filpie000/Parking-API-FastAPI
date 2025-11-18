@@ -120,10 +120,10 @@
                         <div class="flex flex-col md:flex-row justify-between items-end md:items-center mb-6 border-b dark:border-gray-700 pb-4 gap-4">
                             <div>
                                 <h3 class="text-xl font-bold text-gray-800 dark:text-white">Konfigurator Raportu</h3>
-                                <p class="text-sm text-gray-500 dark:text-gray-400">Wybierz zakres dat i typ dni, aby wygenerować profil zajętości.</p>
+                                <p class="text-sm text-gray-500 dark:text-gray-400">Porównaj zajętość różnych stref parkingowych w czasie.</p>
                             </div>
-                            <button onclick="generateReport()" class="bg-indigo-600 hover:bg-indigo-700 text-white px-6 py-2 rounded font-bold shadow transition">
-                                <i class="fas fa-chart-pie mr-2"></i> Generuj Raport
+                            <button onclick="generateReport()" class="bg-indigo-600 hover:bg-indigo-700 text-white px-6 py-2 rounded font-bold shadow transition flex items-center">
+                                <i class="fas fa-chart-line mr-2"></i> Generuj Wykres
                             </button>
                         </div>
 
@@ -136,26 +136,41 @@
                                 <label class="block text-sm font-bold text-gray-700 dark:text-gray-300 mb-2">Data Koniec</label>
                                 <input type="date" id="date-end" class="w-full p-2 border rounded dark:bg-gray-700 dark:border-gray-600 dark:text-white focus:ring-2 focus:ring-indigo-500">
                             </div>
-                            <div class="md:col-span-2">
-                                <label class="block text-sm font-bold text-gray-700 dark:text-gray-300 mb-2">Uwzględnij w analizie:</label>
-                                <div class="flex flex-wrap gap-4">
+                            
+                            <div>
+                                <label class="block text-sm font-bold text-gray-700 dark:text-gray-300 mb-2">Typ Dnia:</label>
+                                <div class="flex flex-col gap-2">
                                     <label class="inline-flex items-center">
-                                        <input type="checkbox" id="filter-workday" checked class="form-checkbox h-5 w-5 text-indigo-600 rounded">
-                                        <span class="ml-2 text-gray-700 dark:text-gray-300">Dni Robocze</span>
+                                        <input type="checkbox" id="filter-workday" checked class="form-checkbox h-4 w-4 text-indigo-600 rounded">
+                                        <span class="ml-2 text-sm text-gray-700 dark:text-gray-300">Dni Robocze</span>
                                     </label>
                                     <label class="inline-flex items-center">
-                                        <input type="checkbox" id="filter-weekend" checked class="form-checkbox h-5 w-5 text-indigo-600 rounded">
-                                        <span class="ml-2 text-gray-700 dark:text-gray-300">Weekendy</span>
+                                        <input type="checkbox" id="filter-weekend" checked class="form-checkbox h-4 w-4 text-indigo-600 rounded">
+                                        <span class="ml-2 text-sm text-gray-700 dark:text-gray-300">Weekendy</span>
+                                    </label>
+                                </div>
+                            </div>
+
+                            <div>
+                                <label class="block text-sm font-bold text-gray-700 dark:text-gray-300 mb-2">Wybierz Strefy:</label>
+                                <div class="flex flex-col gap-2">
+                                    <label class="inline-flex items-center">
+                                        <input type="checkbox" value="EURO" checked class="group-checkbox form-checkbox h-4 w-4 text-blue-600 rounded">
+                                        <span class="ml-2 text-sm text-blue-600 font-bold">EURO</span>
                                     </label>
                                     <label class="inline-flex items-center">
-                                        <input type="checkbox" id="filter-holiday" class="form-checkbox h-5 w-5 text-indigo-600 rounded">
-                                        <span class="ml-2 text-gray-700 dark:text-gray-300">Święta</span>
+                                        <input type="checkbox" value="BUD" checked class="group-checkbox form-checkbox h-4 w-4 text-green-600 rounded">
+                                        <span class="ml-2 text-sm text-green-600 font-bold">BUD</span>
+                                    </label>
+                                    <label class="inline-flex items-center">
+                                        <input type="checkbox" value="TEST" class="group-checkbox form-checkbox h-4 w-4 text-orange-500 rounded">
+                                        <span class="ml-2 text-sm text-orange-500 font-bold">TEST</span>
                                     </label>
                                 </div>
                             </div>
                         </div>
 
-                        <div class="relative h-80 w-full bg-gray-50 dark:bg-gray-900/50 rounded-lg border dark:border-gray-700 p-4">
+                        <div class="relative h-96 w-full bg-gray-50 dark:bg-gray-900/50 rounded-lg border dark:border-gray-700 p-4">
                             <canvas id="reportChart"></canvas>
                         </div>
                     </div>
@@ -246,6 +261,14 @@
             'euro_admin': { pass: 'euro123',  role: 'EURO', badge: 'Admin EURO' },
             'bud_admin':  { pass: 'bud123',   role: 'BUD',  badge: 'Admin BUD' }
         };
+        
+        // Konfiguracja grup czujników i ich kolorów
+        const GROUP_CONFIG = {
+            'EURO': { color: '#3B82F6', label: 'EURO' }, // Niebieski
+            'BUD':  { color: '#10B981', label: 'BUD' },  // Zielony
+            'TEST': { color: '#F97316', label: 'TEST' }  // Pomarańczowy
+        };
+
         let CURRENT_USER = null;
         let reportChart;
 
@@ -264,12 +287,24 @@
                 document.getElementById('settings-username').innerText = user;
                 document.getElementById('settings-role').innerText = CURRENT_USER.role === 'ALL' ? 'Pełny' : `Strefa ${CURRENT_USER.role}`;
                 
+                // Ogranicz widoczność checkboxów dla adminów strefowych
+                if (CURRENT_USER.role !== 'ALL') {
+                    document.querySelectorAll('.group-checkbox').forEach(cb => {
+                        if (cb.value !== CURRENT_USER.role) {
+                            cb.checked = false;
+                            cb.disabled = true;
+                            cb.parentElement.classList.add('opacity-50');
+                        }
+                    });
+                }
+
                 initDashboard();
             } else {
                 document.getElementById('login-error').classList.remove('hidden');
             }
         }
         function logout() { location.reload(); }
+        
         function switchView(v) {
             ['dashboard','settings'].forEach(x => {
                 document.getElementById('view-'+x).classList.add('hidden');
@@ -279,6 +314,7 @@
             document.getElementById('nav-'+v).className = "w-full text-left block p-3 rounded bg-blue-50 dark:bg-blue-900 text-blue-600 dark:text-blue-200 font-semibold transition";
             document.getElementById('page-title').innerText = v==='dashboard' ? 'Generator Raportów' : 'Ustawienia';
         }
+        
         function toggleDarkMode() {
             document.documentElement.classList.toggle('dark');
             updateChartTheme();
@@ -286,32 +322,20 @@
 
         // --- INIT ---
         function initDashboard() {
-            // Set default dates
+            // Default dates
             const today = new Date();
             document.getElementById('date-end').valueAsDate = today;
             const lastWeek = new Date(); lastWeek.setDate(today.getDate() - 7);
             document.getElementById('date-start').valueAsDate = lastWeek;
 
-            // Init Chart
+            // Init Chart (Empty initially)
             const ctx = document.getElementById('reportChart').getContext('2d');
-            const gradient = ctx.createLinearGradient(0, 0, 0, 400);
-            gradient.addColorStop(0, 'rgba(79, 70, 229, 0.5)');
-            gradient.addColorStop(1, 'rgba(79, 70, 229, 0.0)');
-
+            
             reportChart = new Chart(ctx, {
                 type: 'line',
                 data: {
                     labels: Array.from({length: 24}, (_, i) => `${i}:00`),
-                    datasets: [{
-                        label: 'Średnia Zajętość (%)',
-                        data: Array(24).fill(0),
-                        borderColor: '#4f46e5',
-                        backgroundColor: gradient,
-                        borderWidth: 3,
-                        pointRadius: 4,
-                        fill: true,
-                        tension: 0.4
-                    }]
+                    datasets: []
                 },
                 options: {
                     responsive: true,
@@ -328,7 +352,7 @@
             });
 
             refreshData();
-            generateReport(); // Initial fake report
+            generateReport(); 
         }
 
         function updateChartTheme() {
@@ -344,7 +368,7 @@
             reportChart.update();
         }
 
-        // --- DATA ---
+        // --- DATA FETCH ---
         async function refreshData() {
             try {
                 const res = await fetch(API_URL + "?limit=200");
@@ -394,42 +418,64 @@
             });
         }
 
-        // --- REPORT LOGIC (SIMULATION) ---
+        // --- REPORT GENERATOR (SIMULATION) ---
         function generateReport() {
-            const start = document.getElementById('date-start').value;
-            const end = document.getElementById('date-end').value;
             const useWork = document.getElementById('filter-workday').checked;
             const useWeekend = document.getElementById('filter-weekend').checked;
             
-            // Generowanie sztucznych danych (symulacja backendu)
-            // W przyszłości tutaj będzie fetch do nowego endpointu backendu
-            const newData = [];
-            for(let h=0; h<24; h++) {
-                let val = 10; // baza nocna
-                
-                // Logika "Biznesowa" Symulacji
-                if (useWork) {
-                    if (h >= 7 && h <= 9) val += 50; // Rano praca
-                    if (h >= 15 && h <= 17) val += 60; // Powroty/Zakupy
+            // Pobierz zaznaczone grupy
+            const checkedBoxes = document.querySelectorAll('.group-checkbox:checked');
+            const selectedGroups = Array.from(checkedBoxes).map(cb => cb.value);
+
+            // Wyczyść stare datasety
+            reportChart.data.datasets = [];
+
+            // Dla każdej zaznaczonej grupy wygeneruj linię
+            selectedGroups.forEach(group => {
+                const config = GROUP_CONFIG[group];
+                if (!config) return;
+
+                const dataPoints = [];
+                // Symulacja danych (nieco inna dla każdej grupy żeby linie się nie pokrywały)
+                const offset = group === 'EURO' ? 0 : (group === 'BUD' ? 10 : -10);
+
+                for(let h=0; h<24; h++) {
+                    let val = 10 + offset; 
+                    
+                    if (useWork) {
+                        if (h >= 7 && h <= 9) val += 40; // Szczyt rano
+                        if (h >= 15 && h <= 17) val += 50; // Szczyt popołudnie
+                    }
+                    if (useWeekend) {
+                        if (h >= 10 && h <= 14) val += 30; // Szczyt weekendowy
+                    }
+                    
+                    // Randomizacja
+                    val += Math.random() * 10;
+                    if(val > 100) val = 100;
+                    if(val < 0) val = 0;
+                    dataPoints.push(Math.round(val));
                 }
-                if (useWeekend) {
-                    if (h >= 10 && h <= 14) val += 40; // Zakupy w sobotę
-                }
-                
-                // Randomizacja dla realizmu
-                val += Math.random() * 15;
-                if (val > 100) val = 100;
-                newData.push(Math.round(val));
-            }
-            
-            reportChart.data.datasets[0].data = newData;
+
+                reportChart.data.datasets.push({
+                    label: config.label,
+                    data: dataPoints,
+                    borderColor: config.color,
+                    backgroundColor: config.color + '20', // Transparent fill
+                    borderWidth: 3,
+                    pointRadius: 3,
+                    tension: 0.3,
+                    fill: false
+                });
+            });
+
             reportChart.update();
         }
 
         function getStatusBadge(s) {
             if(s===0) return '<span class="px-2 py-1 rounded-full text-xs font-bold bg-green-100 dark:bg-green-900 text-green-700 dark:text-green-300 border border-green-200 dark:border-green-800">WOLNE</span>';
             if(s===1) return '<span class="px-2 py-1 rounded-full text-xs font-bold bg-red-100 dark:bg-red-900 text-red-700 dark:text-red-300 border border-red-200 dark:border-red-800">ZAJĘTE</span>';
-            return '<span class="px-2 py-1 rounded-full text-xs font-bold bg-gray-100 dark:bg-gray-700 text-gray-600 dark:text-gray-400">OFFLINE</span>';
+            return '<span class="px-2 py-1 rounded-full text-xs font-bold bg-gray-100 dark:bg-gray-700 text-gray-600 dark:text-gray-400 border border-gray-200 dark:border-gray-600">OFFLINE</span>';
         }
         function getStatusText(s) { return s===0 ? '<span class="text-green-600 font-bold text-xs">Wolne</span>' : (s===1 ? '<span class="text-red-600 font-bold text-xs">Zajęte</span>' : '---'); }
         function filterTable() {
