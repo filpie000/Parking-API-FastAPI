@@ -320,18 +320,17 @@ async def process_parking_update(dane: dict, db: Session):
             logger.info(f"WYKRYTO ZMIANĘ STANU dla {sensor_id}: {poprzedni} -> {nowy_status}")
             zmiana_stanu = {"sensor_id": sensor_id, "status": nowy_status, "ostatnia_aktualizacja": teraz_utc.isoformat()}
             
-            # === LOGIKA POWIADOMIEŃ (INTELIGENTNA) ===
+            # === LOGIKA POWIADOMIEŃ (INTELIGENTNA Z NEW_TARGET) ===
             if poprzedni != 1 and nowy_status == 1:
+                # Limit 30 minut na stare obserwacje
                 limit = datetime.timedelta(minutes=30)
                 
-                # Pobieramy obserwatorów tego konkretnego miejsca
                 obserwatorzy = db.query(ObserwowaneMiejsca).filter(
                     ObserwowaneMiejsca.sensor_id == sensor_id,
                     (teraz_utc - ObserwowaneMiejsca.czas_dodania) < limit
                 ).all()
                 
                 if obserwatorzy:
-                    # 1. Sprawdź czy są inni "sąsiedzi" z tej samej grupy, którzy są WOLNI
                     grupa_prefix = sensor_id.split('_')[0] # np. "EURO" z "EURO_1"
                     
                     wolni_sasiedzi = db.query(AktualnyStan).filter(
@@ -340,17 +339,19 @@ async def process_parking_update(dane: dict, db: Session):
                         AktualnyStan.status == 0                         # Status Wolny
                     ).all()
                     
-                    # Domyślne wartości dla "PANIKI" (wszystko zajęte)
+                    # Domyślnie: Panika (wszystko zajęte)
                     tytul_push = "❌ Miejsce zajęte!"
-                    czynnosc = "reroute" # App.js: przekieruj na ekran wyników
+                    czynnosc = "reroute"
                     tresc_push = f"Miejsce {sensor_id} zostało zajęte. Szukam alternatywy..."
+                    nowy_cel = None
                     
-                    # Jeśli znaleziono wolnego sąsiada -> Zmieniamy na "SPOKOJNIE"
+                    # Jeśli znaleziono wolnego sąsiada: Info + new_target
                     if wolni_sasiedzi:
                         najlepszy_sasiad = wolni_sasiedzi[0].sensor_id
                         tytul_push = "⚠️ Zmiana miejsca"
-                        czynnosc = "info" # App.js: tylko wyświetl alert, nie zmieniaj ekranu
-                        tresc_push = f"Miejsce {sensor_id} zajęte, ale {najlepszy_sasiad} obok jest wolne! Kieruj się tam."
+                        czynnosc = "info"
+                        tresc_push = f"Miejsce {sensor_id} zajęte. Przekierowuję na {najlepszy_sasiad}!"
+                        nowy_cel = najlepszy_sasiad
 
                     # Wysyłamy powiadomienia
                     for o in obserwatorzy:
@@ -358,10 +359,14 @@ async def process_parking_update(dane: dict, db: Session):
                             o.device_token, 
                             tytul_push, 
                             tresc_push, 
-                            {"sensor_id": sensor_id, "action": czynnosc}
+                            {
+                                "sensor_id": sensor_id, 
+                                "action": czynnosc,
+                                "new_target": nowy_cel # <-- To kluczowe dla pętli obserwacji
+                            }
                         )
                     
-                    # Czyścimy obserwację
+                    # ZAWSZE czyścimy obserwację, bo apka sama wyśle nowe żądanie jeśli dostanie new_target
                     db.query(ObserwowaneMiejsca).filter(
                         ObserwowaneMiejsca.device_token.in_([o.device_token for o in obserwatorzy])
                     ).delete(synchronize_session=False)
