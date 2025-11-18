@@ -12,7 +12,10 @@
 
     <style>
         #map { height: 100%; width: 100%; border-radius: 0.5rem; }
-        .glass { background: rgba(255, 255, 255, 0.95); backdrop-filter: blur(10px); }
+        /* Pasek przewijania dla tabel */
+        .scrollbar-thin::-webkit-scrollbar { width: 6px; height: 6px; }
+        .scrollbar-thin::-webkit-scrollbar-thumb { background-color: #cbd5e1; border-radius: 3px; }
+        .scrollbar-thin::-webkit-scrollbar-track { background-color: #f1f5f9; }
     </style>
 </head>
 <body class="bg-gray-100 text-gray-800 font-sans h-screen flex flex-col overflow-hidden">
@@ -28,7 +31,7 @@
 
     <div id="app-content" class="flex h-full hidden">
         
-        <aside class="w-64 bg-white shadow-md flex flex-col z-10">
+        <aside class="w-64 bg-white shadow-md flex flex-col z-10 hidden md:flex">
             <div class="p-4 border-b flex items-center gap-2">
                 <i class="fas fa-parking text-blue-600 text-2xl"></i>
                 <span class="text-xl font-bold">Smart Parking</span>
@@ -36,109 +39,111 @@
             <nav class="flex-1 p-4 space-y-2">
                 <a href="#" class="block p-3 rounded bg-blue-50 text-blue-600 font-semibold"><i class="fas fa-chart-line mr-2"></i> Pulpit</a>
                 <a href="#" class="block p-3 rounded hover:bg-gray-50 text-gray-600"><i class="fas fa-cogs mr-2"></i> Ustawienia</a>
-                <a href="#" class="block p-3 rounded hover:bg-gray-50 text-gray-600"><i class="fas fa-users mr-2"></i> Użytkownicy</a>
             </nav>
             <div class="p-4 border-t text-sm text-gray-500">
-                Zalogowano jako: <b>Admin</b>
+                Admin
             </div>
         </aside>
 
         <main class="flex-1 flex flex-col overflow-hidden">
             <header class="bg-white shadow-sm p-4 flex justify-between items-center z-10">
                 <h1 class="text-2xl font-bold text-gray-700">Pulpit Zarządzania</h1>
-                <button onclick="refreshData()" class="bg-gray-100 hover:bg-gray-200 text-gray-600 px-4 py-2 rounded shadow-sm transition">
-                    <i class="fas fa-sync-alt mr-1"></i> Odśwież
+                <button onclick="refreshData()" class="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded shadow-sm transition flex items-center">
+                    <i class="fas fa-sync-alt mr-2"></i> Odśwież Dane
                 </button>
             </header>
 
-            <div class="flex-1 overflow-auto p-6 space-y-6">
+            <div class="flex-1 overflow-auto p-6 space-y-6 scrollbar-thin">
                 
                 <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
-                    <div class="bg-white p-6 rounded-lg shadow border-l-4 border-green-500">
-                        <div class="flex justify-between items-center">
-                            <div>
-                                <p class="text-sm text-gray-500">Wolne Miejsca</p>
-                                <h3 class="text-3xl font-bold text-gray-800" id="count-free">--</h3>
-                            </div>
-                            <i class="fas fa-check-circle text-green-500 text-3xl"></i>
+                    <div class="bg-white p-6 rounded-lg shadow border-l-4 border-green-500 flex justify-between items-center">
+                        <div>
+                            <p class="text-sm text-gray-500">Wolne Miejsca</p>
+                            <h3 class="text-3xl font-bold text-gray-800" id="count-free">--</h3>
                         </div>
+                        <i class="fas fa-check-circle text-green-500 text-3xl"></i>
                     </div>
-                    <div class="bg-white p-6 rounded-lg shadow border-l-4 border-red-500">
-                        <div class="flex justify-between items-center">
-                            <div>
-                                <p class="text-sm text-gray-500">Zajęte Miejsca</p>
-                                <h3 class="text-3xl font-bold text-gray-800" id="count-occupied">--</h3>
-                            </div>
-                            <i class="fas fa-car text-red-500 text-3xl"></i>
+                    <div class="bg-white p-6 rounded-lg shadow border-l-4 border-red-500 flex justify-between items-center">
+                        <div>
+                            <p class="text-sm text-gray-500">Zajęte Miejsca</p>
+                            <h3 class="text-3xl font-bold text-gray-800" id="count-occupied">--</h3>
                         </div>
+                        <i class="fas fa-car text-red-500 text-3xl"></i>
                     </div>
-                    <div class="bg-white p-6 rounded-lg shadow border-l-4 border-blue-500">
-                        <div class="flex justify-between items-center">
-                            <div>
-                                <p class="text-sm text-gray-500">Wszystkie Sensory</p>
-                                <h3 class="text-3xl font-bold text-gray-800" id="count-total">--</h3>
-                            </div>
-                            <i class="fas fa-server text-blue-500 text-3xl"></i>
+                    <div class="bg-white p-6 rounded-lg shadow border-l-4 border-blue-500 flex justify-between items-center">
+                        <div>
+                            <p class="text-sm text-gray-500">Wszystkie Sensory</p>
+                            <h3 class="text-3xl font-bold text-gray-800" id="count-total">--</h3>
                         </div>
+                        <i class="fas fa-server text-blue-500 text-3xl"></i>
                     </div>
                 </div>
 
                 <div class="grid grid-cols-1 lg:grid-cols-2 gap-6 h-96">
                     <div class="bg-white p-4 rounded-lg shadow flex flex-col">
                         <h3 class="text-lg font-bold mb-4 text-gray-700">Mapa Parkingu</h3>
-                        <div class="flex-1 relative">
-                             
-                            <div id="map"></div>
-                        </div>
+                        <div class="flex-1 relative"><div id="map"></div></div>
                     </div>
                     <div class="bg-white p-4 rounded-lg shadow flex flex-col">
-                        <h3 class="text-lg font-bold mb-4 text-gray-700">Zajętość wg Sekcji</h3>
-                        <div class="flex-1 relative">
-                             
+                        <h3 class="text-lg font-bold mb-4 text-gray-700">Statystyka Zajętości</h3>
+                        <div class="flex-1 relative"><canvas id="occupancyChart"></canvas></div>
+                    </div>
+                </div>
 
-[Image of Bar Chart Occupancy]
-
-                            <canvas id="occupancyChart"></canvas>
+                <div class="grid grid-cols-1 xl:grid-cols-3 gap-6">
+                    
+                    <div class="xl:col-span-2 bg-white rounded-lg shadow overflow-hidden flex flex-col h-[500px]">
+                        <div class="p-4 border-b flex justify-between items-center bg-gray-50">
+                            <h3 class="text-lg font-bold text-gray-700"><i class="fas fa-list mr-2"></i>Lista Czujników</h3>
+                            <input type="text" id="search" placeholder="Szukaj ID..." class="border rounded px-3 py-1 text-sm focus:ring-2 focus:ring-blue-500" onkeyup="filterTable()">
+                        </div>
+                        <div class="overflow-auto flex-1 scrollbar-thin">
+                            <table class="w-full text-left border-collapse">
+                                <thead class="bg-gray-100 text-gray-600 uppercase text-xs sticky top-0 z-10 shadow-sm">
+                                    <tr>
+                                        <th class="p-4 border-b">ID Sensora</th>
+                                        <th class="p-4 border-b">Status Obecny</th>
+                                        <th class="p-4 border-b text-right">Akcja</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="table-body-main" class="text-sm text-gray-700 divide-y">
+                                    </tbody>
+                            </table>
                         </div>
                     </div>
-                </div>
 
-                <div class="bg-white rounded-lg shadow overflow-hidden">
-                    <div class="p-4 border-b flex justify-between items-center">
-                        <h3 class="text-lg font-bold text-gray-700">Status Czujników (Lista)</h3>
-                        <input type="text" id="search" placeholder="Szukaj (np. EURO)..." class="border rounded px-3 py-1 text-sm focus:ring-2 focus:ring-blue-500" onkeyup="filterTable()">
+                    <div class="xl:col-span-1 bg-white rounded-lg shadow overflow-hidden flex flex-col h-[500px]">
+                        <div class="p-4 border-b bg-blue-50">
+                            <h3 class="text-lg font-bold text-blue-800"><i class="fas fa-history mr-2"></i>Dziennik Zdarzeń</h3>
+                            <span class="text-xs text-blue-600">Ostatnie 30 zmian</span>
+                        </div>
+                        <div class="overflow-auto flex-1 scrollbar-thin">
+                            <table class="w-full text-left">
+                                <thead class="bg-blue-100 text-blue-800 uppercase text-xs sticky top-0 z-10">
+                                    <tr>
+                                        <th class="p-3 border-b">Czas</th>
+                                        <th class="p-3 border-b">ID</th>
+                                        <th class="p-3 border-b">Status</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="table-body-recent" class="text-sm text-gray-600 divide-y">
+                                    </tbody>
+                            </table>
+                        </div>
                     </div>
-                    <div class="overflow-x-auto">
-                        <table class="w-full text-left border-collapse">
-                            <thead class="bg-gray-50 text-gray-600 uppercase text-xs">
-                                <tr>
-                                    <th class="p-4 border-b">ID Sensora</th>
-                                    <th class="p-4 border-b">Status</th>
-                                    <th class="p-4 border-b">Ostatnia Aktualizacja</th>
-                                    <th class="p-4 border-b">Akcja</th>
-                                </tr>
-                            </thead>
-                            <tbody id="table-body" class="text-sm text-gray-700">
-                                </tbody>
-                        </table>
-                    </div>
-                    <div class="p-4 border-t bg-gray-50 flex justify-end">
-                        <span class="text-xs text-gray-400">Wyświetlono max 100 wyników</span>
-                    </div>
-                </div>
 
+                </div>
             </div>
         </main>
     </div>
 
     <script>
-        // --- KONFIGURACJA ---
-        const API_URL = window.location.origin + "/api/v1/aktualny_stan"; // Dynamiczny URL
+        // --- CONFIG ---
+        const API_URL = window.location.origin + "/api/v1/aktualny_stan";
         
-        // --- LOGOWANIE (Proste) ---
+        // --- LOGIC ---
         function login() {
-            const pass = document.getElementById('password').value;
-            if(pass === 'admin123') {
+            if(document.getElementById('password').value === 'admin123') {
                 document.getElementById('login-overlay').style.display = 'none';
                 document.getElementById('app-content').classList.remove('hidden');
                 initDashboard();
@@ -147,118 +152,136 @@
             }
         }
 
-        // --- INICJALIZACJA ---
         let map, chart;
-        let allData = [];
 
         function initDashboard() {
-            // 1. Inicjalizacja Mapy (Inowrocław)
+            // Mapa
             map = L.map('map').setView([52.800315, 18.256840], 16);
-            L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-                attribution: '© OpenStreetMap contributors'
-            }).addTo(map);
+            L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png').addTo(map);
 
-            // 2. Inicjalizacja Wykresu
+            // Wykres
             const ctx = document.getElementById('occupancyChart').getContext('2d');
             chart = new Chart(ctx, {
-                type: 'bar',
+                type: 'doughnut',
                 data: {
-                    labels: ['EURO', 'BUD'],
+                    labels: ['Wolne', 'Zajęte', 'Offline'],
                     datasets: [{
-                        label: 'Zajęte miejsca',
-                        data: [0, 0],
-                        backgroundColor: ['#3B82F6', '#10B981']
+                        data: [0, 0, 0],
+                        backgroundColor: ['#10B981', '#EF4444', '#9CA3AF']
                     }]
                 },
                 options: { responsive: true, maintainAspectRatio: false }
             });
 
-            // 3. Pobranie danych
             refreshData();
-            
-            // Auto-odświeżanie co 10s
-            setInterval(refreshData, 10000);
         }
 
         async function refreshData() {
             try {
-                // Pobierz z limitem 150 (żeby nie mulić przeglądarki, ale widzieć większość)
-                const res = await fetch(API_URL + "?limit=150");
+                // Pobieramy więcej danych (np. 200), żeby mieć z czego sortować historię
+                const res = await fetch(API_URL + "?limit=200");
                 const data = await res.json();
-                allData = data;
                 renderData(data);
             } catch (e) {
-                console.error("Błąd pobierania danych:", e);
+                console.error("Błąd API:", e);
+                alert("Nie udało się pobrać danych.");
             }
         }
 
         function renderData(data) {
-            // KPI
+            // 1. KPI & Chart
             const total = data.length;
             const occupied = data.filter(d => d.status === 1).length;
             const free = data.filter(d => d.status === 0).length;
-            
+            const unknown = total - occupied - free;
+
             document.getElementById('count-total').innerText = total;
             document.getElementById('count-occupied').innerText = occupied;
             document.getElementById('count-free').innerText = free;
 
-            // Tabela
-            const tbody = document.getElementById('table-body');
-            tbody.innerHTML = '';
-            data.forEach(row => {
-                const tr = document.createElement('tr');
-                tr.className = "hover:bg-gray-50 border-b";
-                
-                let statusBadge = '';
-                if(row.status === 0) statusBadge = '<span class="px-2 py-1 rounded text-xs font-bold bg-green-100 text-green-800">WOLNE</span>';
-                else if(row.status === 1) statusBadge = '<span class="px-2 py-1 rounded text-xs font-bold bg-red-100 text-red-800">ZAJĘTE</span>';
-                else statusBadge = '<span class="px-2 py-1 rounded text-xs font-bold bg-gray-200 text-gray-800">OFFLINE</span>';
-
-                tr.innerHTML = `
-                    <td class="p-4 font-medium">${row.sensor_id}</td>
-                    <td class="p-4">${statusBadge}</td>
-                    <td class="p-4 text-gray-500">${row.ostatnia_aktualizacja ? new Date(row.ostatnia_aktualizacja).toLocaleTimeString() : '-'}</td>
-                    <td class="p-4"><button class="text-blue-600 hover:underline text-xs">Edytuj</button></td>
-                `;
-                tbody.appendChild(tr);
-            });
-
-            // Wykres
-            const euroCount = data.filter(d => d.sensor_id.startsWith('EURO') && d.status === 1).length;
-            const budCount = data.filter(d => d.sensor_id.startsWith('BUD') && d.status === 1).length;
-            chart.data.datasets[0].data = [euroCount, budCount];
+            chart.data.datasets[0].data = [free, occupied, unknown];
             chart.update();
 
-            // Mapa (Pinezy)
-            // Czyścimy stare markery (uproszczone)
-            map.eachLayer((layer) => {
-                if (layer instanceof L.Marker) { map.removeLayer(layer); }
+            // 2. Tabela Główna (Inventory) - Posortowana po ID
+            const sortedById = [...data].sort((a, b) => a.sensor_id.localeCompare(b.sensor_id));
+            const tbodyMain = document.getElementById('table-body-main');
+            tbodyMain.innerHTML = '';
+
+            sortedById.forEach(row => {
+                const tr = document.createElement('tr');
+                tr.className = "hover:bg-gray-50";
+                tr.innerHTML = `
+                    <td class="p-4 font-medium text-gray-800">${row.sensor_id}</td>
+                    <td class="p-4">${getStatusBadge(row.status)}</td>
+                    <td class="p-4 text-right"><button class="text-blue-600 hover:text-blue-800 font-semibold text-xs border border-blue-200 px-2 py-1 rounded">Szczegóły</button></td>
+                `;
+                tbodyMain.appendChild(tr);
             });
 
-            // Demo lokalizacje (w produkcji brałbyś je z bazy)
+            // 3. Tabela Historii (Ostatnie 30 zmian) - Posortowana po Czasie
+            // Filtrujemy tylko te, które mają datę
+            const withDate = data.filter(d => d.ostatnia_aktualizacja);
+            const sortedByTime = withDate.sort((a, b) => new Date(b.ostatnia_aktualizacja) - new Date(a.ostatnia_aktualizacja));
+            const top30 = sortedByTime.slice(0, 30);
+
+            const tbodyRecent = document.getElementById('table-body-recent');
+            tbodyRecent.innerHTML = '';
+
+            top30.forEach(row => {
+                const tr = document.createElement('tr');
+                const timeStr = new Date(row.ostatnia_aktualizacja).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit', second:'2-digit'});
+                
+                // Subtelniejsze podświetlenie wiersza w historii
+                let rowClass = "";
+                if(row.status === 1) rowClass = "bg-red-50";
+                else if(row.status === 0) rowClass = "bg-green-50";
+
+                tr.className = rowClass;
+                tr.innerHTML = `
+                    <td class="p-3 text-xs font-mono text-gray-500">${timeStr}</td>
+                    <td class="p-3 font-semibold">${row.sensor_id}</td>
+                    <td class="p-3">${getStatusText(row.status)}</td>
+                `;
+                tbodyRecent.appendChild(tr);
+            });
+
+            // 4. Markery na Mapie
+            map.eachLayer(l => { if(l instanceof L.CircleMarker) map.removeLayer(l); });
+            
+            // Symulowane współrzędne (dla demo) - normalnie brałbyś z bazy
             const locs = {
-                'EURO_1': [52.800306, 18.256735],
-                'EURO_2': [52.800310, 18.256785],
-                'BUD_1': [52.769000, 18.252310],
+                'EURO_1': [52.800306, 18.256735], 'EURO_2': [52.800310, 18.256785],
+                'EURO_3': [52.800314, 18.256835], 'EURO_4': [52.800318, 18.256885],
+                'BUD_1': [52.769000, 18.252310], 'BUD_2': [52.768997, 18.252340]
             };
 
             data.forEach(d => {
                 if(locs[d.sensor_id]) {
-                    const color = d.status === 0 ? 'green' : 'red';
-                    // Prosty znacznik kołowy
+                    const color = d.status === 0 ? '#10B981' : (d.status === 1 ? '#EF4444' : '#9CA3AF');
                     L.circleMarker(locs[d.sensor_id], {
-                        color: color, fillColor: color, fillOpacity: 0.8, radius: 8
-                    }).bindPopup(`<b>${d.sensor_id}</b><br>Status: ${d.status}`).addTo(map);
+                        color: 'white', weight: 1, fillColor: color, fillOpacity: 0.9, radius: 8
+                    }).bindPopup(`<b>${d.sensor_id}</b>`).addTo(map);
                 }
             });
         }
 
+        // Helpers
+        function getStatusBadge(s) {
+            if(s===0) return '<span class="px-2 py-1 rounded-full text-xs font-bold bg-green-100 text-green-700 border border-green-200">WOLNE</span>';
+            if(s===1) return '<span class="px-2 py-1 rounded-full text-xs font-bold bg-red-100 text-red-700 border border-red-200">ZAJĘTE</span>';
+            return '<span class="px-2 py-1 rounded-full text-xs font-bold bg-gray-100 text-gray-600">OFFLINE</span>';
+        }
+
+        function getStatusText(s) {
+            if(s===0) return '<span class="text-green-600 font-bold text-xs">Wolne</span>';
+            if(s===1) return '<span class="text-red-600 font-bold text-xs">Zajęte</span>';
+            return '<span class="text-gray-400 text-xs">---</span>';
+        }
+
         function filterTable() {
             const term = document.getElementById('search').value.toLowerCase();
-            const rows = document.querySelectorAll('#table-body tr');
-            rows.forEach(row => {
-                const txt = row.innerText.toLowerCase();
-                row.style.display = txt.includes(term) ? '' : 'none';
+            document.querySelectorAll('#table-body-main tr').forEach(row => {
+                row.style.display = row.innerText.toLowerCase().includes(term) ? '' : 'none';
             });
         }
     </script>
