@@ -427,10 +427,11 @@ def obserwuj_miejsce(request: ObserwujRequest, db: Session = Depends(get_db)):
     return {"status": "ok"}
 
 @app.post("/api/v1/statystyki/zajetosc")
+@app.post("/api/v1/statystyki/zajetosc")
 def pobierz_statystyki(z: StatystykiZapytanie, db: Session = Depends(get_db)):
     # 1. Sprawdź Cache (Redis)
+    cache_key = f"stats:{z.sensor_id}:{z.selected_date}:{z.selected_hour}"
     if redis_client:
-        cache_key = f"stats:{z.sensor_id}:{z.selected_date}:{z.selected_hour}"
         try:
             cached_result = redis_client.get(cache_key)
             if cached_result:
@@ -439,26 +440,36 @@ def pobierz_statystyki(z: StatystykiZapytanie, db: Session = Depends(get_db)):
         except Exception as e:
             logger.error(f"CACHE: Błąd odczytu z Redis: {e}")
             
-    # 2. Cache Miss - Oblicz
+    # 2. Oblicz
     logger.info(f"CACHE: Brak w cache, obliczam statystyki dla: {cache_key}")
     try:
-        selected_date = datetime.datetime.strptime(z.selected_date, "%Y-%m-%d").date()
-    except:
-        raise HTTPException(status_code=400, detail="Zły format daty")
-    if not z.sensor_id:
-        raise HTTPException(status_code=400, detail="Brak sensor_id")
-    
-    # Wywołaj funkcję z poprawką (zabezpieczeniem przed NULL)
-    wynik = calculate_occupancy_stats(z.sensor_id, selected_date, z.selected_hour, db)
-    
-    # 3. Zapisz w Cache na 1 godzinę
-    if redis_client:
+        # Walidacja daty
         try:
-            redis_client.set(cache_key, json.dumps(wynik), ex=3600)
-        except Exception as e:
-            logger.error(f"CACHE: Błąd zapisu do Redis: {e}")
-            
-    return {"wynik_dynamiczny": wynik}
+            selected_date = datetime.datetime.strptime(z.selected_date, "%Y-%m-%d").date()
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Zły format daty. Oczekiwano YYYY-MM-DD")
+
+        if not z.sensor_id:
+            raise HTTPException(status_code=400, detail="Brak sensor_id")
+        
+        # Wywołanie funkcji obliczającej
+        wynik = calculate_occupancy_stats(z.sensor_id, selected_date, z.selected_hour, db)
+        
+        # 3. Zapisz w Cache na 1 godzinę
+        if redis_client:
+            try:
+                redis_client.set(cache_key, json.dumps(wynik), ex=3600)
+            except Exception as e:
+                logger.error(f"CACHE: Błąd zapisu do Redis: {e}")
+                
+        return {"wynik_dynamiczny": wynik}
+
+    except HTTPException as http_ex:
+        raise http_ex
+    except Exception as e:
+        # To jest kluczowe - loguje prawdziwy błąd serwera do konsoli
+        logger.exception("KRYTYCZNY BŁĄD w pobierz_statystyki:")
+        raise HTTPException(status_code=500, detail=f"Błąd serwera: {str(e)}")
 
 @app.get("/api/v1/prognoza/wszystkie_miejsca")
 def pobierz_prognoze(db: Session = Depends(get_db), target_date: Optional[str] = None, target_hour: Optional[int] = None):
@@ -670,4 +681,5 @@ def shutdown_event():
     shutdown_event_flag.set()
     logger.info("Wysłano sygnał zamknięcia do wątków.")
     time.sleep(1.5)
+
 
