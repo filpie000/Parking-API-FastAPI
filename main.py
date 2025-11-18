@@ -151,7 +151,7 @@ def get_db():
     finally:
         db.close()
 
-# === INICJALIZACJA APLIKACJI (To musi być przed endpointami!) ===
+# === INICJALIZACJA APLIKACJI ===
 app = FastAPI(title="Parking API")
 
 # === Menedżer Połączeń WebSocket ===
@@ -362,11 +362,11 @@ async def process_parking_update(dane: dict, db: Session):
                             {
                                 "sensor_id": sensor_id, 
                                 "action": czynnosc,
-                                "new_target": nowy_cel # <-- To kluczowe dla pętli obserwacji
+                                "new_target": nowy_cel # Wysyłamy ID nowego miejsca do apki
                             }
                         )
                     
-                    # ZAWSZE czyścimy obserwację, bo apka sama wyśle nowe żądanie jeśli dostanie new_target
+                    # ZAWSZE czyścimy obserwację
                     db.query(ObserwowaneMiejsca).filter(
                         ObserwowaneMiejsca.device_token.in_([o.device_token for o in obserwatorzy])
                     ).delete(synchronize_session=False)
@@ -534,27 +534,38 @@ def obserwuj_miejsce(request: ObserwujRequest, db: Session = Depends(get_db)):
 
 @app.post("/api/v1/statystyki/zajetosc")
 def pobierz_statystyki(z: StatystykiZapytanie, db: Session = Depends(get_db)):
-    cache_key = f"stats:{z.sensor_id}:{z.selected_date}:{z.selected_hour}"
+    if not z.sensor_id:
+        raise HTTPException(status_code=400, detail="Brak sensor_id")
+
+    # === NOWA LOGIKA GRUPOWANIA ===
+    # Zamiast liczyć dla "EURO_1", bierzemy przedrostek "EURO"
+    try:
+        grupa_sensorow = z.sensor_id.split('_')[0]
+    except IndexError:
+        grupa_sensorow = z.sensor_id
+
+    # 1. Sprawdź Cache (Redis) - klucz teraz zależy od GRUPY
+    cache_key = f"stats:GROUP:{grupa_sensorow}:{z.selected_date}:{z.selected_hour}"
+    
     if redis_client:
         try:
             cached_result = redis_client.get(cache_key)
             if cached_result:
-                logger.info(f"CACHE: Zwracam wynik statystyk z Redis dla: {cache_key}")
+                logger.info(f"CACHE: Zwracam wynik grupowy z Redis dla: {cache_key}")
                 return {"wynik_dynamiczny": json.loads(cached_result)}
         except Exception as e:
             logger.error(f"CACHE: Błąd odczytu z Redis: {e}")
             
-    logger.info(f"CACHE: Brak w cache, obliczam statystyki dla: {cache_key}")
+    logger.info(f"CACHE: Brak w cache, obliczam statystyki dla grupy: {grupa_sensorow}")
+    
     try:
         try:
             selected_date = datetime.datetime.strptime(z.selected_date, "%Y-%m-%d").date()
         except ValueError:
             raise HTTPException(status_code=400, detail="Zły format daty. Oczekiwano YYYY-MM-DD")
-
-        if not z.sensor_id:
-            raise HTTPException(status_code=400, detail="Brak sensor_id")
         
-        wynik = calculate_occupancy_stats(z.sensor_id, selected_date, z.selected_hour, db)
+        # Wywołanie funkcji obliczającej dla CAŁEJ GRUPY
+        wynik = calculate_occupancy_stats(grupa_sensorow, selected_date, z.selected_hour, db)
         
         if redis_client:
             try:
