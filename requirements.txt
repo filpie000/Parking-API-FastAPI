@@ -1,6 +1,6 @@
 fastapi
 uvicorn[standard]
-sqlalchemy
+sqlalchemy[asyncio]
 psycopg2-binary
 requests
 paho-mqtt
@@ -8,5 +8,8 @@ redis
 asyncpg
 slowapi
 greenlet
+aiosqlite
+pydantic
+
 
 
