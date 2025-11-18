@@ -22,7 +22,7 @@ from sqlalchemy.future import select
 from sqlalchemy import Column, Integer, String, DateTime
 from sqlalchemy.ext.declarative import declarative_base
 
-# Rate Limiting (Ochrona przed spamem)
+# Rate Limiting
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
@@ -42,39 +42,36 @@ PL_TZ = ZoneInfo("Europe/Warsaw")
 def now_utc() -> datetime.datetime:
     return datetime.datetime.now(UTC)
 
-# === Rate Limiter (Ochrona) ===
+# === Rate Limiter ===
 limiter = Limiter(key_func=get_remote_address)
 
-# === DATABASE (Async Configuration) ===
+# === DATABASE (Async) ===
 DATABASE_URL = os.environ.get('DATABASE_URL')
 
 if not DATABASE_URL:
-    # Fallback dla testów lokalnych (SQLite Async)
     DATABASE_URL = "sqlite+aiosqlite:///./parking_data.db"
     logger.warning("Brak DATABASE_URL — używam SQLite (Async).")
 else:
-    # FIX DLA RENDERA: Wymuszamy sterownik asyncpg
+    # Fix dla Rendera
     if DATABASE_URL.startswith("postgres://"):
         DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql+asyncpg://", 1)
     elif DATABASE_URL.startswith("postgresql://"):
         DATABASE_URL = DATABASE_URL.replace("postgresql://", "postgresql+asyncpg://", 1)
 
-# Tworzenie silnika asynchronicznego
 try:
     engine = create_async_engine(DATABASE_URL, echo=False)
 except Exception as e:
-    logger.error(f"Błąd tworzenia silnika DB: {e}")
+    logger.error(f"Błąd silnika DB: {e}")
     raise e
 
 AsyncSessionLocal = sessionmaker(bind=engine, class_=AsyncSession, expire_on_commit=False)
 Base = declarative_base()
 
-# Dependency Injection (Async)
 async def get_db():
     async with AsyncSessionLocal() as session:
         yield session
 
-# === Inicjalizacja Aplikacji ===
+# === Inicjalizacja ===
 app = FastAPI(title="Parking API")
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
@@ -92,18 +89,17 @@ MQTT_BROKER = os.environ.get('MQTT_BROKER', 'broker.emqx.io')
 MQTT_PORT = int(os.environ.get('MQTT_PORT', 1883))
 MQTT_TOPIC_SUBSCRIBE = os.environ.get('MQTT_TOPIC', "parking/tester/status")
 
-# === Redis (Cache) ===
+# === Redis ===
 REDIS_URL = os.environ.get('REDIS_URL')
 redis_client = None
 if REDIS_URL:
     try:
         redis_client = redis.from_url(REDIS_URL, decode_responses=True)
         redis_client.ping()
-        logger.info("Połączono z Redis (Cache).")
-    except Exception as e:
-        logger.error(f"Redis Error: {e}")
+        logger.info("Redis OK.")
+    except: redis_client = None
 
-# === Mapy i Stałe ===
+# === Mapy ===
 SENSOR_MAP = {
     1: "EURO_1", 2: "EURO_2", 3: "EURO_3", 4: "EURO_4",
     5: "BUD_1", 6: "BUD_2", 7: "BUD_3", 8: "BUD_4",
@@ -118,19 +114,14 @@ MANUALNA_MAPA_SWIAT = {
     date(2025, 1, 1): "Nowy Rok", date(2025, 4, 20): "Wielkanoc",
 }
 
-# === Modele Bazy Danych ===
+# === Tabele ===
 class AktualnyStan(Base):
     __tablename__ = "aktualny_stan"
     sensor_id = Column(String, primary_key=True, index=True)
     status = Column(Integer, default=0)
     ostatnia_aktualizacja = Column(DateTime(timezone=True), default=now_utc)
-    
     def to_dict(self):
-        return {
-            "sensor_id": self.sensor_id,
-            "status": self.status,
-            "ostatnia_aktualizacja": self.ostatnia_aktualizacja.isoformat() if self.ostatnia_aktualizacja else None
-        }
+        return {"sensor_id": self.sensor_id, "status": self.status, "ostatnia_aktualizacja": self.ostatnia_aktualizacja.isoformat() if self.ostatnia_aktualizacja else None}
 
 class DaneHistoryczne(Base):
     __tablename__ = "dane_historyczne"
@@ -153,12 +144,11 @@ class ObserwowaneMiejsca(Base):
     sensor_id = Column(String, index=True)
     czas_dodania = Column(DateTime(timezone=True), default=now_utc)
 
-# Tworzenie tabel (Sync - wymagane przy starcie dla SQLAlchemy)
 async def init_models():
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
 
-# === Modele Pydantic ===
+# === Modele ===
 class WymaganyFormat(BaseModel):
     sensor_id: str
     status: int
@@ -177,7 +167,7 @@ class RaportRequest(BaseModel):
     include_weekends: bool
     include_holidays: bool
 
-# === WebSocket Manager ===
+# === WebSocket ===
 class ConnectionManager:
     def __init__(self):
         self.active_connections: List[WebSocket] = []
@@ -190,262 +180,309 @@ class ConnectionManager:
     async def broadcast(self, message: dict):
         message_json = json.dumps(message, default=str)
         for connection in list(self.active_connections):
-            try:
-                await connection.send_text(message_json)
-            except:
-                self.disconnect(connection)
+            try: await connection.send_text(message_json)
+            except: self.disconnect(connection)
 
 manager = ConnectionManager()
-shutdown_event_flag = threading.Event()
 
-# === PUSH Helper ===
-def send_push_notification(token: str, title: str, body: str, data: dict):
+# === Logika Biznesowa (Async) ===
+
+def get_time_with_offset(base_hour, offset_minutes):
+    base_dt = datetime.datetime(2000, 1, 1, base_hour, 0)
+    offset_dt = base_dt + datetime.timedelta(minutes=offset_minutes)
+    return offset_dt.time()
+
+async def calculate_occupancy_stats_async(sensor_prefix: str, selected_date_obj: date, selected_hour: int, db: AsyncSession) -> dict:
+    nazwa_swieta = MANUALNA_MAPA_SWIAT.get(selected_date_obj)
+    kategoria_str = ""
+    rows = []
+    
+    # Określanie zakresu godzinowego (+/- 60 min)
     try:
-        requests.post("https://exp.host/--/api/v2/push/send", json={"to": token, "title": title, "body": body, "data": data}, timeout=2)
-    except Exception as e:
-        logger.error(f"Push Error: {e}")
+        czas_poczatek = get_time_with_offset(selected_hour, -60)
+        czas_koniec = get_time_with_offset(selected_hour, 60)
+    except:
+        return {"procent_zajetosci": 0, "liczba_pomiarow": 0, "kategoria": "Błąd czasu"}
 
-# === CORE LOGIC (Async) ===
+    if nazwa_swieta:
+        kategoria_str = f"Święto: {nazwa_swieta}"
+        res = await db.execute(select(DaneSwieta).filter(DaneSwieta.sensor_id.startswith(sensor_prefix)))
+        rows = res.scalars().all()
+    else:
+        selected_weekday = selected_date_obj.weekday()
+        dni_do_uwzglednienia = []
+        if 0 <= selected_weekday <= 3:
+            kategoria_str = "Dni robocze (Pn-Cz)"
+            dni_do_uwzglednienia = [0, 1, 2, 3]
+        elif selected_weekday == 4:
+            kategoria_str = "Piątek"
+            dni_do_uwzglednienia = [4]
+        elif selected_weekday >= 5:
+            kategoria_str = "Weekend"
+            dni_do_uwzglednienia = [5, 6]
+
+        res = await db.execute(select(DaneHistoryczne).filter(DaneHistoryczne.sensor_id.startswith(sensor_prefix)))
+        rows = res.scalars().all()
+
+        # Filtrowanie w Pythonie (dla uproszczenia SQL w async)
+        filtered_rows = []
+        for row in rows:
+            if not row.czas_pomiaru: continue
+            local = row.czas_pomiaru.astimezone(PL_TZ) if row.czas_pomiaru.tzinfo else row.czas_pomiaru.replace(tzinfo=PL_TZ)
+            if local.weekday() in dni_do_uwzglednienia:
+                filtered_rows.append(row)
+        rows = filtered_rows
+
+    # Filtrowanie godzinowe
+    dane_pasujace = []
+    for row in rows:
+        if not row.czas_pomiaru: continue
+        local = row.czas_pomiaru.astimezone(PL_TZ) if row.czas_pomiaru.tzinfo else row.czas_pomiaru.replace(tzinfo=PL_TZ)
+        t = local.time()
+        
+        match = False
+        if czas_poczatek > czas_koniec:
+            if t >= czas_poczatek or t < czas_koniec: match = True
+        else:
+            if czas_poczatek <= t < czas_koniec: match = True
+            
+        if match: dane_pasujace.append(row.status)
+
+    if not dane_pasujace:
+        return {"procent_zajetosci": 0, "liczba_pomiarow": 0, "kategoria": kategoria_str}
+
+    zajete = dane_pasujace.count(1)
+    total = len(dane_pasujace)
+    procent = (zajete / total) * 100 if total > 0 else 0
+
+    return {
+        "procent_zajetosci": round(procent, 1),
+        "liczba_pomiarow": total,
+        "kategoria": kategoria_str,
+        "przedzial_czasu": f"{czas_poczatek} - {czas_koniec}"
+    }
+
+# === Processing ===
+def send_push_notification(token: str, title: str, body: str, data: dict):
+    try: requests.post("https://exp.host/--/api/v1/push/send", json={"to": token, "title": title, "body": body, "data": data}, timeout=2)
+    except: pass
+
 async def process_parking_update(dane: dict, db: AsyncSession):
     teraz_utc = now_utc()
     teraz_pl = teraz_utc.astimezone(PL_TZ)
     zmiana_stanu = None
     
     if "sensor_id" in dane:
-        sensor_id = dane["sensor_id"]
-        nowy_status = dane["status"]
-        nazwa_swieta = MANUALNA_MAPA_SWIAT.get(teraz_pl.date())
+        sid = dane["sensor_id"]
+        status = dane["status"]
+        swieto = MANUALNA_MAPA_SWIAT.get(teraz_pl.date())
         
-        # Zapis Historii
-        if nazwa_swieta:
-            db.add(DaneSwieta(czas_pomiaru=teraz_utc, sensor_id=sensor_id, status=nowy_status, nazwa_swieta=nazwa_swieta))
-        else:
-            db.add(DaneHistoryczne(czas_pomiaru=teraz_utc, sensor_id=sensor_id, status=nowy_status))
+        if swieto: db.add(DaneSwieta(czas_pomiaru=teraz_utc, sensor_id=sid, status=status, nazwa_swieta=swieto))
+        else: db.add(DaneHistoryczne(czas_pomiaru=teraz_utc, sensor_id=sid, status=status))
             
-        # Aktualizacja Stanu
-        result = await db.execute(select(AktualnyStan).where(AktualnyStan.sensor_id == sensor_id))
-        miejsce = result.scalars().first()
-        
-        poprzedni = -1
-        if miejsce:
-            poprzedni = miejsce.status
-            miejsce.status = nowy_status
-            miejsce.ostatnia_aktualizacja = teraz_utc
+        res = await db.execute(select(AktualnyStan).where(AktualnyStan.sensor_id == sid))
+        m = res.scalars().first()
+        prev = -1
+        if m:
+            prev = m.status
+            m.status = status
+            m.ostatnia_aktualizacja = teraz_utc
         else:
-            db.add(AktualnyStan(sensor_id=sensor_id, status=nowy_status, ostatnia_aktualizacja=teraz_utc))
+            db.add(AktualnyStan(sensor_id=sid, status=status, ostatnia_aktualizacja=teraz_utc))
         
-        # Logika Powiadomień (Sąsiad)
-        if poprzedni != nowy_status:
-            zmiana_stanu = {"sensor_id": sensor_id, "status": nowy_status, "ostatnia_aktualizacja": teraz_utc.isoformat()}
-            
-            if poprzedni != 1 and nowy_status == 1:
+        if prev != status:
+            zmiana_stanu = {"sensor_id": sid, "status": status, "ostatnia_aktualizacja": teraz_utc.isoformat()}
+            if prev != 1 and status == 1:
                 limit = datetime.timedelta(minutes=30)
-                # Pobierz obserwatorów
-                obs_res = await db.execute(select(ObserwowaneMiejsca).where(
-                    ObserwowaneMiejsca.sensor_id == sensor_id,
-                    (teraz_utc - ObserwowaneMiejsca.czas_dodania) < limit
-                ))
-                obserwatorzy = obs_res.scalars().all()
-                
-                if obserwatorzy:
-                    grupa = sensor_id.split('_')[0]
-                    # Szukaj wolnego sąsiada
-                    sasiad_res = await db.execute(select(AktualnyStan).where(
-                        AktualnyStan.sensor_id.startswith(grupa),
-                        AktualnyStan.sensor_id != sensor_id,
-                        AktualnyStan.status == 0
-                    ))
-                    wolni = sasiad_res.scalars().all()
+                obs_res = await db.execute(select(ObserwowaneMiejsca).where(ObserwowaneMiejsca.sensor_id == sid, (teraz_utc - ObserwowaneMiejsca.czas_dodania) < limit))
+                obs = obs_res.scalars().all()
+                if obs:
+                    grp = sid.split('_')[0]
+                    free_res = await db.execute(select(AktualnyStan).where(AktualnyStan.sensor_id.startswith(grp), AktualnyStan.sensor_id != sid, AktualnyStan.status == 0))
+                    free = free_res.scalars().all()
                     
-                    tytul, akcja, tresc, cel = "❌ Miejsce zajęte!", "reroute", f"Miejsce {sensor_id} zajęte.", None
-                    if wolni:
-                        tytul, akcja, tresc, cel = "⚠️ Zmiana", "info", f"{sensor_id} zajęte. Jedź na {wolni[0].sensor_id}!", wolni[0].sensor_id
+                    tit, act, body, target = "❌ Zajęte!", "reroute", f"{sid} zajęte.", None
+                    if free:
+                        tit, act, body, target = "⚠️ Zmiana", "info", f"{sid} zajęte. Jedź na {free[0].sensor_id}!", free[0].sensor_id
                     
-                    for o in obserwatorzy:
-                        send_push_notification(o.device_token, tytul, tresc, {"sensor_id": sensor_id, "action": akcja, "new_target": cel})
-                    
-                    for o in obserwatorzy:
+                    for o in obs:
+                        send_push_notification(o.device_token, tit, body, {"sensor_id": sid, "action": act, "new_target": target})
                         await db.delete(o)
                         
         await db.commit()
-        
-        if zmiana_stanu and manager.active_connections:
-            await manager.broadcast([zmiana_stanu])
-        
+        if zmiana_stanu and manager.active_connections: await manager.broadcast([zmiana_stanu])
         return {"status": "ok"}
-    return {"status": "error"}
+    return {"status": "err"}
 
 # === ENDPOINTY ===
 
 @app.get("/")
-def read_root():
-    return {"message": "API (Async) działa poprawnie."}
+def root(): return {"msg": "API OK"}
 
-# Dashboard
 @app.get("/dashboard", response_class=HTMLResponse)
 async def dashboard():
     try:
-        with open("dashboard.html", "r", encoding="utf-8") as f:
-            return f.read()
-    except FileNotFoundError:
-        return "Błąd: Brak pliku dashboard.html"
+        with open("dashboard.html", "r", encoding="utf-8") as f: return f.read()
+    except: return "Błąd: Brak dashboard.html"
 
-# --- Pobieranie Stanu (Z Rate Limitem) ---
 @app.get("/api/v1/aktualny_stan")
-@limiter.limit("60/minute") # Max 60 zapytań na minutę z jednego IP
-async def pobierz_aktualny_stan(request: Request, limit: int = 100, db: AsyncSession = Depends(get_db)):
-    result = await db.execute(select(AktualnyStan).limit(limit))
-    wyniki = result.scalars().all()
-    return [miejsce.to_dict() for miejsce in wyniki]
+@limiter.limit("60/minute")
+async def get_status(request: Request, limit: int = 100, db: AsyncSession = Depends(get_db)):
+    res = await db.execute(select(AktualnyStan).limit(limit))
+    return [m.to_dict() for m in res.scalars().all()]
 
-# --- Debug / Symulacja ---
-@app.post("/api/v1/debug/symulacja_sensora")
-async def debug_sensor(dane: WymaganyFormat, db: AsyncSession = Depends(get_db)):
-    return await process_parking_update(dane.dict(), db)
-
-# --- Obserwacja ---
-@app.post("/api/v1/obserwuj_miejsce")
-async def obserwuj_miejsce(request: ObserwujRequest, db: AsyncSession = Depends(get_db)):
-    result = await db.execute(select(AktualnyStan).where(AktualnyStan.sensor_id == request.sensor_id))
-    miejsce = result.scalars().first()
-    
-    if not miejsce or miejsce.status != 0:
-        raise HTTPException(status_code=409, detail="Miejsce zajęte/offline")
+# --- NAPRAWIONY ENDPOINT PROGNOZY ---
+@app.get("/api/v1/prognoza/wszystkie_miejsca")
+async def get_forecast(target_date: Optional[str] = None, target_hour: Optional[int] = None, db: AsyncSession = Depends(get_db)):
+    prognozy = {}
+    teraz = now_utc().astimezone(PL_TZ)
+    try:
+        dt = datetime.datetime.strptime(target_date, "%Y-%m-%d").date() if target_date else teraz.date()
+        hr = int(target_hour) if target_hour is not None else teraz.hour
+    except:
+        dt = teraz.date(); hr = teraz.hour
         
-    res_obs = await db.execute(select(ObserwowaneMiejsca).where(ObserwowaneMiejsca.device_token == request.device_token))
-    wpis = res_obs.scalars().first()
+    for grp in GRUPY_SENSOROW:
+        # Obliczamy statystyki ASYNCHRONICZNIE
+        wynik = await calculate_occupancy_stats_async(grp, dt, hr, db)
+        prognozy[grp] = wynik["procent_zajetosci"]
+        
+    return prognozy
+
+# --- NAPRAWIONY ENDPOINT STATYSTYK ---
+@app.post("/api/v1/statystyki/zajetosc")
+async def get_stats(z: StatystykiZapytanie, db: AsyncSession = Depends(get_db)):
+    try:
+        # Grupujemy: jeśli z.sensor_id = "EURO_1", to liczymy dla "EURO"
+        grp = z.sensor_id.split('_')[0]
+    except: grp = z.sensor_id
     
+    key = f"stats:{grp}:{z.selected_date}:{z.selected_hour}"
+    if redis_client:
+        try:
+            cached = redis_client.get(key)
+            if cached: return {"wynik_dynamiczny": json.loads(cached)}
+        except: pass
+        
+    try:
+        date_obj = datetime.datetime.strptime(z.selected_date, "%Y-%m-%d").date()
+    except: raise HTTPException(400, "Bad Date")
+    
+    wynik = await calculate_occupancy_stats_async(grp, date_obj, z.selected_hour, db)
+    
+    if redis_client:
+        try: redis_client.set(key, json.dumps(wynik), ex=3600)
+        except: pass
+        
+    return {"wynik_dynamiczny": wynik}
+
+@app.post("/api/v1/obserwuj_miejsce")
+async def observe(r: ObserwujRequest, db: AsyncSession = Depends(get_db)):
+    res = await db.execute(select(AktualnyStan).where(AktualnyStan.sensor_id == r.sensor_id))
+    m = res.scalars().first()
+    if not m or m.status != 0: raise HTTPException(409, "Zajęte")
+    
+    obs_check = await db.execute(select(ObserwowaneMiejsca).where(ObserwowaneMiejsca.device_token == r.device_token))
+    wpis = obs_check.scalars().first()
     if wpis:
-        wpis.sensor_id = request.sensor_id
+        wpis.sensor_id = r.sensor_id
         wpis.czas_dodania = now_utc()
     else:
-        db.add(ObserwowaneMiejsca(device_token=request.device_token, sensor_id=request.sensor_id, czas_dodania=now_utc()))
-    
+        db.add(ObserwowaneMiejsca(device_token=r.device_token, sensor_id=r.sensor_id))
     await db.commit()
     return {"status": "ok"}
 
-# --- Raport Zbiorczy (Dashboard) ---
-@app.post("/api/v1/dashboard/raport")
-async def generuj_raport(req: RaportRequest, db: AsyncSession = Depends(get_db)):
-    try:
-        s_date = datetime.datetime.strptime(req.start_date, "%Y-%m-%d").date()
-        e_date = datetime.datetime.strptime(req.end_date, "%Y-%m-%d").date()
-    except: raise HTTPException(400, "Data error")
+@app.post("/api/v1/debug/symulacja_sensora")
+async def debug(d: WymaganyFormat, db: AsyncSession = Depends(get_db)):
+    return await process_parking_update(d.dict(), db)
 
+@app.post("/api/v1/dashboard/raport")
+async def report(req: RaportRequest, db: AsyncSession = Depends(get_db)):
+    try:
+        s_d = datetime.datetime.strptime(req.start_date, "%Y-%m-%d").date()
+        e_d = datetime.datetime.strptime(req.end_date, "%Y-%m-%d").date()
+    except: raise HTTPException(400, "Date error")
+    
     rows = []
     if req.include_workdays or req.include_weekends:
-        res = await db.execute(select(DaneHistoryczne).filter(
-            DaneHistoryczne.czas_pomiaru >= s_date, 
-            DaneHistoryczne.czas_pomiaru <= e_date + datetime.timedelta(days=1)
-        ))
+        res = await db.execute(select(DaneHistoryczne).filter(DaneHistoryczne.czas_pomiaru >= s_d, DaneHistoryczne.czas_pomiaru <= e_d + datetime.timedelta(days=1)))
         rows.extend(res.scalars().all())
-
     if req.include_holidays:
-        res = await db.execute(select(DaneSwieta).filter(
-            DaneSwieta.czas_pomiaru >= s_date, 
-            DaneSwieta.czas_pomiaru <= e_date + datetime.timedelta(days=1)
-        ))
+        res = await db.execute(select(DaneSwieta).filter(DaneSwieta.czas_pomiaru >= s_d, DaneSwieta.czas_pomiaru <= e_d + datetime.timedelta(days=1)))
         rows.extend(res.scalars().all())
-
-    agregacja = {g: {h: [] for h in range(24)} for g in req.groups}
-
-    for row in rows:
-        local_time = row.czas_pomiaru.astimezone(PL_TZ) if row.czas_pomiaru.tzinfo else row.czas_pomiaru.replace(tzinfo=PL_TZ)
-        hour = local_time.hour
-        weekday = local_time.date().weekday()
-        is_hol = isinstance(row, DaneSwieta)
+        
+    agg = {g: {h: [] for h in range(24)} for g in req.groups}
+    for r in rows:
+        local = r.czas_pomiaru.astimezone(PL_TZ) if r.czas_pomiaru.tzinfo else r.czas_pomiaru.replace(tzinfo=PL_TZ)
+        h = local.hour
+        wd = local.date().weekday()
+        is_hol = isinstance(r, DaneSwieta)
         
         if is_hol and not req.include_holidays: continue
         if not is_hol:
-            if (weekday >= 5) and not req.include_weekends: continue
-            if (weekday < 5) and not req.include_workdays: continue
-            
+            if wd >= 5 and not req.include_weekends: continue
+            if wd < 5 and not req.include_workdays: continue
+        
         try:
-            grp = row.sensor_id.split('_')[0]
-            if grp in agregacja: agregacja[grp][hour].append(row.status)
+            g = r.sensor_id.split('_')[0]
+            if g in agg: agg[g][h].append(r.status)
         except: pass
-
-    wynik = {}
+        
+    fin = {}
     for g in req.groups:
-        wynik[g] = []
+        fin[g] = []
         for h in range(24):
-            vals = agregacja[g][h]
-            wynik[g].append(round((sum(vals)/len(vals)*100), 1) if vals else 0)
-            
-    return wynik
+            v = agg[g][h]
+            fin[g].append(round(sum(v)/len(v)*100, 1) if v else 0)
+    return fin
 
-# --- Tło ---
-async def check_stale_task():
+# --- Background & MQTT ---
+loop_main = None
+
+async def check_stale():
     while True:
         try:
             async with AsyncSessionLocal() as db:
-                cutoff = now_utc() - datetime.timedelta(minutes=3)
-                res = await db.execute(select(AktualnyStan).where(
-                    AktualnyStan.status != 2,
-                    (AktualnyStan.ostatnia_aktualizacja < cutoff) | (AktualnyStan.ostatnia_aktualizacja == None)
-                ))
+                cut = now_utc() - datetime.timedelta(minutes=3)
+                res = await db.execute(select(AktualnyStan).where(AktualnyStan.status != 2, (AktualnyStan.ostatnia_aktualizacja < cut)|(AktualnyStan.ostatnia_aktualizacja == None)))
                 sensors = res.scalars().all()
-                
                 if sensors:
-                    changes = []
+                    chg = []
                     for s in sensors:
                         s.status = 2
                         s.ostatnia_aktualizacja = now_utc()
-                        changes.append(s.to_dict())
+                        chg.append(s.to_dict())
                     await db.commit()
-                    if manager.active_connections:
-                        await manager.broadcast(changes)
-        except Exception as e:
-            logger.error(f"Stale Check Error: {e}")
-        
+                    if manager.active_connections: await manager.broadcast(chg)
+        except: pass
         await asyncio.sleep(30)
 
-# --- MQTT Run ---
-mqtt_client = mqtt.Client()
-
+mqtt_c = mqtt.Client()
 def run_mqtt():
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    
-    def on_msg(c, u, m):
-        try:
-            sid = SENSOR_MAP.get((m.payload[0]<<8)|m.payload[1])
-            if sid:
-                asyncio.run_coroutine_threadsafe(
-                    process_async_wrapper(sid, int(m.payload[2])), loop_main
-                )
-        except: pass
-
-    mqtt_client.on_connect = lambda c, u, f, rc: c.subscribe(MQTT_TOPIC_SUBSCRIBE)
-    mqtt_client.on_message = on_msg
+    asyncio.set_event_loop(asyncio.new_event_loop())
+    mqtt_c.on_connect = lambda c,u,f,rc: c.subscribe(MQTT_TOPIC_SUBSCRIBE)
+    mqtt_c.on_message = lambda c,u,m: asyncio.run_coroutine_threadsafe(process_async_wrapper(SENSOR_MAP.get((m.payload[0]<<8)|m.payload[1]), int(m.payload[2])), loop_main) if SENSOR_MAP.get((m.payload[0]<<8)|m.payload[1]) else None
     try:
-        mqtt_client.connect(MQTT_BROKER, MQTT_PORT, 60)
-        mqtt_client.loop_forever()
+        mqtt_c.connect(MQTT_BROKER, MQTT_PORT, 60)
+        mqtt_c.loop_forever()
     except: pass
 
-async def process_async_wrapper(sensor_id, status):
-    async with AsyncSessionLocal() as db:
-        await process_parking_update({"sensor_id": sensor_id, "status": status}, db)
-
-# --- Startup ---
-loop_main = None
+async def process_async_wrapper(sid, stat):
+    async with AsyncSessionLocal() as db: await process_parking_update({"sensor_id": sid, "status": stat}, db)
 
 @app.on_event("startup")
-async def startup():
+async def start():
     global loop_main
     loop_main = asyncio.get_running_loop()
-    
     await init_models()
-    asyncio.create_task(check_stale_task())
-    
-    t = threading.Thread(target=run_mqtt, daemon=True)
-    t.start()
+    asyncio.create_task(check_stale())
+    threading.Thread(target=run_mqtt, daemon=True).start()
 
 @app.websocket("/ws/stan")
-async def ws_endpoint(websocket: WebSocket):
-    await manager.connect(websocket)
+async def ws(ws: WebSocket):
+    await manager.connect(ws)
     try:
         while True:
-            data = await websocket.receive_text()
-            if data != "ping": await websocket.send_text("pong")
-    except: manager.disconnect(websocket)
+            d = await ws.receive_text()
+            if d!="ping": await ws.send_text("pong")
+    except: manager.disconnect(ws)
