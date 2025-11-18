@@ -47,17 +47,25 @@ limiter = Limiter(key_func=get_remote_address)
 
 # === DATABASE (Async Configuration) ===
 DATABASE_URL = os.environ.get('DATABASE_URL')
+
 if not DATABASE_URL:
-    # Fallback dla testów lokalnych (SQLite też może być async, ale tu zakładamy Postgres na produkcji)
-    # Do testów lokalnych bez Postgresa potrzebujesz sterownika aiosqlite
+    # Fallback dla testów lokalnych (SQLite Async)
     DATABASE_URL = "sqlite+aiosqlite:///./parking_data.db"
     logger.warning("Brak DATABASE_URL — używam SQLite (Async).")
-elif DATABASE_URL.startswith("postgres://"):
-    # Fix dla Rendera/Heroku (wymagane dla asyncpg)
-    DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql+asyncpg://", 1)
+else:
+    # FIX DLA RENDERA: Wymuszamy sterownik asyncpg
+    if DATABASE_URL.startswith("postgres://"):
+        DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql+asyncpg://", 1)
+    elif DATABASE_URL.startswith("postgresql://"):
+        DATABASE_URL = DATABASE_URL.replace("postgresql://", "postgresql+asyncpg://", 1)
 
 # Tworzenie silnika asynchronicznego
-engine = create_async_engine(DATABASE_URL, echo=False)
+try:
+    engine = create_async_engine(DATABASE_URL, echo=False)
+except Exception as e:
+    logger.error(f"Błąd tworzenia silnika DB: {e}")
+    raise e
+
 AsyncSessionLocal = sessionmaker(bind=engine, class_=AsyncSession, expire_on_commit=False)
 Base = declarative_base()
 
@@ -146,7 +154,6 @@ class ObserwowaneMiejsca(Base):
     czas_dodania = Column(DateTime(timezone=True), default=now_utc)
 
 # Tworzenie tabel (Sync - wymagane przy starcie dla SQLAlchemy)
-# W środowisku produkcyjnym lepiej używać Alembic do migracji
 async def init_models():
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
@@ -193,8 +200,6 @@ shutdown_event_flag = threading.Event()
 
 # === PUSH Helper ===
 def send_push_notification(token: str, title: str, body: str, data: dict):
-    # To jest zapytanie HTTP, może być blokujące, w idealnym świecie powinno być asynchroniczne (aiohttp)
-    # Ale przy małej skali requests w wątku jest akceptowalne.
     try:
         requests.post("https://exp.host/--/api/v2/push/send", json={"to": token, "title": title, "body": body, "data": data}, timeout=2)
     except Exception as e:
@@ -259,8 +264,6 @@ async def process_parking_update(dane: dict, db: AsyncSession):
                     for o in obserwatorzy:
                         send_push_notification(o.device_token, tytul, tresc, {"sensor_id": sensor_id, "action": akcja, "new_target": cel})
                     
-                    # Usuń obserwacje (delete w SQLAlchemy 1.4/2.0 async jest inne, tu prościej usunąć po ID w pętli lub osobnym query delete)
-                    # Dla uproszczenia usuwamy w pętli
                     for o in obserwatorzy:
                         await db.delete(o)
                         
@@ -291,7 +294,6 @@ async def dashboard():
 @app.get("/api/v1/aktualny_stan")
 @limiter.limit("60/minute") # Max 60 zapytań na minutę z jednego IP
 async def pobierz_aktualny_stan(request: Request, limit: int = 100, db: AsyncSession = Depends(get_db)):
-    # Używamy select() dla async
     result = await db.execute(select(AktualnyStan).limit(limit))
     wyniki = result.scalars().all()
     return [miejsce.to_dict() for miejsce in wyniki]
@@ -310,7 +312,6 @@ async def obserwuj_miejsce(request: ObserwujRequest, db: AsyncSession = Depends(
     if not miejsce or miejsce.status != 0:
         raise HTTPException(status_code=409, detail="Miejsce zajęte/offline")
         
-    # Sprawdź czy już obserwuje
     res_obs = await db.execute(select(ObserwowaneMiejsca).where(ObserwowaneMiejsca.device_token == request.device_token))
     wpis = res_obs.scalars().first()
     
@@ -331,7 +332,6 @@ async def generuj_raport(req: RaportRequest, db: AsyncSession = Depends(get_db))
         e_date = datetime.datetime.strptime(req.end_date, "%Y-%m-%d").date()
     except: raise HTTPException(400, "Data error")
 
-    # Pobieranie danych (Non-blocking)
     rows = []
     if req.include_workdays or req.include_weekends:
         res = await db.execute(select(DaneHistoryczne).filter(
@@ -347,7 +347,6 @@ async def generuj_raport(req: RaportRequest, db: AsyncSession = Depends(get_db))
         ))
         rows.extend(res.scalars().all())
 
-    # Agregacja w Pythonie (szybka dla <100k rekordów, dla milionów przenieść do SQL)
     agregacja = {g: {h: [] for h in range(24)} for g in req.groups}
 
     for row in rows:
@@ -356,7 +355,6 @@ async def generuj_raport(req: RaportRequest, db: AsyncSession = Depends(get_db))
         weekday = local_time.date().weekday()
         is_hol = isinstance(row, DaneSwieta)
         
-        # Filtrowanie
         if is_hol and not req.include_holidays: continue
         if not is_hol:
             if (weekday >= 5) and not req.include_weekends: continue
@@ -376,10 +374,7 @@ async def generuj_raport(req: RaportRequest, db: AsyncSession = Depends(get_db))
             
     return wynik
 
-# --- Tło (Sync wrapper for async DB in Thread) ---
-# Uwaga: Używanie wątków z Async DB jest trudne. 
-# Dla uproszczenia w check_stale_sensors stworzymy nową pętlę zdarzeń lub użyjemy synchronicznego zapytania?
-# Najbezpieczniej przy asyncpg jest używać asyncio.create_task w startup event zamiast threadingu.
+# --- Tło ---
 async def check_stale_task():
     while True:
         try:
@@ -409,8 +404,6 @@ async def check_stale_task():
 mqtt_client = mqtt.Client()
 
 def run_mqtt():
-    # MQTT działa w osobnym wątku, ale musi wywoływać async DB
-    # Używamy run_coroutine_threadsafe
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     
@@ -418,8 +411,7 @@ def run_mqtt():
         try:
             sid = SENSOR_MAP.get((m.payload[0]<<8)|m.payload[1])
             if sid:
-                # Wywołanie async funkcji z wątku sync
-                future = asyncio.run_coroutine_threadsafe(
+                asyncio.run_coroutine_threadsafe(
                     process_async_wrapper(sid, int(m.payload[2])), loop_main
                 )
         except: pass
@@ -431,7 +423,6 @@ def run_mqtt():
         mqtt_client.loop_forever()
     except: pass
 
-# Helper do mostkowania wątków
 async def process_async_wrapper(sensor_id, status):
     async with AsyncSessionLocal() as db:
         await process_parking_update({"sensor_id": sensor_id, "status": status}, db)
@@ -444,12 +435,9 @@ async def startup():
     global loop_main
     loop_main = asyncio.get_running_loop()
     
-    await init_models() # Utwórz tabele
-    
-    # Uruchom zadanie w tle (zamiast wątku) - to jest "Async way"
+    await init_models()
     asyncio.create_task(check_stale_task())
     
-    # MQTT musi być w wątku bo biblioteka paho jest synchroniczna
     t = threading.Thread(target=run_mqtt, daemon=True)
     t.start()
 
