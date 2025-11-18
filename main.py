@@ -260,10 +260,40 @@ async def calculate_occupancy_stats_async(sensor_prefix: str, selected_date_obj:
         "przedzial_czasu": f"{czas_poczatek} - {czas_koniec}"
     }
 
-# === Processing ===
+# === Processing (POPRAWIONE LOGOWANIE I PARAMETRY EXPO) ===
 def send_push_notification(token: str, title: str, body: str, data: dict):
-    try: requests.post("https://exp.host/--/api/v1/push/send", json={"to": token, "title": title, "body": body, "data": data}, timeout=2)
-    except: pass
+    url = "https://exp.host/--/api/v1/push/send"
+    headers = {
+        "Host": "exp.host",
+        "Accept": "application/json",
+        "Accept-Encoding": "gzip, deflate",
+        "Content-Type": "application/json"
+    }
+    # Dodano kluczowe pola dla Androida: sound, priority, channelId
+    payload = {
+        "to": token,
+        "title": title,
+        "body": body,
+        "data": data,
+        "sound": "default",
+        "priority": "high",
+        "channelId": "parking-alerts" # Musi pasować do kanału w App.js
+    }
+    
+    try:
+        response = requests.post(url, json=payload, headers=headers, timeout=5)
+        logger.info(f"--- PUSH NOTIFICATION ---")
+        logger.info(f"Target: {token[:15]}...")
+        logger.info(f"Title: {title}")
+        logger.info(f"Status Code: {response.status_code}")
+        if response.status_code != 200:
+             logger.error(f"Expo Error Body: {response.text}")
+        else:
+             logger.info(f"Expo Success: {response.json()}")
+        logger.info(f"-------------------------")
+    except Exception as e:
+        logger.error(f"!!! CRITICAL PUSH ERROR !!!: {e}")
+
 
 async def process_parking_update(dane: dict, db: AsyncSession):
     teraz_utc = now_utc()
@@ -290,16 +320,20 @@ async def process_parking_update(dane: dict, db: AsyncSession):
         
         if prev != status:
             zmiana_stanu = {"sensor_id": sid, "status": status, "ostatnia_aktualizacja": teraz_utc.isoformat()}
+            
+            # Wykryto zajęcie miejsca (0 -> 1)
             if prev != 1 and status == 1:
                 limit = datetime.timedelta(minutes=30)
                 obs_res = await db.execute(select(ObserwowaneMiejsca).where(ObserwowaneMiejsca.sensor_id == sid, (teraz_utc - ObserwowaneMiejsca.czas_dodania) < limit))
                 obs = obs_res.scalars().all()
+                
                 if obs:
+                    logger.info(f"Znaleziono {len(obs)} obserwatorów dla {sid}")
                     grp = sid.split('_')[0]
                     free_res = await db.execute(select(AktualnyStan).where(AktualnyStan.sensor_id.startswith(grp), AktualnyStan.sensor_id != sid, AktualnyStan.status == 0))
                     free = free_res.scalars().all()
                     
-                    tit, act, body, target = "❌ Zajęte!", "reroute", f"{sid} zajęte.", None
+                    tit, act, body, target = "❌ Zajęte!", "reroute", f"Miejsce {sid} zostało zajęte.", None
                     if free:
                         tit, act, body, target = "⚠️ Zmiana", "info", f"{sid} zajęte. Jedź na {free[0].sensor_id}!", free[0].sensor_id
                     
