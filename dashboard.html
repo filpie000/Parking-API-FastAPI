@@ -20,6 +20,16 @@
         body, div, table, th, td, nav, aside, header, input, select {
             transition: background-color 0.3s ease, color 0.3s ease, border-color 0.3s ease;
         }
+        
+        /* Checkbox custom style */
+        .group-checkbox:checked + div {
+            background-color: #eff6ff;
+            border-color: #3b82f6;
+        }
+        .dark .group-checkbox:checked + div {
+            background-color: #1e3a8a;
+            border-color: #60a5fa;
+        }
     </style>
 </head>
 <body class="bg-gray-100 dark:bg-gray-900 text-gray-800 dark:text-gray-200 font-sans h-screen flex flex-col overflow-hidden">
@@ -127,46 +137,52 @@
                             </button>
                         </div>
 
-                        <div class="grid grid-cols-1 md:grid-cols-4 gap-6 mb-6">
-                            <div>
-                                <label class="block text-sm font-bold text-gray-700 dark:text-gray-300 mb-2">Data Start</label>
-                                <input type="date" id="date-start" class="w-full p-2 border rounded dark:bg-gray-700 dark:border-gray-600 dark:text-white focus:ring-2 focus:ring-indigo-500">
-                            </div>
-                            <div>
-                                <label class="block text-sm font-bold text-gray-700 dark:text-gray-300 mb-2">Data Koniec</label>
-                                <input type="date" id="date-end" class="w-full p-2 border rounded dark:bg-gray-700 dark:border-gray-600 dark:text-white focus:ring-2 focus:ring-indigo-500">
-                            </div>
-                            
-                            <div>
-                                <label class="block text-sm font-bold text-gray-700 dark:text-gray-300 mb-2">Typ Dnia:</label>
-                                <div class="flex flex-col gap-2">
-                                    <label class="inline-flex items-center">
-                                        <input type="checkbox" id="filter-workday" checked class="form-checkbox h-4 w-4 text-indigo-600 rounded">
-                                        <span class="ml-2 text-sm text-gray-700 dark:text-gray-300">Dni Robocze</span>
-                                    </label>
-                                    <label class="inline-flex items-center">
-                                        <input type="checkbox" id="filter-weekend" checked class="form-checkbox h-4 w-4 text-indigo-600 rounded">
-                                        <span class="ml-2 text-sm text-gray-700 dark:text-gray-300">Weekendy</span>
-                                    </label>
+                        <div class="grid grid-cols-1 lg:grid-cols-4 gap-6 mb-6">
+                            <div class="lg:col-span-1 space-y-4">
+                                <div>
+                                    <label class="block text-sm font-bold text-gray-700 dark:text-gray-300 mb-1">Data Start</label>
+                                    <input type="date" id="date-start" class="w-full p-2 border rounded dark:bg-gray-700 dark:border-gray-600 dark:text-white focus:ring-2 focus:ring-indigo-500">
+                                </div>
+                                <div>
+                                    <label class="block text-sm font-bold text-gray-700 dark:text-gray-300 mb-1">Data Koniec</label>
+                                    <input type="date" id="date-end" class="w-full p-2 border rounded dark:bg-gray-700 dark:border-gray-600 dark:text-white focus:ring-2 focus:ring-indigo-500">
+                                </div>
+                                <div>
+                                    <label class="block text-sm font-bold text-gray-700 dark:text-gray-300 mb-2">Typ Dnia:</label>
+                                    <div class="flex flex-wrap gap-3">
+                                        <label class="inline-flex items-center cursor-pointer">
+                                            <input type="checkbox" id="filter-workday" checked class="form-checkbox h-4 w-4 text-indigo-600 rounded">
+                                            <span class="ml-2 text-sm text-gray-700 dark:text-gray-300">Robocze</span>
+                                        </label>
+                                        <label class="inline-flex items-center cursor-pointer">
+                                            <input type="checkbox" id="filter-weekend" checked class="form-checkbox h-4 w-4 text-indigo-600 rounded">
+                                            <span class="ml-2 text-sm text-gray-700 dark:text-gray-300">Weekendy</span>
+                                        </label>
+                                        <label class="inline-flex items-center cursor-pointer">
+                                            <input type="checkbox" id="filter-holiday" checked class="form-checkbox h-4 w-4 text-indigo-600 rounded">
+                                            <span class="ml-2 text-sm text-gray-700 dark:text-gray-300 font-bold text-indigo-500">Święta</span>
+                                        </label>
+                                    </div>
                                 </div>
                             </div>
 
-                            <div>
-                                <label class="block text-sm font-bold text-gray-700 dark:text-gray-300 mb-2">Wybierz Strefy:</label>
-                                <div class="flex flex-col gap-2">
-                                    <label class="inline-flex items-center">
-                                        <input type="checkbox" value="EURO" checked class="group-checkbox form-checkbox h-4 w-4 text-blue-600 rounded">
-                                        <span class="ml-2 text-sm text-blue-600 font-bold">EURO</span>
-                                    </label>
-                                    <label class="inline-flex items-center">
-                                        <input type="checkbox" value="BUD" checked class="group-checkbox form-checkbox h-4 w-4 text-green-600 rounded">
-                                        <span class="ml-2 text-sm text-green-600 font-bold">BUD</span>
-                                    </label>
-                                    <label class="inline-flex items-center">
-                                        <input type="checkbox" value="TEST" class="group-checkbox form-checkbox h-4 w-4 text-orange-500 rounded">
-                                        <span class="ml-2 text-sm text-orange-500 font-bold">TEST</span>
-                                    </label>
+                            <div class="lg:col-span-3 flex flex-col">
+                                <label class="block text-sm font-bold text-gray-700 dark:text-gray-300 mb-2">Wybierz Strefy (Parkingi):</label>
+                                
+                                <div id="top-groups-container" class="flex flex-wrap gap-3 mb-3">
+                                    <div class="text-gray-400 text-sm">Ładowanie stref...</div>
                                 </div>
+
+                                <div class="relative w-full max-w-md">
+                                    <div class="flex items-center border rounded dark:border-gray-600 bg-white dark:bg-gray-700">
+                                        <i class="fas fa-search text-gray-400 ml-3"></i>
+                                        <input type="text" id="group-search" placeholder="Dodaj strefę..." class="w-full p-2 bg-transparent focus:outline-none text-sm dark:text-white" onkeyup="handleGroupSearch(this.value)">
+                                    </div>
+                                    <div id="search-results" class="absolute top-full left-0 w-full bg-white dark:bg-gray-700 border dark:border-gray-600 rounded shadow-lg mt-1 max-h-40 overflow-y-auto hidden z-20">
+                                        </div>
+                                </div>
+                                
+                                <div id="extra-groups-container" class="flex flex-wrap gap-3 mt-3"></div>
                             </div>
                         </div>
 
@@ -261,16 +277,24 @@
             'euro_admin': { pass: 'euro123',  role: 'EURO', badge: 'Admin EURO' },
             'bud_admin':  { pass: 'bud123',   role: 'BUD',  badge: 'Admin BUD' }
         };
-        
-        // Konfiguracja grup czujników i ich kolorów
-        const GROUP_CONFIG = {
-            'EURO': { color: '#3B82F6', label: 'EURO' }, // Niebieski
-            'BUD':  { color: '#10B981', label: 'BUD' },  // Zielony
-            'TEST': { color: '#F97316', label: 'TEST' }  // Pomarańczowy
-        };
 
         let CURRENT_USER = null;
         let reportChart;
+        
+        // Holds counts of sensors per group: { "EURO": 4, "BUD": 4, "TEST": 1 }
+        let GROUP_COUNTS = {};
+        let ALL_GROUPS = []; // Sorted array of group names
+
+        // --- UTILS ---
+        // Generate consistent color from string
+        function stringToColor(str) {
+            let hash = 0;
+            for (let i = 0; i < str.length; i++) {
+                hash = str.charCodeAt(i) + ((hash << 5) - hash);
+            }
+            const c = (hash & 0x00FFFFFF).toString(16).toUpperCase();
+            return '#' + "00000".substring(0, 6 - c.length) + c;
+        }
 
         // --- AUTH ---
         function login() {
@@ -352,7 +376,6 @@
             });
 
             refreshData();
-            generateReport(); 
         }
 
         function updateChartTheme() {
@@ -371,16 +394,115 @@
         // --- DATA FETCH ---
         async function refreshData() {
             try {
-                const res = await fetch(API_URL + "?limit=200");
+                // Get more items to calculate groups properly
+                const res = await fetch(API_URL + "?limit=500"); 
                 const allData = await res.json();
-                let data = allData;
-                if (CURRENT_USER.role !== 'ALL') data = allData.filter(r => r.sensor_id.startsWith(CURRENT_USER.role));
                 
+                // Filter data for restricted users
+                let data = allData;
+                if (CURRENT_USER.role !== 'ALL') {
+                    data = allData.filter(r => r.sensor_id.startsWith(CURRENT_USER.role));
+                }
+                
+                // Calculate Group Counts
+                GROUP_COUNTS = {};
+                data.forEach(d => {
+                    const prefix = d.sensor_id.split('_')[0];
+                    if(!GROUP_COUNTS[prefix]) GROUP_COUNTS[prefix] = 0;
+                    GROUP_COUNTS[prefix]++;
+                });
+                
+                // Sort groups by count (descending)
+                ALL_GROUPS = Object.keys(GROUP_COUNTS).sort((a,b) => GROUP_COUNTS[b] - GROUP_COUNTS[a]);
+                
+                renderGroupSelector();
                 updateKPI(data);
                 updateTables(data);
             } catch(e) { console.error(e); }
         }
 
+        // --- GROUP SELECTOR LOGIC ---
+        function renderGroupSelector() {
+            const container = document.getElementById('top-groups-container');
+            container.innerHTML = '';
+
+            // Only show top 3
+            const top3 = ALL_GROUPS.slice(0, 3);
+
+            top3.forEach(group => {
+                addCheckboxToContainer(container, group, true);
+            });
+        }
+
+        function addCheckboxToContainer(container, group, checked) {
+            // Don't add duplicate
+            if(container.querySelector(`input[value="${group}"]`)) return;
+
+            const color = stringToColor(group);
+            const count = GROUP_COUNTS[group] || 0;
+
+            const wrapper = document.createElement('label');
+            wrapper.className = "inline-flex items-center cursor-pointer group-item";
+            wrapper.innerHTML = `
+                <input type="checkbox" value="${group}" ${checked ? 'checked' : ''} class="group-checkbox sr-only peer">
+                <div class="px-3 py-1 border rounded-full text-sm font-semibold transition peer-checked:bg-opacity-20 peer-checked:border-opacity-100 border-gray-300 dark:border-gray-600 text-gray-600 dark:text-gray-300"
+                     style="--ac-color: ${color}">
+                     ${group} <span class="text-xs opacity-70">(${count})</span>
+                </div>
+            `;
+            
+            // Custom color logic on check
+            const input = wrapper.querySelector('input');
+            const div = wrapper.querySelector('div');
+            
+            const updateStyle = () => {
+                if(input.checked) {
+                   div.style.backgroundColor = color + '20'; // 20% opacity hex
+                   div.style.borderColor = color;
+                   div.style.color = color;
+                } else {
+                   div.style.backgroundColor = '';
+                   div.style.borderColor = '';
+                   div.style.color = '';
+                }
+            };
+            input.addEventListener('change', updateStyle);
+            if(checked) updateStyle();
+
+            container.appendChild(wrapper);
+        }
+
+        function handleGroupSearch(query) {
+            const resultsDiv = document.getElementById('search-results');
+            resultsDiv.innerHTML = '';
+            
+            if(!query || query.length < 1) {
+                resultsDiv.classList.add('hidden');
+                return;
+            }
+
+            const matches = ALL_GROUPS.filter(g => g.toLowerCase().includes(query.toLowerCase()));
+            
+            if(matches.length === 0) {
+                resultsDiv.innerHTML = '<div class="p-2 text-sm text-gray-500">Brak wyników</div>';
+            } else {
+                matches.forEach(group => {
+                    const div = document.createElement('div');
+                    div.className = "p-2 hover:bg-gray-100 dark:hover:bg-gray-600 cursor-pointer text-sm dark:text-white";
+                    div.innerText = `${group} (${GROUP_COUNTS[group]})`;
+                    div.onclick = () => {
+                        addCheckboxToContainer(document.getElementById('extra-groups-container'), group, true);
+                        document.getElementById('group-search').value = '';
+                        resultsDiv.classList.add('hidden');
+                    };
+                    resultsDiv.appendChild(div);
+                });
+            }
+            resultsDiv.classList.remove('hidden');
+        }
+
+
+        // --- DATA RENDER ---
         function updateKPI(data) {
             const occupied = data.filter(d => d.status === 1).length;
             const free = data.filter(d => d.status === 0).length;
@@ -418,58 +540,68 @@
             });
         }
 
-        // --- REPORT GENERATOR (SIMULATION) ---
-        function generateReport() {
+        // --- REPORT GENERATOR (REAL DB) ---
+        async function generateReport() {
+            const start = document.getElementById('date-start').value;
+            const end = document.getElementById('date-end').value;
             const useWork = document.getElementById('filter-workday').checked;
             const useWeekend = document.getElementById('filter-weekend').checked;
+            const useHoliday = document.getElementById('filter-holiday').checked;
             
-            // Pobierz zaznaczone grupy
+            // Collect all checked groups
             const checkedBoxes = document.querySelectorAll('.group-checkbox:checked');
             const selectedGroups = Array.from(checkedBoxes).map(cb => cb.value);
 
-            // Wyczyść stare datasety
-            reportChart.data.datasets = [];
+            if (selectedGroups.length === 0) {
+                alert("Wybierz przynajmniej jedną strefę!");
+                return;
+            }
 
-            // Dla każdej zaznaczonej grupy wygeneruj linię
-            selectedGroups.forEach(group => {
-                const config = GROUP_CONFIG[group];
-                if (!config) return;
+            document.body.style.cursor = 'wait';
 
-                const dataPoints = [];
-                // Symulacja danych (nieco inna dla każdej grupy żeby linie się nie pokrywały)
-                const offset = group === 'EURO' ? 0 : (group === 'BUD' ? 10 : -10);
-
-                for(let h=0; h<24; h++) {
-                    let val = 10 + offset; 
-                    
-                    if (useWork) {
-                        if (h >= 7 && h <= 9) val += 40; // Szczyt rano
-                        if (h >= 15 && h <= 17) val += 50; // Szczyt popołudnie
-                    }
-                    if (useWeekend) {
-                        if (h >= 10 && h <= 14) val += 30; // Szczyt weekendowy
-                    }
-                    
-                    // Randomizacja
-                    val += Math.random() * 10;
-                    if(val > 100) val = 100;
-                    if(val < 0) val = 0;
-                    dataPoints.push(Math.round(val));
-                }
-
-                reportChart.data.datasets.push({
-                    label: config.label,
-                    data: dataPoints,
-                    borderColor: config.color,
-                    backgroundColor: config.color + '20', // Transparent fill
-                    borderWidth: 3,
-                    pointRadius: 3,
-                    tension: 0.3,
-                    fill: false
+            try {
+                const response = await fetch(window.location.origin + "/api/v1/dashboard/raport", {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        start_date: start,
+                        end_date: end,
+                        groups: selectedGroups,
+                        include_workdays: useWork,
+                        include_weekends: useWeekend,
+                        include_holidays: useHoliday
+                    })
                 });
-            });
 
-            reportChart.update();
+                if (!response.ok) throw new Error("Błąd serwera");
+                const reportData = await response.json();
+
+                reportChart.data.datasets = [];
+
+                selectedGroups.forEach(group => {
+                    const color = stringToColor(group);
+                    const dataPoints = reportData[group] || Array(24).fill(0);
+
+                    reportChart.data.datasets.push({
+                        label: group,
+                        data: dataPoints,
+                        borderColor: color,
+                        backgroundColor: color + '20',
+                        borderWidth: 3,
+                        pointRadius: 3,
+                        tension: 0.3,
+                        fill: false
+                    });
+                });
+
+                reportChart.update();
+
+            } catch (e) {
+                console.error("Błąd generowania raportu:", e);
+                alert("Błąd pobierania raportu.");
+            } finally {
+                document.body.style.cursor = 'default';
+            }
         }
 
         function getStatusBadge(s) {
