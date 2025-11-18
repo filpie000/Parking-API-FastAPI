@@ -33,6 +33,23 @@ MQTT_BROKER = os.environ.get('MQTT_BROKER', 'broker.emqx.io')
 MQTT_PORT = int(os.environ.get('MQTT_PORT', 1883))
 MQTT_TOPIC_SUBSCRIBE = os.environ.get('MQTT_TOPIC', "parking/tester/status")
 
+# === ENDPOINT DEBUGERSKI (Dla Postmana) ===
+# Pozwala symulować sensor przez HTTP, zamiast MQTT
+@app.post("/api/v1/debug/symulacja_sensora")
+async def debug_sensor_update(dane: WymaganyFormat, db: Session = Depends(get_db)):
+    logger.info(f"DEBUG: Otrzymano symulację z Postmana: {dane}")
+    # Przekształcamy obiekt Pydantic na słownik
+    payload = dane.dict()
+    
+    # Wywołujemy tę samą funkcję, co MQTT
+    # Dzięki temu zadziałają powiadomienia Push i WebSocket
+    try:
+        wynik = await process_parking_update(payload, db)
+        return wynik
+    except Exception as e:
+        logger.error(f"DEBUG ERROR: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 # DATABASE
 DATABASE_URL = os.environ.get('DATABASE_URL')
 if DATABASE_URL and DATABASE_URL.startswith("postgres://"):
@@ -780,6 +797,7 @@ def shutdown_event():
     shutdown_event_flag.set()
     logger.info("Wysłano sygnał zamknięcia do wątków.")
     time.sleep(1.5)
+
 
 
 
