@@ -33,23 +33,6 @@ MQTT_BROKER = os.environ.get('MQTT_BROKER', 'broker.emqx.io')
 MQTT_PORT = int(os.environ.get('MQTT_PORT', 1883))
 MQTT_TOPIC_SUBSCRIBE = os.environ.get('MQTT_TOPIC', "parking/tester/status")
 
-# === ENDPOINT DEBUGERSKI (Dla Postmana) ===
-# Pozwala symulować sensor przez HTTP, zamiast MQTT
-@app.post("/api/v1/debug/symulacja_sensora")
-async def debug_sensor_update(dane: WymaganyFormat, db: Session = Depends(get_db)):
-    logger.info(f"DEBUG: Otrzymano symulację z Postmana: {dane}")
-    # Przekształcamy obiekt Pydantic na słownik
-    payload = dane.dict()
-    
-    # Wywołujemy tę samą funkcję, co MQTT
-    # Dzięki temu zadziałają powiadomienia Push i WebSocket
-    try:
-        wynik = await process_parking_update(payload, db)
-        return wynik
-    except Exception as e:
-        logger.error(f"DEBUG ERROR: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
 # DATABASE
 DATABASE_URL = os.environ.get('DATABASE_URL')
 if DATABASE_URL and DATABASE_URL.startswith("postgres://"):
@@ -63,7 +46,6 @@ SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 
 # === [OPTYMALIZACJA] Konfiguracja Redis ===
-# Redis przechowuje tymczasowe raporty (cache statystyk)
 REDIS_URL = os.environ.get('REDIS_URL')
 redis_client = None
 if REDIS_URL:
@@ -78,8 +60,6 @@ else:
     logger.warning("Brak REDIS_URL. Cache będzie wyłączony.")
 
 # === Słownik Mapowania Sensorów (MQTT Binarnie -> API) ===
-# Klucz (int): ID wysyłane przez MQTT (teraz do 65535)
-# Wartość (str): Pełne ID używane w bazie danych i API
 SENSOR_MAP = {
     1: "EURO_1",
     2: "EURO_2",
@@ -89,7 +69,6 @@ SENSOR_MAP = {
     6: "BUD_2",
     7: "BUD_3",
     8: "BUD_4",
-    # Przykład dla ID > 255 (dlatego użyliśmy 3 bajtów)
     500: "TEST_PARKING_500",
 }
 
@@ -127,7 +106,6 @@ MANUALNA_MAPA_SWIAT = {
     date(2025, 12, 26): "Drugi Dzień Świąt",
     date(2025, 12, 31): "Sylwester",
 }
-
 
 # === Tabele ===
 class AktualnyStan(Base):
@@ -173,6 +151,7 @@ def get_db():
     finally:
         db.close()
 
+# === INICJALIZACJA APLIKACJI (To musi być przed endpointami!) ===
 app = FastAPI(title="Parking API")
 
 # === Menedżer Połączeń WebSocket ===
@@ -260,12 +239,7 @@ def sensor_checker_thread():
         shutdown_event_flag.wait(30)
     logger.info("TŁO: Wątek sprawdzający zakończył działanie.")
 
-
-# === ENDPOINT GŁÓWNY (/) ===
-@app.get("/")
-def read_root():
-    return {"message": "API działa poprawnie."}
-
+# === Konfiguracja CORS ===
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -289,7 +263,6 @@ class StatystykiZapytanie(BaseModel):
     selected_hour: int
 
 # === PUSH ===
-# === ZMODYFIKOWANA FUNKCJA PUSH (bardziej elastyczna) ===
 def send_push_notification(token: str, title: str, body: str, data: dict):
     logger.info(f"Wysyłam PUSH do {token}: {title}")
     try:
@@ -306,7 +279,7 @@ def send_push_notification(token: str, title: str, body: str, data: dict):
     except Exception as e:
         logger.error(f"Błąd podczas wysyłania PUSH: {e}")
 
-# === ZMODYFIKOWANA LOGIKA PRZETWARZANIA (Neighbor Check) ===
+# === PRZETWARZANIE DANYCH (MQTT i Debug) ===
 async def process_parking_update(dane: dict, db: Session):
     teraz_utc = now_utc()
     teraz_pl = teraz_utc.astimezone(PL_TZ)
@@ -348,7 +321,6 @@ async def process_parking_update(dane: dict, db: Session):
             zmiana_stanu = {"sensor_id": sensor_id, "status": nowy_status, "ostatnia_aktualizacja": teraz_utc.isoformat()}
             
             # === LOGIKA POWIADOMIEŃ (INTELIGENTNA) ===
-            # Tylko jeśli miejsce zmienia się z Wolnego/Nieznanego na ZAJĘTE (1)
             if poprzedni != 1 and nowy_status == 1:
                 limit = datetime.timedelta(minutes=30)
                 
@@ -389,7 +361,7 @@ async def process_parking_update(dane: dict, db: Session):
                             {"sensor_id": sensor_id, "action": czynnosc}
                         )
                     
-                    # Czyścimy obserwację (bo kierowca już dostał info)
+                    # Czyścimy obserwację
                     db.query(ObserwowaneMiejsca).filter(
                         ObserwowaneMiejsca.device_token.in_([o.device_token for o in obserwatorzy])
                     ).delete(synchronize_session=False)
@@ -467,15 +439,13 @@ def calculate_occupancy_stats(sensor_prefix: str, selected_date_obj: datetime.da
                     # Próba parsowania stringa do datetime
                     czas_rekordu_db = datetime.datetime.fromisoformat(czas_rekordu_db)
                 except ValueError:
-                    # Fallback dla formatów bez "T" lub innych
                     try:
                         czas_rekordu_db = datetime.datetime.strptime(czas_rekordu_db, "%Y-%m-%d %H:%M:%S.%f")
                     except:
-                        continue # Pomijamy rekord, którego nie da się sparsować
+                        continue
 
             # 3. Konwersja strefy czasowej
             if czas_rekordu_db.tzinfo is None:
-                # Traktujemy jako czas lokalny/UTC zależnie od serwera, tutaj przypisujemy PL
                 czas_pl = czas_rekordu_db.replace(tzinfo=PL_TZ)
             else:
                 czas_pl = czas_rekordu_db.astimezone(PL_TZ)
@@ -487,12 +457,11 @@ def calculate_occupancy_stats(sensor_prefix: str, selected_date_obj: datetime.da
 
             czas_rek = czas_pl.time()
             
-            # Logika sprawdzania zakresu godzinowego (z obsługą północy)
             pasuje_godzinowo = False
-            if czas_poczatek > czas_koniec: # Przypadek przejścia przez północ (np. 23:00 - 01:00)
+            if czas_poczatek > czas_koniec:
                 if czas_rek >= czas_poczatek or czas_rek < czas_koniec:
                     pasuje_godzinowo = True
-            else: # Normalny przypadek (np. 10:00 - 12:00)
+            else:
                 if czas_poczatek <= czas_rek < czas_koniec:
                     pasuje_godzinowo = True
 
@@ -500,8 +469,6 @@ def calculate_occupancy_stats(sensor_prefix: str, selected_date_obj: datetime.da
                 dane_pasujace.append(rekord.status)
 
         except Exception as e:
-            # Logujemy błąd pojedynczego rekordu, ale nie przerywamy pętli
-            # logger.warning(f"Błąd przetwarzania rekordu ID {rekord.id}: {e}")
             continue
 
     if not dane_pasujace:
@@ -523,7 +490,25 @@ def calculate_occupancy_stats(sensor_prefix: str, selected_date_obj: datetime.da
         "liczba_pomiarow": suma
     }
 
-# === ENDPOINTY (dla aplikacji mobilnej, używają JSON) ===
+# === ENDPOINTY ===
+
+@app.get("/")
+def read_root():
+    return {"message": "API działa poprawnie."}
+
+# === ENDPOINT DEBUGERSKI (Przesunięty tutaj, bo musi być po app i WymaganyFormat) ===
+@app.post("/api/v1/debug/symulacja_sensora")
+async def debug_sensor_update(dane: WymaganyFormat, db: Session = Depends(get_db)):
+    logger.info(f"DEBUG: Otrzymano symulację z Postmana: {dane}")
+    payload = dane.dict()
+    
+    try:
+        # Wywołujemy funkcję logiki, która jest zdefiniowana wyżej
+        wynik = await process_parking_update(payload, db)
+        return wynik
+    except Exception as e:
+        logger.error(f"DEBUG ERROR: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/v1/obserwuj_miejsce")
 def obserwuj_miejsce(request: ObserwujRequest, db: Session = Depends(get_db)):
@@ -543,9 +528,7 @@ def obserwuj_miejsce(request: ObserwujRequest, db: Session = Depends(get_db)):
     return {"status": "ok"}
 
 @app.post("/api/v1/statystyki/zajetosc")
-@app.post("/api/v1/statystyki/zajetosc")
 def pobierz_statystyki(z: StatystykiZapytanie, db: Session = Depends(get_db)):
-    # 1. Sprawdź Cache (Redis)
     cache_key = f"stats:{z.sensor_id}:{z.selected_date}:{z.selected_hour}"
     if redis_client:
         try:
@@ -556,10 +539,8 @@ def pobierz_statystyki(z: StatystykiZapytanie, db: Session = Depends(get_db)):
         except Exception as e:
             logger.error(f"CACHE: Błąd odczytu z Redis: {e}")
             
-    # 2. Oblicz
     logger.info(f"CACHE: Brak w cache, obliczam statystyki dla: {cache_key}")
     try:
-        # Walidacja daty
         try:
             selected_date = datetime.datetime.strptime(z.selected_date, "%Y-%m-%d").date()
         except ValueError:
@@ -568,10 +549,8 @@ def pobierz_statystyki(z: StatystykiZapytanie, db: Session = Depends(get_db)):
         if not z.sensor_id:
             raise HTTPException(status_code=400, detail="Brak sensor_id")
         
-        # Wywołanie funkcji obliczającej
         wynik = calculate_occupancy_stats(z.sensor_id, selected_date, z.selected_hour, db)
         
-        # 3. Zapisz w Cache na 1 godzinę
         if redis_client:
             try:
                 redis_client.set(cache_key, json.dumps(wynik), ex=3600)
@@ -583,7 +562,6 @@ def pobierz_statystyki(z: StatystykiZapytanie, db: Session = Depends(get_db)):
     except HTTPException as http_ex:
         raise http_ex
     except Exception as e:
-        # To jest kluczowe - loguje prawdziwy błąd serwera do konsoli
         logger.exception("KRYTYCZNY BŁĄD w pobierz_statystyki:")
         raise HTTPException(status_code=500, detail=f"Błąd serwera: {str(e)}")
 
@@ -603,104 +581,33 @@ def pobierz_prognoze(db: Session = Depends(get_db), target_date: Optional[str] =
         hour = teraz_pl.hour
     for grupa in GRUPY_SENSOROW:
         try:
-            # Wywołaj funkcję z poprawką (zabezpieczeniem przed NULL)
             wynik = calculate_occupancy_stats(grupa, dt, hour, db)
             prognozy[grupa] = wynik["procent_zajetosci"]
         except:
             prognozy[grupa] = 0.0
     return prognozy
 
-# === PRZETWARZANIE DANYCH ===
-# Ta funkcja jest wywoływana TYLKO przez MQTT (po translacji)
-async def process_parking_update(dane: dict, db: Session):
-    teraz_utc = now_utc()
-    teraz_pl = teraz_utc.astimezone(PL_TZ)
-    zmiana_stanu = None
-    
-    if "sensor_id" in dane:
-        dane_cz = WymaganyFormat(**dane)
-        sensor_id = dane_cz.sensor_id
-        nowy_status = dane_cz.status
-        nazwa_swieta = MANUALNA_MAPA_SWIAT.get(teraz_pl.date())
-        
-        if nazwa_swieta:
-            db.add(DaneSwieta(
-                czas_pomiaru=teraz_utc, sensor_id=sensor_id,
-                status=nowy_status, nazwa_swieta=nazwa_swieta
-            ))
-        else:
-            db.add(DaneHistoryczne(
-                czas_pomiaru=teraz_utc, sensor_id=sensor_id, status=nowy_status
-            ))
-            
-        miejsce = db.query(AktualnyStan).filter(AktualnyStan.sensor_id == sensor_id).first()
-        poprzedni = -1
-        
-        if miejsce:
-            poprzedni = miejsce.status
-            miejsce.status = nowy_status
-            miejsce.ostatnia_aktualizacja = teraz_utc
-        else:
-            db.add(AktualnyStan(
-                sensor_id=sensor_id, status=nowy_status,
-                ostatnia_aktualizacja=teraz_utc
-            ))
-        
-        if poprzedni != nowy_status:
-            logger.info(f"WYKRYTO ZMIANĘ STANU dla {sensor_id}: {poprzedni} -> {nowy_status}")
-            zmiana_stanu = {"sensor_id": sensor_id, "status": nowy_status, "ostatnia_aktualizacja": teraz_utc.isoformat()}
-            
-            # Logika PUSH
-            if poprzedni != 1 and nowy_status == 1:
-                limit = datetime.timedelta(minutes=30)
-                obserwatorzy = db.query(ObserwowaneMiejsca).filter(
-                    ObserwowaneMiejsca.sensor_id == sensor_id,
-                    (teraz_utc - ObserwowaneMiejsca.czas_dodania) < limit
-                ).all()
-                for o in obserwatorzy:
-                    send_push_notification(o.device_token, o.sensor_id)
-                if obserwatorzy:
-                    db.query(ObserwowaneMiejsca).filter(
-                        ObserwowaneMiejsca.device_token.in_([o.device_token for o in obserwatorzy])
-                    ).delete(synchronize_session=False)
-                    
-        db.commit()
-        
-        if zmiana_stanu and manager.active_connections:
-            logger.info(f"WebSocket: Rozgłaszam zmianę dla {sensor_id}...")
-            await manager.broadcast([zmiana_stanu])
-            
-        return {"status": "ok"}
-        
-    return {"status": "unknown format"}
-
-# === Endpoint GET stanu (Początkowe ładowanie dla App.js) ===
 @app.get("/api/v1/aktualny_stan")
 async def pobierz_aktualny_stan(db: Session = Depends(get_db)):
     logger.info("API: Pobieram aktualny stan (początkowy) z bazy danych.")
     wyniki = db.query(AktualnyStan).all()
     return [miejsce.to_dict() for miejsce in wyniki]
 
-# === Endpoint WebSocket (NAPRAWIONY PING-PONG) ===
+# === Endpoint WebSocket ===
 @app.websocket("/ws/stan")
 async def websocket_endpoint(websocket: WebSocket):
     await manager.connect(websocket)
     try:
         while True:
             data = await websocket.receive_text()
-            
             if data != "ping":
                 logger.debug(f"WebSocket: Otrzymano wiadomość od klienta: {data}")
-
-            # Odpowiedz dokładnie "pong"
             await websocket.send_text("pong")
-
     except WebSocketDisconnect:
         manager.disconnect(websocket)
     except Exception as e:
         logger.error(f"WebSocket: Błąd połączenia: {e}")
         manager.disconnect(websocket)
-
 
 # === MQTT ===
 mqtt_client = mqtt.Client()
@@ -712,13 +619,7 @@ def on_connect(client, userdata, flags, rc):
     else:
         logger.error(f"MQTT: Błąd połączenia, kod: {rc}")
 
-# === Logika MQTT (3-Bajtowy Format Binarny) ===
-# Jedyna droga zapisu stanu do bazy
 def on_message(client, userdata, msg):
-    # Oczekujemy 3-bajtowego payloadu:
-    # Bajt 0: ID Sensora (Starszy bajt, ang. High Byte)
-    # Bajt 1: ID Sensora (Młodszy bajt, ang. Low Byte)
-    # Bajt 2: Status (0, 1, lub 2)
     raw_payload = msg.payload
     dane = {}
 
@@ -726,19 +627,13 @@ def on_message(client, userdata, msg):
         if len(raw_payload) != 3:
             raise ValueError(f"Oczekiwano 3 bajtów [ID_H, ID_L, STATUS], otrzymano: {len(raw_payload)}")
 
-        # Składamy ID z dwóch pierwszych bajtów
         sensor_id_num = (raw_payload[0] << 8) | raw_payload[1]
-        
-        # Status jest trzecim bajtem
         status_num = int(raw_payload[2])
-
-        # Tłumaczymy ID numeryczne na pełny string
         sensor_id_str = SENSOR_MAP.get(sensor_id_num)
         
         if not sensor_id_str:
             raise ValueError(f"Nieznane ID sensora w SENSOR_MAP: {sensor_id_num}")
 
-        # Tworzymy słownik, którego oczekuje reszta aplikacji
         dane = {
             "sensor_id": sensor_id_str,
             "status": status_num
@@ -748,7 +643,6 @@ def on_message(client, userdata, msg):
         logger.error(f"MQTT: Błąd parsowania wiadomości binarnej: {e} | Payload (raw): {raw_payload}")
         return
         
-    # Przekazujemy 'dane' do asynchronicznego procesora
     db = None
     try:
         db = next(get_db())
@@ -776,12 +670,9 @@ def mqtt_listener_thread():
     mqtt_client.loop_stop()
     mqtt_client.disconnect()
 
-
 # === ZARZĄDZANIE STARTUP/SHUTDOWN ===
 @app.on_event("startup")
 async def startup_event():
-    loop = asyncio.get_event_loop()
-    
     thread_mqtt = threading.Thread(target=mqtt_listener_thread)
     thread_mqtt.daemon = True
     thread_mqtt.start()
@@ -790,14 +681,9 @@ async def startup_event():
     thread_checker.daemon = True
     thread_checker.start()
 
-
 @app.on_event("shutdown")
 def shutdown_event():
     logger.info("Zatrzymywanie aplikacji...")
     shutdown_event_flag.set()
     logger.info("Wysłano sygnał zamknięcia do wątków.")
     time.sleep(1.5)
-
-
-
-
