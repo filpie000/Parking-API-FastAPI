@@ -299,6 +299,7 @@ def calculate_occupancy_stats(sensor_prefix: str, selected_date_obj: datetime.da
     kategoria_str = ""
     dni_do_uwzglednienia = []
 
+    # Określenie kategorii
     if nazwa_swieta:
         kategoria_str = f"Dane historyczne dla: {nazwa_swieta}"
         query = db.query(DaneSwieta).filter(
@@ -319,44 +320,73 @@ def calculate_occupancy_stats(sensor_prefix: str, selected_date_obj: datetime.da
         elif selected_weekday == 6:
             kategoria_str = "Niedziela"
             dni_do_uwzglednienia = [6]
+        
         query = db.query(DaneHistoryczne).filter(
             DaneHistoryczne.sensor_id.startswith(sensor_prefix)
         )
 
+    # Ustalenie przedziału czasowego +/- 60 minut
     OFFSET_MINUT = 60
-    czas_poczatek = get_time_with_offset(selected_hour, -OFFSET_MINUT)
-    czas_koniec = get_time_with_offset(selected_hour, OFFSET_MINUT)
+    try:
+        czas_poczatek = get_time_with_offset(selected_hour, -OFFSET_MINUT)
+        czas_koniec = get_time_with_offset(selected_hour, OFFSET_MINUT)
+    except Exception as e:
+        logger.error(f"Błąd obliczania czasu (offset): {e}")
+        return {"error": "Błąd obliczania czasu", "procent_zajetosci": 0, "liczba_pomiarow": 0}
 
     wszystkie = query.all()
     dane_pasujace = []
 
     for rekord in wszystkie:
-        czas_rekordu_db = rekord.czas_pomiaru
+        try:
+            czas_rekordu_db = rekord.czas_pomiaru
 
-        # === [KLUCZOWA POPRAWKA] ===
-        # Zabezpieczenie przed 'None' (NULL) w bazie, które powodowało błąd 500
-        if not czas_rekordu_db:
-            logger.warning(f"Pominięto rekord (ID: {rekord.id}) z powodu braku daty (NULL w bazie)")
+            # 1. Zabezpieczenie przed NULL
+            if not czas_rekordu_db:
+                continue
+
+            # 2. Zabezpieczenie przed String (fix dla SQLite)
+            if isinstance(czas_rekordu_db, str):
+                try:
+                    # Próba parsowania stringa do datetime
+                    czas_rekordu_db = datetime.datetime.fromisoformat(czas_rekordu_db)
+                except ValueError:
+                    # Fallback dla formatów bez "T" lub innych
+                    try:
+                        czas_rekordu_db = datetime.datetime.strptime(czas_rekordu_db, "%Y-%m-%d %H:%M:%S.%f")
+                    except:
+                        continue # Pomijamy rekord, którego nie da się sparsować
+
+            # 3. Konwersja strefy czasowej
+            if czas_rekordu_db.tzinfo is None:
+                # Traktujemy jako czas lokalny/UTC zależnie od serwera, tutaj przypisujemy PL
+                czas_pl = czas_rekordu_db.replace(tzinfo=PL_TZ)
+            else:
+                czas_pl = czas_rekordu_db.astimezone(PL_TZ)
+
+            # Filtrowanie po dniu tygodnia (jeśli to nie święto)
+            if not nazwa_swieta:
+                if czas_pl.weekday() not in dni_do_uwzglednienia:
+                    continue
+
+            czas_rek = czas_pl.time()
+            
+            # Logika sprawdzania zakresu godzinowego (z obsługą północy)
+            pasuje_godzinowo = False
+            if czas_poczatek > czas_koniec: # Przypadek przejścia przez północ (np. 23:00 - 01:00)
+                if czas_rek >= czas_poczatek or czas_rek < czas_koniec:
+                    pasuje_godzinowo = True
+            else: # Normalny przypadek (np. 10:00 - 12:00)
+                if czas_poczatek <= czas_rek < czas_koniec:
+                    pasuje_godzinowo = True
+
+            if pasuje_godzinowo:
+                dane_pasujace.append(rekord.status)
+
+        except Exception as e:
+            # Logujemy błąd pojedynczego rekordu, ale nie przerywamy pętli
+            # logger.warning(f"Błąd przetwarzania rekordu ID {rekord.id}: {e}")
             continue
-        # === KONIEC POPRAWKI ===
-
-        if czas_rekordu_db.tzinfo is None:
-            czas_pl = czas_rekordu_db.replace(tzinfo=PL_TZ)
-        else:
-            czas_pl = czas_rekordu_db.astimezone(PL_TZ)
-
-        if not nazwa_swieta:
-            if czas_pl.weekday() not in dni_do_uwzglednienia:
-                continue
-
-        czas_rek = czas_pl.time()
-        if czas_poczatek > czas_koniec:
-            if not (czas_rek >= czas_poczatek or czas_rek < czas_koniec):
-                continue
-        else:
-            if not (czas_poczatek <= czas_rek < czas_koniec):
-                continue
-        dane_pasujace.append(rekord.status)
 
     if not dane_pasujace:
         return {
@@ -640,3 +670,4 @@ def shutdown_event():
     shutdown_event_flag.set()
     logger.info("Wysłano sygnał zamknięcia do wątków.")
     time.sleep(1.5)
+
