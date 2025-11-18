@@ -259,6 +259,13 @@ class StatystykiZapytanie(BaseModel):
     selected_date: str
     selected_hour: int
 
+class RaportRequest(BaseModel):
+    start_date: str
+    end_date: str
+    groups: List[str]
+    include_workdays: bool
+    include_weekends: bool
+
 # === PUSH ===
 def send_push_notification(token: str, title: str, body: str, data: dict):
     logger.info(f"Wysyłam PUSH do {token}: {title}")
@@ -637,7 +644,63 @@ async def websocket_endpoint(websocket: WebSocket):
     except Exception as e:
         logger.error(f"WebSocket: Błąd połączenia: {e}")
         manager.disconnect(websocket)
+# --- NOWOŚĆ: Generator Raportu dla Dashboardu ---
+@app.post("/api/v1/dashboard/raport")
+def generuj_raport_zbiorczy(req: RaportRequest, db: Session = Depends(get_db)):
+    logger.info(f"RAPORT: Generuję dane dla {req.groups} od {req.start_date} do {req.end_date}")
+    
+    try:
+        s_date = datetime.datetime.strptime(req.start_date, "%Y-%m-%d").date()
+        e_date = datetime.datetime.strptime(req.end_date, "%Y-%m-%d").date()
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Zły format daty")
 
+    # 1. Pobierz WSZYSTKIE dane historyczne z tego zakresu
+    # Robimy to jednym zapytaniem, a potem filtrujemy w Pythonie (prostsze przy SQLite/Postgres)
+    raw_data = db.query(DaneHistoryczne).filter(
+        DaneHistoryczne.czas_pomiaru >= s_date,
+        DaneHistoryczne.czas_pomiaru <= e_date + datetime.timedelta(days=1) # do końca dnia
+    ).all()
+
+    # Struktura na wyniki: { "EURO": { 0: [], 1: [], ... 23: [] }, "BUD": ... }
+    agregacja = {g: {h: [] for h in range(24)} for g in req.groups}
+
+    for row in raw_data:
+        # Konwersja na czas lokalny (żeby godzina 14:00 była 14:00 w Polsce)
+        local_time = row.czas_pomiaru.astimezone(PL_TZ)
+        dt_date = local_time.date()
+        hour = local_time.hour
+        weekday = dt_date.weekday() # 0=Pon, 6=Niedz
+
+        # Filtrowanie dni
+        is_weekend = (weekday >= 5)
+        if is_weekend and not req.include_weekends:
+            continue
+        if not is_weekend and not req.include_workdays:
+            continue
+
+        # Sprawdzenie grupy (np. czy EURO_1 należy do grupy EURO)
+        sensor_group = row.sensor_id.split('_')[0]
+        if sensor_group in agregacja:
+            # Dodajemy status (0 lub 1) do listy dla danej godziny
+            agregacja[sensor_group][hour].append(row.status)
+
+    # Obliczanie średnich (%)
+    wynik_finalny = {}
+    
+    for group in req.groups:
+        dane_godzinowe = []
+        for h in range(24):
+            pomiary = agregacja[group][h]
+            if not pomiary:
+                dane_godzinowe.append(0) # Brak danych = 0%
+            else:
+                # Suma zajętych (1) / Ilość wszystkich * 100
+                procent = (sum(pomiary) / len(pomiary)) * 100
+                dane_godzinowe.append(round(procent, 1))
+        wynik_finalny[group] = dane_godzinowe
+
+    return wynik_finalny
 # === MQTT ===
 mqtt_client = mqtt.Client()
 
@@ -716,3 +779,4 @@ def shutdown_event():
     shutdown_event_flag.set()
     logger.info("Wysłano sygnał zamknięcia do wątków.")
     time.sleep(1.5)
+
