@@ -4,20 +4,33 @@ import json
 import logging
 import threading
 import time
+import asyncio
 from typing import Optional, List, Dict
 from zoneinfo import ZoneInfo
 from datetime import date
+
+# FastAPI & Async Utils
 from fastapi import FastAPI, Depends, HTTPException, Header, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse
-from sqlalchemy import create_engine, Column, Integer, String, DateTime
-from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import sessionmaker, Session
 from pydantic import BaseModel
-import requests
 from fastapi.middleware.cors import CORSMiddleware
+
+# SQLAlchemy Async
+from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
+from sqlalchemy.orm import sessionmaker
+from sqlalchemy.future import select
+from sqlalchemy import Column, Integer, String, DateTime
+from sqlalchemy.ext.declarative import declarative_base
+
+# Rate Limiting (Ochrona przed spamem)
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.util import get_remote_address
+from slowapi.errors import RateLimitExceeded
+
+# Networking
+import requests
 import paho.mqtt.client as mqtt
 import redis
-import asyncio
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -29,24 +42,49 @@ PL_TZ = ZoneInfo("Europe/Warsaw")
 def now_utc() -> datetime.datetime:
     return datetime.datetime.now(UTC)
 
-# MQTT
+# === Rate Limiter (Ochrona) ===
+limiter = Limiter(key_func=get_remote_address)
+
+# === DATABASE (Async Configuration) ===
+DATABASE_URL = os.environ.get('DATABASE_URL')
+if not DATABASE_URL:
+    # Fallback dla testów lokalnych (SQLite też może być async, ale tu zakładamy Postgres na produkcji)
+    # Do testów lokalnych bez Postgresa potrzebujesz sterownika aiosqlite
+    DATABASE_URL = "sqlite+aiosqlite:///./parking_data.db"
+    logger.warning("Brak DATABASE_URL — używam SQLite (Async).")
+elif DATABASE_URL.startswith("postgres://"):
+    # Fix dla Rendera/Heroku (wymagane dla asyncpg)
+    DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql+asyncpg://", 1)
+
+# Tworzenie silnika asynchronicznego
+engine = create_async_engine(DATABASE_URL, echo=False)
+AsyncSessionLocal = sessionmaker(bind=engine, class_=AsyncSession, expire_on_commit=False)
+Base = declarative_base()
+
+# Dependency Injection (Async)
+async def get_db():
+    async with AsyncSessionLocal() as session:
+        yield session
+
+# === Inicjalizacja Aplikacji ===
+app = FastAPI(title="Parking API")
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# === MQTT Config ===
 MQTT_BROKER = os.environ.get('MQTT_BROKER', 'broker.emqx.io')
 MQTT_PORT = int(os.environ.get('MQTT_PORT', 1883))
 MQTT_TOPIC_SUBSCRIBE = os.environ.get('MQTT_TOPIC', "parking/tester/status")
 
-# DATABASE
-DATABASE_URL = os.environ.get('DATABASE_URL')
-if DATABASE_URL and DATABASE_URL.startswith("postgres://"):
-    DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
-if not DATABASE_URL:
-    DATABASE_URL = "sqlite:///./parking_data.db"
-    logger.warning("Brak DATABASE_URL — używam SQLite.")
-
-engine = create_engine(DATABASE_URL)
-SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
-Base = declarative_base()
-
-# === [OPTYMALIZACJA] Konfiguracja Redis ===
+# === Redis (Cache) ===
 REDIS_URL = os.environ.get('REDIS_URL')
 redis_client = None
 if REDIS_URL:
@@ -55,60 +93,24 @@ if REDIS_URL:
         redis_client.ping()
         logger.info("Połączono z Redis (Cache).")
     except Exception as e:
-        logger.error(f"Nie można połączyć z Redis: {e}. Cache będzie wyłączony.")
-        redis_client = None
-else:
-    logger.warning("Brak REDIS_URL. Cache będzie wyłączony.")
+        logger.error(f"Redis Error: {e}")
 
-# === Słownik Mapowania Sensorów (MQTT Binarnie -> API) ===
+# === Mapy i Stałe ===
 SENSOR_MAP = {
-    1: "EURO_1",
-    2: "EURO_2",
-    3: "EURO_3",
-    4: "EURO_4",
-    5: "BUD_1",
-    6: "BUD_2",
-    7: "BUD_3",
-    8: "BUD_4",
+    1: "EURO_1", 2: "EURO_2", 3: "EURO_3", 4: "EURO_4",
+    5: "BUD_1", 6: "BUD_2", 7: "BUD_3", 8: "BUD_4",
     500: "TEST_PARKING_500",
 }
-
-# === Stałe ===
 GRUPY_SENSOROW = ["EURO", "BUD"]
 
-# === Rozszerzona Mapa Świąt (Księga Świąt) ===
 MANUALNA_MAPA_SWIAT = {
-    # --- 2023 ---
-    date(2023, 11, 1): "Wszystkich Świętych",
-    date(2023, 11, 11): "Święto Niepodległości",
-    date(2023, 12, 24): "Wigilia",
-    date(2023, 12, 25): "Boże Narodzenie",
-    date(2023, 12, 26): "Drugi Dzień Świąt",
-    date(2023, 12, 31): "Sylwester",
-    
-    # --- 2024 ---
-    date(2024, 1, 1): "Nowy Rok",
-    date(2024, 11, 1): "Wszystkich Świętych",
-    date(2024, 11, 11): "Święto Niepodległości",
-    date(2024, 12, 24): "Wigilia",
-    date(2024, 12, 25): "Boże Narodzenie",
-    date(2024, 12, 26): "Drugi Dzień Świąt",
-    date(2024, 12, 31): "Sylwester",
-
-    # --- 2025 ---
-    date(2025, 1, 1): "Nowy Rok",
-    date(2025, 4, 18): "Wielki Piątek",
-    date(2025, 4, 20): "Wielkanoc",
-    date(2025, 4, 21): "Poniedziałek Wielkanocny",
-    date(2025, 11, 1): "Wszystkich Świętych",
-    date(2025, 11, 11): "Święto Niepodległości",
-    date(2025, 12, 24): "Wigilia",
-    date(2025, 12, 25): "Boże Narodzenie",
-    date(2025, 12, 26): "Drugi Dzień Świąt",
-    date(2025, 12, 31): "Sylwester",
+    date(2023, 11, 1): "Wszystkich Świętych", date(2023, 11, 11): "Święto Niepodległości",
+    date(2023, 12, 24): "Wigilia", date(2023, 12, 25): "Boże Narodzenie",
+    date(2024, 1, 1): "Nowy Rok", date(2024, 11, 1): "Wszystkich Świętych",
+    date(2025, 1, 1): "Nowy Rok", date(2025, 4, 20): "Wielkanoc",
 }
 
-# === Tabele ===
+# === Modele Bazy Danych ===
 class AktualnyStan(Base):
     __tablename__ = "aktualny_stan"
     sensor_id = Column(String, primary_key=True, index=True)
@@ -143,124 +145,23 @@ class ObserwowaneMiejsca(Base):
     sensor_id = Column(String, index=True)
     czas_dodania = Column(DateTime(timezone=True), default=now_utc)
 
-Base.metadata.create_all(bind=engine)
+# Tworzenie tabel (Sync - wymagane przy starcie dla SQLAlchemy)
+# W środowisku produkcyjnym lepiej używać Alembic do migracji
+async def init_models():
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
 
-def get_db():
-    db = SessionLocal()
-    try:
-        yield db
-    finally:
-        db.close()
-
-# === INICJALIZACJA APLIKACJI ===
-app = FastAPI(title="Parking API")
-
-# === Menedżer Połączeń WebSocket ===
-class ConnectionManager:
-    def __init__(self):
-        self.active_connections: List[WebSocket] = []
-
-    async def connect(self, websocket: WebSocket):
-        await websocket.accept()
-        self.active_connections.append(websocket)
-        logger.info(f"WebSocket: Nowy klient połączony. Łącznie: {len(self.active_connections)}")
-
-    def disconnect(self, websocket: WebSocket):
-        if websocket in self.active_connections:
-            self.active_connections.remove(websocket)
-            logger.info(f"WebSocket: Klient rozłączony. Pozostało: {len(self.active_connections)}")
-
-    async def broadcast(self, message: dict):
-        message_json = json.dumps(message, default=str)
-        
-        for connection in list(self.active_connections):
-            try:
-                await connection.send_text(message_json)
-            except Exception as e:
-                logger.warning(f"WebSocket: Błąd wysyłania, usuwam klienta: {e}")
-                self.disconnect(connection)
-
-manager = ConnectionManager()
-
-# Flaga do bezpiecznego zatrzymywania wątków
-shutdown_event_flag = threading.Event()
-
-# === Wątek sprawdzający (Stale Sensors) ===
-def check_stale_sensors():
-    db = None
-    try:
-        db = SessionLocal()
-        teraz_utc = now_utc()
-        czas_odciecia = teraz_utc - datetime.timedelta(minutes=3)
-        
-        # logger.info(f"TŁO: Sprawdzam sensory, które nie były aktualizowane od {czas_odciecia}...")
-
-        sensory_do_aktualizacji = db.query(AktualnyStan).filter(
-            AktualnyStan.status != 2,
-            (AktualnyStan.ostatnia_aktualizacja < czas_odciecia) | (AktualnyStan.ostatnia_aktualizacja == None)
-        ).all()
-
-        if sensory_do_aktualizacji:
-            logger.info(f"TŁO: Znaleziono {len(sensory_do_aktualizacji)} przestarzałych sensorów. Ustawiam status 2.")
-            
-            zmiany_do_broadcastu = []
-            
-            for sensor in sensory_do_aktualizacji:
-                sensor.status = 2
-                sensor.ostatnia_aktualizacja = teraz_utc
-                zmiany_do_broadcastu.append(sensor.to_dict())
-
-            db.commit()
-            
-            if manager.active_connections:
-                logger.info("TŁO: Rozgłaszam zmiany (status 2) przez WebSocket...")
-                asyncio.run_coroutine_threadsafe(manager.broadcast(zmiany_do_broadcastu), asyncio.get_event_loop())
-                
-    except Exception as e:
-        logger.error(f"TŁO: Błąd podczas sprawdzania sensorów: {e}")
-        if db:
-            db.rollback()
-    finally:
-        if db:
-            db.close()
-
-def sensor_checker_thread():
-    try:
-        loop = asyncio.get_running_loop()
-    except RuntimeError:
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-    
-    logger.info("TŁO: Wątek sprawdzający uruchomiony.")
-    while not shutdown_event_flag.is_set():
-        check_stale_sensors()
-        shutdown_event_flag.wait(30)
-    logger.info("TŁO: Wątek sprawdzający zakończył działanie.")
-
-# === Konfiguracja CORS ===
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-# === MODELE (dla API) ===
+# === Modele Pydantic ===
 class WymaganyFormat(BaseModel):
     sensor_id: str
     status: int
-
 class ObserwujRequest(BaseModel):
     sensor_id: str
     device_token: str
-
 class StatystykiZapytanie(BaseModel):
-    sensor_id: Optional[str] = None
+    sensor_id: str
     selected_date: str
     selected_hour: int
-
-# Model dla Dashboardu
 class RaportRequest(BaseModel):
     start_date: str
     end_date: str
@@ -269,551 +170,294 @@ class RaportRequest(BaseModel):
     include_weekends: bool
     include_holidays: bool
 
-# === PUSH ===
-def send_push_notification(token: str, title: str, body: str, data: dict):
-    logger.info(f"Wysyłam PUSH do {token}: {title}")
-    try:
-        requests.post(
-            "https://exp.host/--/api/v2/push/send",
-            json={
-                "to": token,
-                "sound": "default",
-                "title": title,
-                "body": body,
-                "data": data
-            }
-        )
-    except Exception as e:
-        logger.error(f"Błąd podczas wysyłania PUSH: {e}")
+# === WebSocket Manager ===
+class ConnectionManager:
+    def __init__(self):
+        self.active_connections: List[WebSocket] = []
+    async def connect(self, websocket: WebSocket):
+        await websocket.accept()
+        self.active_connections.append(websocket)
+    def disconnect(self, websocket: WebSocket):
+        if websocket in self.active_connections:
+            self.active_connections.remove(websocket)
+    async def broadcast(self, message: dict):
+        message_json = json.dumps(message, default=str)
+        for connection in list(self.active_connections):
+            try:
+                await connection.send_text(message_json)
+            except:
+                self.disconnect(connection)
 
-# === PRZETWARZANIE DANYCH (MQTT i Debug) ===
-async def process_parking_update(dane: dict, db: Session):
+manager = ConnectionManager()
+shutdown_event_flag = threading.Event()
+
+# === PUSH Helper ===
+def send_push_notification(token: str, title: str, body: str, data: dict):
+    # To jest zapytanie HTTP, może być blokujące, w idealnym świecie powinno być asynchroniczne (aiohttp)
+    # Ale przy małej skali requests w wątku jest akceptowalne.
+    try:
+        requests.post("https://exp.host/--/api/v2/push/send", json={"to": token, "title": title, "body": body, "data": data}, timeout=2)
+    except Exception as e:
+        logger.error(f"Push Error: {e}")
+
+# === CORE LOGIC (Async) ===
+async def process_parking_update(dane: dict, db: AsyncSession):
     teraz_utc = now_utc()
     teraz_pl = teraz_utc.astimezone(PL_TZ)
     zmiana_stanu = None
     
     if "sensor_id" in dane:
-        dane_cz = WymaganyFormat(**dane)
-        sensor_id = dane_cz.sensor_id
-        nowy_status = dane_cz.status
-        
-        # Sprawdzamy czy to święto w księdze świąt
+        sensor_id = dane["sensor_id"]
+        nowy_status = dane["status"]
         nazwa_swieta = MANUALNA_MAPA_SWIAT.get(teraz_pl.date())
         
-        # Zapis do odpowiedniej tabeli historii
+        # Zapis Historii
         if nazwa_swieta:
-            db.add(DaneSwieta(
-                czas_pomiaru=teraz_utc, sensor_id=sensor_id,
-                status=nowy_status, nazwa_swieta=nazwa_swieta
-            ))
+            db.add(DaneSwieta(czas_pomiaru=teraz_utc, sensor_id=sensor_id, status=nowy_status, nazwa_swieta=nazwa_swieta))
         else:
-            db.add(DaneHistoryczne(
-                czas_pomiaru=teraz_utc, sensor_id=sensor_id, status=nowy_status
-            ))
+            db.add(DaneHistoryczne(czas_pomiaru=teraz_utc, sensor_id=sensor_id, status=nowy_status))
             
-        miejsce = db.query(AktualnyStan).filter(AktualnyStan.sensor_id == sensor_id).first()
-        poprzedni = -1
+        # Aktualizacja Stanu
+        result = await db.execute(select(AktualnyStan).where(AktualnyStan.sensor_id == sensor_id))
+        miejsce = result.scalars().first()
         
+        poprzedni = -1
         if miejsce:
             poprzedni = miejsce.status
             miejsce.status = nowy_status
             miejsce.ostatnia_aktualizacja = teraz_utc
         else:
-            db.add(AktualnyStan(
-                sensor_id=sensor_id, status=nowy_status,
-                ostatnia_aktualizacja=teraz_utc
-            ))
+            db.add(AktualnyStan(sensor_id=sensor_id, status=nowy_status, ostatnia_aktualizacja=teraz_utc))
         
-        # Wykryto zmianę
+        # Logika Powiadomień (Sąsiad)
         if poprzedni != nowy_status:
-            logger.info(f"WYKRYTO ZMIANĘ STANU dla {sensor_id}: {poprzedni} -> {nowy_status}")
             zmiana_stanu = {"sensor_id": sensor_id, "status": nowy_status, "ostatnia_aktualizacja": teraz_utc.isoformat()}
             
-            # === LOGIKA POWIADOMIEŃ (INTELIGENTNA Z NEW_TARGET) ===
             if poprzedni != 1 and nowy_status == 1:
-                # Limit 30 minut na stare obserwacje
                 limit = datetime.timedelta(minutes=30)
-                
-                obserwatorzy = db.query(ObserwowaneMiejsca).filter(
+                # Pobierz obserwatorów
+                obs_res = await db.execute(select(ObserwowaneMiejsca).where(
                     ObserwowaneMiejsca.sensor_id == sensor_id,
                     (teraz_utc - ObserwowaneMiejsca.czas_dodania) < limit
-                ).all()
+                ))
+                obserwatorzy = obs_res.scalars().all()
                 
                 if obserwatorzy:
-                    grupa_prefix = sensor_id.split('_')[0] # np. "EURO" z "EURO_1"
+                    grupa = sensor_id.split('_')[0]
+                    # Szukaj wolnego sąsiada
+                    sasiad_res = await db.execute(select(AktualnyStan).where(
+                        AktualnyStan.sensor_id.startswith(grupa),
+                        AktualnyStan.sensor_id != sensor_id,
+                        AktualnyStan.status == 0
+                    ))
+                    wolni = sasiad_res.scalars().all()
                     
-                    wolni_sasiedzi = db.query(AktualnyStan).filter(
-                        AktualnyStan.sensor_id.startswith(grupa_prefix), # Ten sam parking
-                        AktualnyStan.sensor_id != sensor_id,             # Inne miejsce niż to zajęte
-                        AktualnyStan.status == 0                         # Status Wolny
-                    ).all()
+                    tytul, akcja, tresc, cel = "❌ Miejsce zajęte!", "reroute", f"Miejsce {sensor_id} zajęte.", None
+                    if wolni:
+                        tytul, akcja, tresc, cel = "⚠️ Zmiana", "info", f"{sensor_id} zajęte. Jedź na {wolni[0].sensor_id}!", wolni[0].sensor_id
                     
-                    # Domyślnie: Panika (wszystko zajęte)
-                    tytul_push = "❌ Miejsce zajęte!"
-                    czynnosc = "reroute"
-                    tresc_push = f"Miejsce {sensor_id} zostało zajęte. Szukam alternatywy..."
-                    nowy_cel = None
-                    
-                    # Jeśli znaleziono wolnego sąsiada: Info + new_target
-                    if wolni_sasiedzi:
-                        najlepszy_sasiad = wolni_sasiedzi[0].sensor_id
-                        tytul_push = "⚠️ Zmiana miejsca"
-                        czynnosc = "info"
-                        tresc_push = f"Miejsce {sensor_id} zajęte. Przekierowuję na {najlepszy_sasiad}!"
-                        nowy_cel = najlepszy_sasiad
-
-                    # Wysyłamy powiadomienia
                     for o in obserwatorzy:
-                        send_push_notification(
-                            o.device_token, 
-                            tytul_push, 
-                            tresc_push, 
-                            {
-                                "sensor_id": sensor_id, 
-                                "action": czynnosc,
-                                "new_target": nowy_cel # Wysyłamy ID nowego miejsca do apki
-                            }
-                        )
+                        send_push_notification(o.device_token, tytul, tresc, {"sensor_id": sensor_id, "action": akcja, "new_target": cel})
                     
-                    # ZAWSZE czyścimy obserwację, bo apka sama wyśle nowe żądanie jeśli dostanie new_target
-                    db.query(ObserwowaneMiejsca).filter(
-                        ObserwowaneMiejsca.device_token.in_([o.device_token for o in obserwatorzy])
-                    ).delete(synchronize_session=False)
-                    
-        db.commit()
+                    # Usuń obserwacje (delete w SQLAlchemy 1.4/2.0 async jest inne, tu prościej usunąć po ID w pętli lub osobnym query delete)
+                    # Dla uproszczenia usuwamy w pętli
+                    for o in obserwatorzy:
+                        await db.delete(o)
+                        
+        await db.commit()
         
         if zmiana_stanu and manager.active_connections:
             await manager.broadcast([zmiana_stanu])
-            
+        
         return {"status": "ok"}
-        
-    return {"status": "unknown format"}
-
-# === STATYSTYKI (Logika biznesowa) ===
-def get_time_with_offset(base_hour, offset_minutes):
-    base_dt = datetime.datetime(2000, 1, 1, base_hour, 0)
-    offset_dt = base_dt + datetime.timedelta(minutes=offset_minutes)
-    return offset_dt.time()
-
-def calculate_occupancy_stats(sensor_prefix: str, selected_date_obj: datetime.date, selected_hour: int, db: Session) -> dict:
-    nazwa_swieta = MANUALNA_MAPA_SWIAT.get(selected_date_obj)
-    query = None
-    kategoria_str = ""
-    dni_do_uwzglednienia = []
-
-    # Określenie kategorii
-    if nazwa_swieta:
-        kategoria_str = f"Dane historyczne dla: {nazwa_swieta}"
-        query = db.query(DaneSwieta).filter(
-            DaneSwieta.sensor_id.startswith(sensor_prefix),
-            DaneSwieta.nazwa_swieta == nazwa_swieta
-        )
-    else:
-        selected_weekday = selected_date_obj.weekday()
-        if 0 <= selected_weekday <= 3:
-            kategoria_str = "Dni robocze (Pn-Cz)"
-            dni_do_uwzglednienia = [0, 1, 2, 3]
-        elif selected_weekday == 4:
-            kategoria_str = "Piątek"
-            dni_do_uwzglednienia = [4]
-        elif selected_weekday == 5:
-            kategoria_str = "Sobota"
-            dni_do_uwzglednienia = [5]
-        elif selected_weekday == 6:
-            kategoria_str = "Niedziela"
-            dni_do_uwzglednienia = [6]
-        
-        query = db.query(DaneHistoryczne).filter(
-            DaneHistoryczne.sensor_id.startswith(sensor_prefix)
-        )
-
-    # Ustalenie przedziału czasowego +/- 60 minut
-    OFFSET_MINUT = 60
-    try:
-        czas_poczatek = get_time_with_offset(selected_hour, -OFFSET_MINUT)
-        czas_koniec = get_time_with_offset(selected_hour, OFFSET_MINUT)
-    except Exception as e:
-        logger.error(f"Błąd obliczania czasu (offset): {e}")
-        return {"error": "Błąd obliczania czasu", "procent_zajetosci": 0, "liczba_pomiarow": 0}
-
-    wszystkie = query.all()
-    dane_pasujace = []
-
-    for rekord in wszystkie:
-        try:
-            czas_rekordu_db = rekord.czas_pomiaru
-
-            # 1. Zabezpieczenie przed NULL
-            if not czas_rekordu_db:
-                continue
-
-            # 2. Zabezpieczenie przed String (fix dla SQLite)
-            if isinstance(czas_rekordu_db, str):
-                try:
-                    # Próba parsowania stringa do datetime
-                    czas_rekordu_db = datetime.datetime.fromisoformat(czas_rekordu_db)
-                except ValueError:
-                    try:
-                        czas_rekordu_db = datetime.datetime.strptime(czas_rekordu_db, "%Y-%m-%d %H:%M:%S.%f")
-                    except:
-                        continue
-
-            # 3. Konwersja strefy czasowej
-            if czas_rekordu_db.tzinfo is None:
-                czas_pl = czas_rekordu_db.replace(tzinfo=PL_TZ)
-            else:
-                czas_pl = czas_rekordu_db.astimezone(PL_TZ)
-
-            # Filtrowanie po dniu tygodnia (jeśli to nie święto)
-            if not nazwa_swieta:
-                if czas_pl.weekday() not in dni_do_uwzglednienia:
-                    continue
-
-            czas_rek = czas_pl.time()
-            
-            pasuje_godzinowo = False
-            if czas_poczatek > czas_koniec:
-                if czas_rek >= czas_poczatek or czas_rek < czas_koniec:
-                    pasuje_godzinowo = True
-            else:
-                if czas_poczatek <= czas_rek < czas_koniec:
-                    pasuje_godzinowo = True
-
-            if pasuje_godzinowo:
-                dane_pasujace.append(rekord.status)
-
-        except Exception as e:
-            continue
-
-    if not dane_pasujace:
-        return {
-            "kategoria": kategoria_str,
-            "przedzial_czasu": f"{czas_poczatek} - {czas_koniec}",
-            "procent_zajetosci": 0,
-            "liczba_pomiarow": 0
-        }
-
-    zajete = dane_pasujace.count(1)
-    suma = len(dane_pasujace)
-    procent = (zajete / suma) * 100 if suma > 0 else 0
-
-    return {
-        "kategoria": kategoria_str,
-        "przedzial_czasu": f"{czas_poczatek} - {czas_koniec}",
-        "procent_zajetosci": round(procent, 1),
-        "liczba_pomiarow": suma
-    }
+    return {"status": "error"}
 
 # === ENDPOINTY ===
 
 @app.get("/")
 def read_root():
-    return {"message": "API działa poprawnie."}
+    return {"message": "API (Async) działa poprawnie."}
 
-# --- NOWOŚĆ: Endpoint serwujący Dashboard HTML ---
+# Dashboard
 @app.get("/dashboard", response_class=HTMLResponse)
 async def dashboard():
     try:
         with open("dashboard.html", "r", encoding="utf-8") as f:
             return f.read()
     except FileNotFoundError:
-        return """
-        <html>
-            <body style="font-family: sans-serif; text-align: center; padding: 50px;">
-                <h1 style="color: red;">Błąd: Nie znaleziono pliku dashboard.html</h1>
-                <p>Upewnij się, że plik <b>dashboard.html</b> znajduje się w głównym folderze aplikacji.</p>
-            </body>
-        </html>
-        """
+        return "Błąd: Brak pliku dashboard.html"
 
-# --- ZMODYFIKOWANY: Pobieranie stanu z LIMITEM ---
+# --- Pobieranie Stanu (Z Rate Limitem) ---
 @app.get("/api/v1/aktualny_stan")
-async def pobierz_aktualny_stan(limit: int = 100, db: Session = Depends(get_db)):
-    logger.info(f"API: Pobieram aktualny stan (limit: {limit}) z bazy danych.")
-    wyniki = db.query(AktualnyStan).limit(limit).all()
+@limiter.limit("60/minute") # Max 60 zapytań na minutę z jednego IP
+async def pobierz_aktualny_stan(request: Request, limit: int = 100, db: AsyncSession = Depends(get_db)):
+    # Używamy select() dla async
+    result = await db.execute(select(AktualnyStan).limit(limit))
+    wyniki = result.scalars().all()
     return [miejsce.to_dict() for miejsce in wyniki]
 
-# --- NOWOŚĆ: Generator Raportu dla Dashboardu (Agregacja 0-23h) ---
-@app.post("/api/v1/dashboard/raport")
-def generuj_raport_zbiorczy(req: RaportRequest, db: Session = Depends(get_db)):
-    # logger.info(f"RAPORT: Generuję dane dla {req.groups}...")
+# --- Debug / Symulacja ---
+@app.post("/api/v1/debug/symulacja_sensora")
+async def debug_sensor(dane: WymaganyFormat, db: AsyncSession = Depends(get_db)):
+    return await process_parking_update(dane.dict(), db)
+
+# --- Obserwacja ---
+@app.post("/api/v1/obserwuj_miejsce")
+async def obserwuj_miejsce(request: ObserwujRequest, db: AsyncSession = Depends(get_db)):
+    result = await db.execute(select(AktualnyStan).where(AktualnyStan.sensor_id == request.sensor_id))
+    miejsce = result.scalars().first()
     
+    if not miejsce or miejsce.status != 0:
+        raise HTTPException(status_code=409, detail="Miejsce zajęte/offline")
+        
+    # Sprawdź czy już obserwuje
+    res_obs = await db.execute(select(ObserwowaneMiejsca).where(ObserwowaneMiejsca.device_token == request.device_token))
+    wpis = res_obs.scalars().first()
+    
+    if wpis:
+        wpis.sensor_id = request.sensor_id
+        wpis.czas_dodania = now_utc()
+    else:
+        db.add(ObserwowaneMiejsca(device_token=request.device_token, sensor_id=request.sensor_id, czas_dodania=now_utc()))
+    
+    await db.commit()
+    return {"status": "ok"}
+
+# --- Raport Zbiorczy (Dashboard) ---
+@app.post("/api/v1/dashboard/raport")
+async def generuj_raport(req: RaportRequest, db: AsyncSession = Depends(get_db)):
     try:
         s_date = datetime.datetime.strptime(req.start_date, "%Y-%m-%d").date()
         e_date = datetime.datetime.strptime(req.end_date, "%Y-%m-%d").date()
-    except ValueError:
-        raise HTTPException(status_code=400, detail="Zły format daty")
+    except: raise HTTPException(400, "Data error")
 
-    # Pobieramy dane z obu tabel, jeśli trzeba
-    all_rows = []
-
-    # 1. Dane Historyczne (Dni Powszednie/Weekendy)
+    # Pobieranie danych (Non-blocking)
+    rows = []
     if req.include_workdays or req.include_weekends:
-        hist_data = db.query(DaneHistoryczne).filter(
-            DaneHistoryczne.czas_pomiaru >= s_date,
+        res = await db.execute(select(DaneHistoryczne).filter(
+            DaneHistoryczne.czas_pomiaru >= s_date, 
             DaneHistoryczne.czas_pomiaru <= e_date + datetime.timedelta(days=1)
-        ).all()
-        all_rows.extend(hist_data)
+        ))
+        rows.extend(res.scalars().all())
 
-    # 2. Dane Świąteczne (Jeśli zaznaczone)
     if req.include_holidays:
-        hol_data = db.query(DaneSwieta).filter(
-            DaneSwieta.czas_pomiaru >= s_date,
+        res = await db.execute(select(DaneSwieta).filter(
+            DaneSwieta.czas_pomiaru >= s_date, 
             DaneSwieta.czas_pomiaru <= e_date + datetime.timedelta(days=1)
-        ).all()
-        all_rows.extend(hol_data)
+        ))
+        rows.extend(res.scalars().all())
 
-    # Agregacja
+    # Agregacja w Pythonie (szybka dla <100k rekordów, dla milionów przenieść do SQL)
     agregacja = {g: {h: [] for h in range(24)} for g in req.groups}
 
-    for row in all_rows:
-        # Konwersja czasu
-        if row.czas_pomiaru.tzinfo is None:
-             local_time = row.czas_pomiaru.replace(tzinfo=PL_TZ) # Zakładamy PL jeśli brak info
-        else:
-             local_time = row.czas_pomiaru.astimezone(PL_TZ)
-
-        dt_date = local_time.date()
+    for row in rows:
+        local_time = row.czas_pomiaru.astimezone(PL_TZ) if row.czas_pomiaru.tzinfo else row.czas_pomiaru.replace(tzinfo=PL_TZ)
         hour = local_time.hour
-        weekday = dt_date.weekday() # 0=Pon, 6=Niedz
-
-        # === FILTROWANIE ===
-        # Sprawdzamy czy ten konkretny rekord pasuje do wybranych filtrów
+        weekday = local_time.date().weekday()
+        is_hol = isinstance(row, DaneSwieta)
         
-        # Czy to rekord ze świąt? (sprawdzamy typ obiektu lub tabele)
-        is_holiday_record = isinstance(row, DaneSwieta)
-        
-        if is_holiday_record:
-            # Jeśli to rekord ze święta, a user nie chciał świąt -> pomiń
-            if not req.include_holidays: continue
-        else:
-            # To rekord zwykły. Sprawdzamy czy weekend czy roboczy
-            is_weekend = (weekday >= 5)
-            if is_weekend and not req.include_weekends: continue
-            if not is_weekend and not req.include_workdays: continue
-
-        # Przypisanie do grupy
-        try:
-            sensor_group = row.sensor_id.split('_')[0]
-        except:
-            continue
+        # Filtrowanie
+        if is_hol and not req.include_holidays: continue
+        if not is_hol:
+            if (weekday >= 5) and not req.include_weekends: continue
+            if (weekday < 5) and not req.include_workdays: continue
             
-        if sensor_group in agregacja:
-            agregacja[sensor_group][hour].append(row.status)
+        try:
+            grp = row.sensor_id.split('_')[0]
+            if grp in agregacja: agregacja[grp][hour].append(row.status)
+        except: pass
 
-    # Obliczanie średnich (%)
-    wynik_finalny = {}
-    
-    for group in req.groups:
-        dane_godzinowe = []
+    wynik = {}
+    for g in req.groups:
+        wynik[g] = []
         for h in range(24):
-            pomiary = agregacja[group][h]
-            if not pomiary:
-                dane_godzinowe.append(0)
-            else:
-                procent = (sum(pomiary) / len(pomiary)) * 100
-                dane_godzinowe.append(round(procent, 1))
-        wynik_finalny[group] = dane_godzinowe
-
-    return wynik_finalny
-
-# === ENDPOINT DEBUGERSKI ===
-@app.post("/api/v1/debug/symulacja_sensora")
-async def debug_sensor_update(dane: WymaganyFormat, db: Session = Depends(get_db)):
-    logger.info(f"DEBUG: Otrzymano symulację z Postmana: {dane}")
-    payload = dane.dict()
-    
-    try:
-        wynik = await process_parking_update(payload, db)
-        return wynik
-    except Exception as e:
-        logger.error(f"DEBUG ERROR: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.post("/api/v1/obserwuj_miejsce")
-def obserwuj_miejsce(request: ObserwujRequest, db: Session = Depends(get_db)):
-    token = request.device_token
-    sensor_id = request.sensor_id
-    teraz_utc = now_utc()
-    miejsce = db.query(AktualnyStan).filter(AktualnyStan.sensor_id == sensor_id).first()
-    if not miejsce or miejsce.status != 0:
-        raise HTTPException(status_code=409, detail="Miejsce zajęte lub offline.")
-    wpis = db.query(ObserwowaneMiejsca).filter(ObserwowaneMiejsca.device_token == token).first()
-    if wpis:
-        wpis.sensor_id = sensor_id
-        wpis.czas_dodania = teraz_utc
-    else:
-        db.add(ObserwowaneMiejsca(device_token=token, sensor_id=sensor_id, czas_dodania=teraz_utc))
-    db.commit()
-    return {"status": "ok"}
-
-@app.post("/api/v1/statystyki/zajetosc")
-def pobierz_statystyki(z: StatystykiZapytanie, db: Session = Depends(get_db)):
-    if not z.sensor_id:
-        raise HTTPException(status_code=400, detail="Brak sensor_id")
-
-    # === GRUPOWANIE STATYSTYK (Dla Dashboardu i Aplikacji) ===
-    try:
-        grupa_sensorow = z.sensor_id.split('_')[0]
-    except IndexError:
-        grupa_sensorow = z.sensor_id
-
-    # Klucz cache grupowy
-    cache_key = f"stats:GROUP:{grupa_sensorow}:{z.selected_date}:{z.selected_hour}"
-    
-    if redis_client:
-        try:
-            cached_result = redis_client.get(cache_key)
-            if cached_result:
-                logger.info(f"CACHE: Zwracam wynik grupowy z Redis dla: {cache_key}")
-                return {"wynik_dynamiczny": json.loads(cached_result)}
-        except Exception as e:
-            logger.error(f"CACHE: Błąd odczytu z Redis: {e}")
+            vals = agregacja[g][h]
+            wynik[g].append(round((sum(vals)/len(vals)*100), 1) if vals else 0)
             
-    logger.info(f"CACHE: Brak w cache, obliczam statystyki dla grupy: {grupa_sensorow}")
-    
-    try:
+    return wynik
+
+# --- Tło (Sync wrapper for async DB in Thread) ---
+# Uwaga: Używanie wątków z Async DB jest trudne. 
+# Dla uproszczenia w check_stale_sensors stworzymy nową pętlę zdarzeń lub użyjemy synchronicznego zapytania?
+# Najbezpieczniej przy asyncpg jest używać asyncio.create_task w startup event zamiast threadingu.
+async def check_stale_task():
+    while True:
         try:
-            selected_date = datetime.datetime.strptime(z.selected_date, "%Y-%m-%d").date()
-        except ValueError:
-            raise HTTPException(status_code=400, detail="Zły format daty. Oczekiwano YYYY-MM-DD")
-        
-        # Obliczamy dla całej grupy
-        wynik = calculate_occupancy_stats(grupa_sensorow, selected_date, z.selected_hour, db)
-        
-        if redis_client:
-            try:
-                redis_client.set(cache_key, json.dumps(wynik), ex=3600)
-            except Exception as e:
-                logger.error(f"CACHE: Błąd zapisu do Redis: {e}")
+            async with AsyncSessionLocal() as db:
+                cutoff = now_utc() - datetime.timedelta(minutes=3)
+                res = await db.execute(select(AktualnyStan).where(
+                    AktualnyStan.status != 2,
+                    (AktualnyStan.ostatnia_aktualizacja < cutoff) | (AktualnyStan.ostatnia_aktualizacja == None)
+                ))
+                sensors = res.scalars().all()
                 
-        return {"wynik_dynamiczny": wynik}
+                if sensors:
+                    changes = []
+                    for s in sensors:
+                        s.status = 2
+                        s.ostatnia_aktualizacja = now_utc()
+                        changes.append(s.to_dict())
+                    await db.commit()
+                    if manager.active_connections:
+                        await manager.broadcast(changes)
+        except Exception as e:
+            logger.error(f"Stale Check Error: {e}")
+        
+        await asyncio.sleep(30)
 
-    except HTTPException as http_ex:
-        raise http_ex
-    except Exception as e:
-        logger.exception("KRYTYCZNY BŁĄD w pobierz_statystyki:")
-        raise HTTPException(status_code=500, detail=f"Błąd serwera: {str(e)}")
+# --- MQTT Run ---
+mqtt_client = mqtt.Client()
 
-@app.get("/api/v1/prognoza/wszystkie_miejsca")
-def pobierz_prognoze(db: Session = Depends(get_db), target_date: Optional[str] = None, target_hour: Optional[int] = None):
-    prognozy = {}
-    teraz_pl = now_utc().astimezone(PL_TZ)
-    if target_date and target_hour is not None:
+def run_mqtt():
+    # MQTT działa w osobnym wątku, ale musi wywoływać async DB
+    # Używamy run_coroutine_threadsafe
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    
+    def on_msg(c, u, m):
         try:
-            dt = datetime.datetime.strptime(target_date, "%Y-%m-%d").date()
-            hour = int(target_hour)
-        except:
-            dt = teraz_pl.date()
-            hour = teraz_pl.hour
-    else:
-        dt = teraz_pl.date()
-        hour = teraz_pl.hour
-    for grupa in GRUPY_SENSOROW:
-        try:
-            wynik = calculate_occupancy_stats(grupa, dt, hour, db)
-            prognozy[grupa] = wynik["procent_zajetosci"]
-        except:
-            prognozy[grupa] = 0.0
-    return prognozy
+            sid = SENSOR_MAP.get((m.payload[0]<<8)|m.payload[1])
+            if sid:
+                # Wywołanie async funkcji z wątku sync
+                future = asyncio.run_coroutine_threadsafe(
+                    process_async_wrapper(sid, int(m.payload[2])), loop_main
+                )
+        except: pass
 
-@app.get("/api/v1/aktualny_stan")
-async def pobierz_aktualny_stan(db: Session = Depends(get_db)):
-    logger.info("API: Pobieram aktualny stan (początkowy) z bazy danych.")
-    wyniki = db.query(AktualnyStan).all()
-    return [miejsce.to_dict() for miejsce in wyniki]
+    mqtt_client.on_connect = lambda c, u, f, rc: c.subscribe(MQTT_TOPIC_SUBSCRIBE)
+    mqtt_client.on_message = on_msg
+    try:
+        mqtt_client.connect(MQTT_BROKER, MQTT_PORT, 60)
+        mqtt_client.loop_forever()
+    except: pass
 
-# === Endpoint WebSocket ===
+# Helper do mostkowania wątków
+async def process_async_wrapper(sensor_id, status):
+    async with AsyncSessionLocal() as db:
+        await process_parking_update({"sensor_id": sensor_id, "status": status}, db)
+
+# --- Startup ---
+loop_main = None
+
+@app.on_event("startup")
+async def startup():
+    global loop_main
+    loop_main = asyncio.get_running_loop()
+    
+    await init_models() # Utwórz tabele
+    
+    # Uruchom zadanie w tle (zamiast wątku) - to jest "Async way"
+    asyncio.create_task(check_stale_task())
+    
+    # MQTT musi być w wątku bo biblioteka paho jest synchroniczna
+    t = threading.Thread(target=run_mqtt, daemon=True)
+    t.start()
+
 @app.websocket("/ws/stan")
-async def websocket_endpoint(websocket: WebSocket):
+async def ws_endpoint(websocket: WebSocket):
     await manager.connect(websocket)
     try:
         while True:
             data = await websocket.receive_text()
-            if data != "ping":
-                logger.debug(f"WebSocket: Otrzymano wiadomość od klienta: {data}")
-            await websocket.send_text("pong")
-    except WebSocketDisconnect:
-        manager.disconnect(websocket)
-    except Exception as e:
-        logger.error(f"WebSocket: Błąd połączenia: {e}")
-        manager.disconnect(websocket)
-
-# === MQTT ===
-mqtt_client = mqtt.Client()
-
-def on_connect(client, userdata, flags, rc):
-    if rc == 0:
-        logger.info("MQTT: Połączone")
-        client.subscribe(MQTT_TOPIC_SUBSCRIBE)
-    else:
-        logger.error(f"MQTT: Błąd połączenia, kod: {rc}")
-
-def on_message(client, userdata, msg):
-    raw_payload = msg.payload
-    dane = {}
-
-    try:
-        if len(raw_payload) != 3:
-            raise ValueError(f"Oczekiwano 3 bajtów [ID_H, ID_L, STATUS], otrzymano: {len(raw_payload)}")
-
-        sensor_id_num = (raw_payload[0] << 8) | raw_payload[1]
-        status_num = int(raw_payload[2])
-        sensor_id_str = SENSOR_MAP.get(sensor_id_num)
-        
-        if not sensor_id_str:
-            raise ValueError(f"Nieznane ID sensora w SENSOR_MAP: {sensor_id_num}")
-
-        dane = {
-            "sensor_id": sensor_id_str,
-            "status": status_num
-        }
-        
-    except Exception as e:
-        logger.error(f"MQTT: Błąd parsowania wiadomości binarnej: {e} | Payload (raw): {raw_payload}")
-        return
-        
-    db = None
-    try:
-        db = next(get_db())
-        loop = asyncio.get_event_loop()
-        asyncio.run_coroutine_threadsafe(process_parking_update(dane, db), loop)
-    except Exception as e:
-        logger.error(f"MQTT: Błąd podczas przetwarzania wiadomości (process_parking_update): {e}")
-    finally:
-        if db:
-            db.close()
-
-def mqtt_listener_thread():
-    try:
-        mqtt_client.on_connect = on_connect
-        mqtt_client.on_message = on_message
-        mqtt_client.connect(MQTT_BROKER, MQTT_PORT, 60)
-        mqtt_client.loop_start()
-    except Exception as e:
-        logger.error(f"MQTT: Nie można uruchomić wątku: {e}")
-    
-    while not shutdown_event_flag.is_set():
-        time.sleep(1)
-    
-    logger.info("MQTT: Wątek słuchacza zakończył działanie.")
-    mqtt_client.loop_stop()
-    mqtt_client.disconnect()
-
-# === ZARZĄDZANIE STARTUP/SHUTDOWN ===
-@app.on_event("startup")
-async def startup_event():
-    thread_mqtt = threading.Thread(target=mqtt_listener_thread)
-    thread_mqtt.daemon = True
-    thread_mqtt.start()
-    
-    thread_checker = threading.Thread(target=sensor_checker_thread)
-    thread_checker.daemon = True
-    thread_checker.start()
-
-@app.on_event("shutdown")
-def shutdown_event():
-    logger.info("Zatrzymywanie aplikacji...")
-    shutdown_event_flag.set()
-    logger.info("Wysłano sygnał zamknięcia do wątków.")
-    time.sleep(1.5)
+            if data != "ping": await websocket.send_text("pong")
+    except: manager.disconnect(websocket)
