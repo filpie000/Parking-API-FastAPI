@@ -8,6 +8,7 @@ from typing import Optional, List, Dict
 from zoneinfo import ZoneInfo
 from datetime import date
 from fastapi import FastAPI, Depends, HTTPException, Header, Request, WebSocket, WebSocketDisconnect
+from fastapi.responses import HTMLResponse
 from sqlalchemy import create_engine, Column, Integer, String, DateTime
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, Session
@@ -69,6 +70,7 @@ SENSOR_MAP = {
     6: "BUD_2",
     7: "BUD_3",
     8: "BUD_4",
+    # Przykład dla ID > 255
     500: "TEST_PARKING_500",
 }
 
@@ -171,7 +173,6 @@ class ConnectionManager:
 
     async def broadcast(self, message: dict):
         message_json = json.dumps(message, default=str)
-        
         for connection in list(self.active_connections):
             try:
                 await connection.send_text(message_json)
@@ -203,7 +204,6 @@ def check_stale_sensors():
             logger.info(f"TŁO: Znaleziono {len(sensory_do_aktualizacji)} przestarzałych sensorów. Ustawiam status 2.")
             
             zmiany_do_broadcastu = []
-            
             for sensor in sensory_do_aktualizacji:
                 sensor.status = 2
                 sensor.ostatnia_aktualizacja = teraz_utc
@@ -214,17 +214,14 @@ def check_stale_sensors():
             if manager.active_connections:
                 logger.info("TŁO: Rozgłaszam zmiany (status 2) przez WebSocket...")
                 asyncio.run_coroutine_threadsafe(manager.broadcast(zmiany_do_broadcastu), asyncio.get_event_loop())
-                
         else:
             logger.info("TŁO: Wszystkie sensory są aktualne.")
 
     except Exception as e:
         logger.error(f"TŁO: Błąd podczas sprawdzania sensorów: {e}")
-        if db:
-            db.rollback()
+        if db: db.rollback()
     finally:
-        if db:
-            db.close()
+        if db: db.close()
 
 def sensor_checker_thread():
     try:
@@ -362,7 +359,7 @@ async def process_parking_update(dane: dict, db: Session):
                             {
                                 "sensor_id": sensor_id, 
                                 "action": czynnosc,
-                                "new_target": nowy_cel # Wysyłamy ID nowego miejsca do apki
+                                "new_target": nowy_cel
                             }
                         )
                     
@@ -501,14 +498,37 @@ def calculate_occupancy_stats(sensor_prefix: str, selected_date_obj: datetime.da
 def read_root():
     return {"message": "API działa poprawnie."}
 
-# === ENDPOINT DEBUGERSKI (Przesunięty tutaj, bo musi być po app i WymaganyFormat) ===
+# --- NOWOŚĆ: Endpoint serwujący Dashboard HTML ---
+@app.get("/dashboard", response_class=HTMLResponse)
+async def dashboard():
+    try:
+        with open("dashboard.html", "r", encoding="utf-8") as f:
+            return f.read()
+    except FileNotFoundError:
+        return """
+        <html>
+            <body style="font-family: sans-serif; text-align: center; padding: 50px;">
+                <h1 style="color: red;">Błąd: Nie znaleziono pliku dashboard.html</h1>
+                <p>Upewnij się, że plik <b>dashboard.html</b> znajduje się w głównym folderze aplikacji.</p>
+            </body>
+        </html>
+        """
+
+# --- ZMODYFIKOWANY: Pobieranie stanu z LIMITEM ---
+@app.get("/api/v1/aktualny_stan")
+async def pobierz_aktualny_stan(limit: int = 100, db: Session = Depends(get_db)):
+    logger.info(f"API: Pobieram aktualny stan (limit: {limit}) z bazy danych.")
+    # Sortujemy np. po ID, żeby wyniki były deterministyczne
+    wyniki = db.query(AktualnyStan).limit(limit).all()
+    return [miejsce.to_dict() for miejsce in wyniki]
+
+# === ENDPOINT DEBUGERSKI ===
 @app.post("/api/v1/debug/symulacja_sensora")
 async def debug_sensor_update(dane: WymaganyFormat, db: Session = Depends(get_db)):
     logger.info(f"DEBUG: Otrzymano symulację z Postmana: {dane}")
     payload = dane.dict()
     
     try:
-        # Wywołujemy funkcję logiki, która jest zdefiniowana wyżej
         wynik = await process_parking_update(payload, db)
         return wynik
     except Exception as e:
@@ -537,14 +557,13 @@ def pobierz_statystyki(z: StatystykiZapytanie, db: Session = Depends(get_db)):
     if not z.sensor_id:
         raise HTTPException(status_code=400, detail="Brak sensor_id")
 
-    # === NOWA LOGIKA GRUPOWANIA ===
-    # Zamiast liczyć dla "EURO_1", bierzemy przedrostek "EURO"
+    # === GRUPOWANIE STATYSTYK (Dla Dashboardu i Aplikacji) ===
     try:
         grupa_sensorow = z.sensor_id.split('_')[0]
     except IndexError:
         grupa_sensorow = z.sensor_id
 
-    # 1. Sprawdź Cache (Redis) - klucz teraz zależy od GRUPY
+    # Klucz cache grupowy
     cache_key = f"stats:GROUP:{grupa_sensorow}:{z.selected_date}:{z.selected_hour}"
     
     if redis_client:
@@ -564,7 +583,7 @@ def pobierz_statystyki(z: StatystykiZapytanie, db: Session = Depends(get_db)):
         except ValueError:
             raise HTTPException(status_code=400, detail="Zły format daty. Oczekiwano YYYY-MM-DD")
         
-        # Wywołanie funkcji obliczającej dla CAŁEJ GRUPY
+        # Obliczamy dla całej grupy
         wynik = calculate_occupancy_stats(grupa_sensorow, selected_date, z.selected_hour, db)
         
         if redis_client:
@@ -602,12 +621,6 @@ def pobierz_prognoze(db: Session = Depends(get_db), target_date: Optional[str] =
         except:
             prognozy[grupa] = 0.0
     return prognozy
-
-@app.get("/api/v1/aktualny_stan")
-async def pobierz_aktualny_stan(db: Session = Depends(get_db)):
-    logger.info("API: Pobieram aktualny stan (początkowy) z bazy danych.")
-    wyniki = db.query(AktualnyStan).all()
-    return [miejsce.to_dict() for miejsce in wyniki]
 
 # === Endpoint WebSocket ===
 @app.websocket("/ws/stan")
