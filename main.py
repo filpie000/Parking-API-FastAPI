@@ -49,10 +49,11 @@ limiter = Limiter(key_func=get_remote_address)
 DATABASE_URL = os.environ.get('DATABASE_URL')
 
 if not DATABASE_URL:
+    # Fallback dla testów lokalnych (SQLite Async)
     DATABASE_URL = "sqlite+aiosqlite:///./parking_data.db"
     logger.warning("Brak DATABASE_URL — używam SQLite (Async).")
 else:
-    # Fix dla Rendera
+    # Fix dla Rendera (wymuszenie asyncpg)
     if DATABASE_URL.startswith("postgres://"):
         DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql+asyncpg://", 1)
     elif DATABASE_URL.startswith("postgresql://"):
@@ -197,7 +198,6 @@ async def calculate_occupancy_stats_async(sensor_prefix: str, selected_date_obj:
     kategoria_str = ""
     rows = []
     
-    # Określanie zakresu godzinowego (+/- 60 min)
     try:
         czas_poczatek = get_time_with_offset(selected_hour, -60)
         czas_koniec = get_time_with_offset(selected_hour, 60)
@@ -224,7 +224,6 @@ async def calculate_occupancy_stats_async(sensor_prefix: str, selected_date_obj:
         res = await db.execute(select(DaneHistoryczne).filter(DaneHistoryczne.sensor_id.startswith(sensor_prefix)))
         rows = res.scalars().all()
 
-        # Filtrowanie w Pythonie (dla uproszczenia SQL w async)
         filtered_rows = []
         for row in rows:
             if not row.czas_pomiaru: continue
@@ -233,7 +232,6 @@ async def calculate_occupancy_stats_async(sensor_prefix: str, selected_date_obj:
                 filtered_rows.append(row)
         rows = filtered_rows
 
-    # Filtrowanie godzinowe
     dane_pasujace = []
     for row in rows:
         if not row.czas_pomiaru: continue
@@ -353,7 +351,6 @@ async def get_forecast(target_date: Optional[str] = None, target_hour: Optional[
 @app.post("/api/v1/statystyki/zajetosc")
 async def get_stats(z: StatystykiZapytanie, db: AsyncSession = Depends(get_db)):
     try:
-        # Grupujemy: jeśli z.sensor_id = "EURO_1", to liczymy dla "EURO"
         grp = z.sensor_id.split('_')[0]
     except: grp = z.sensor_id
     
