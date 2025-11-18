@@ -1,0 +1,266 @@
+<!DOCTYPE html>
+<html lang="pl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Parking IoT - Panel Administratora</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" />
+
+    <style>
+        #map { height: 100%; width: 100%; border-radius: 0.5rem; }
+        .glass { background: rgba(255, 255, 255, 0.95); backdrop-filter: blur(10px); }
+    </style>
+</head>
+<body class="bg-gray-100 text-gray-800 font-sans h-screen flex flex-col overflow-hidden">
+
+    <div id="login-overlay" class="fixed inset-0 bg-gray-900 bg-opacity-90 z-50 flex items-center justify-center">
+        <div class="bg-white p-8 rounded-lg shadow-2xl w-96 text-center">
+            <h2 class="text-2xl font-bold mb-4 text-blue-600">Logowanie</h2>
+            <input type="password" id="password" placeholder="Hasło (admin123)" class="w-full p-3 border rounded mb-4 focus:outline-none focus:ring-2 focus:ring-blue-500">
+            <button onclick="login()" class="w-full bg-blue-600 text-white py-2 rounded hover:bg-blue-700 transition">Wejdź</button>
+            <p id="login-error" class="text-red-500 mt-2 hidden">Błędne hasło!</p>
+        </div>
+    </div>
+
+    <div id="app-content" class="flex h-full hidden">
+        
+        <aside class="w-64 bg-white shadow-md flex flex-col z-10">
+            <div class="p-4 border-b flex items-center gap-2">
+                <i class="fas fa-parking text-blue-600 text-2xl"></i>
+                <span class="text-xl font-bold">Smart Parking</span>
+            </div>
+            <nav class="flex-1 p-4 space-y-2">
+                <a href="#" class="block p-3 rounded bg-blue-50 text-blue-600 font-semibold"><i class="fas fa-chart-line mr-2"></i> Pulpit</a>
+                <a href="#" class="block p-3 rounded hover:bg-gray-50 text-gray-600"><i class="fas fa-cogs mr-2"></i> Ustawienia</a>
+                <a href="#" class="block p-3 rounded hover:bg-gray-50 text-gray-600"><i class="fas fa-users mr-2"></i> Użytkownicy</a>
+            </nav>
+            <div class="p-4 border-t text-sm text-gray-500">
+                Zalogowano jako: <b>Admin</b>
+            </div>
+        </aside>
+
+        <main class="flex-1 flex flex-col overflow-hidden">
+            <header class="bg-white shadow-sm p-4 flex justify-between items-center z-10">
+                <h1 class="text-2xl font-bold text-gray-700">Pulpit Zarządzania</h1>
+                <button onclick="refreshData()" class="bg-gray-100 hover:bg-gray-200 text-gray-600 px-4 py-2 rounded shadow-sm transition">
+                    <i class="fas fa-sync-alt mr-1"></i> Odśwież
+                </button>
+            </header>
+
+            <div class="flex-1 overflow-auto p-6 space-y-6">
+                
+                <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
+                    <div class="bg-white p-6 rounded-lg shadow border-l-4 border-green-500">
+                        <div class="flex justify-between items-center">
+                            <div>
+                                <p class="text-sm text-gray-500">Wolne Miejsca</p>
+                                <h3 class="text-3xl font-bold text-gray-800" id="count-free">--</h3>
+                            </div>
+                            <i class="fas fa-check-circle text-green-500 text-3xl"></i>
+                        </div>
+                    </div>
+                    <div class="bg-white p-6 rounded-lg shadow border-l-4 border-red-500">
+                        <div class="flex justify-between items-center">
+                            <div>
+                                <p class="text-sm text-gray-500">Zajęte Miejsca</p>
+                                <h3 class="text-3xl font-bold text-gray-800" id="count-occupied">--</h3>
+                            </div>
+                            <i class="fas fa-car text-red-500 text-3xl"></i>
+                        </div>
+                    </div>
+                    <div class="bg-white p-6 rounded-lg shadow border-l-4 border-blue-500">
+                        <div class="flex justify-between items-center">
+                            <div>
+                                <p class="text-sm text-gray-500">Wszystkie Sensory</p>
+                                <h3 class="text-3xl font-bold text-gray-800" id="count-total">--</h3>
+                            </div>
+                            <i class="fas fa-server text-blue-500 text-3xl"></i>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="grid grid-cols-1 lg:grid-cols-2 gap-6 h-96">
+                    <div class="bg-white p-4 rounded-lg shadow flex flex-col">
+                        <h3 class="text-lg font-bold mb-4 text-gray-700">Mapa Parkingu</h3>
+                        <div class="flex-1 relative">
+                             
+                            <div id="map"></div>
+                        </div>
+                    </div>
+                    <div class="bg-white p-4 rounded-lg shadow flex flex-col">
+                        <h3 class="text-lg font-bold mb-4 text-gray-700">Zajętość wg Sekcji</h3>
+                        <div class="flex-1 relative">
+                             
+
+[Image of Bar Chart Occupancy]
+
+                            <canvas id="occupancyChart"></canvas>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="bg-white rounded-lg shadow overflow-hidden">
+                    <div class="p-4 border-b flex justify-between items-center">
+                        <h3 class="text-lg font-bold text-gray-700">Status Czujników (Lista)</h3>
+                        <input type="text" id="search" placeholder="Szukaj (np. EURO)..." class="border rounded px-3 py-1 text-sm focus:ring-2 focus:ring-blue-500" onkeyup="filterTable()">
+                    </div>
+                    <div class="overflow-x-auto">
+                        <table class="w-full text-left border-collapse">
+                            <thead class="bg-gray-50 text-gray-600 uppercase text-xs">
+                                <tr>
+                                    <th class="p-4 border-b">ID Sensora</th>
+                                    <th class="p-4 border-b">Status</th>
+                                    <th class="p-4 border-b">Ostatnia Aktualizacja</th>
+                                    <th class="p-4 border-b">Akcja</th>
+                                </tr>
+                            </thead>
+                            <tbody id="table-body" class="text-sm text-gray-700">
+                                </tbody>
+                        </table>
+                    </div>
+                    <div class="p-4 border-t bg-gray-50 flex justify-end">
+                        <span class="text-xs text-gray-400">Wyświetlono max 100 wyników</span>
+                    </div>
+                </div>
+
+            </div>
+        </main>
+    </div>
+
+    <script>
+        // --- KONFIGURACJA ---
+        const API_URL = window.location.origin + "/api/v1/aktualny_stan"; // Dynamiczny URL
+        
+        // --- LOGOWANIE (Proste) ---
+        function login() {
+            const pass = document.getElementById('password').value;
+            if(pass === 'admin123') {
+                document.getElementById('login-overlay').style.display = 'none';
+                document.getElementById('app-content').classList.remove('hidden');
+                initDashboard();
+            } else {
+                document.getElementById('login-error').classList.remove('hidden');
+            }
+        }
+
+        // --- INICJALIZACJA ---
+        let map, chart;
+        let allData = [];
+
+        function initDashboard() {
+            // 1. Inicjalizacja Mapy (Inowrocław)
+            map = L.map('map').setView([52.800315, 18.256840], 16);
+            L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+                attribution: '© OpenStreetMap contributors'
+            }).addTo(map);
+
+            // 2. Inicjalizacja Wykresu
+            const ctx = document.getElementById('occupancyChart').getContext('2d');
+            chart = new Chart(ctx, {
+                type: 'bar',
+                data: {
+                    labels: ['EURO', 'BUD'],
+                    datasets: [{
+                        label: 'Zajęte miejsca',
+                        data: [0, 0],
+                        backgroundColor: ['#3B82F6', '#10B981']
+                    }]
+                },
+                options: { responsive: true, maintainAspectRatio: false }
+            });
+
+            // 3. Pobranie danych
+            refreshData();
+            
+            // Auto-odświeżanie co 10s
+            setInterval(refreshData, 10000);
+        }
+
+        async function refreshData() {
+            try {
+                // Pobierz z limitem 150 (żeby nie mulić przeglądarki, ale widzieć większość)
+                const res = await fetch(API_URL + "?limit=150");
+                const data = await res.json();
+                allData = data;
+                renderData(data);
+            } catch (e) {
+                console.error("Błąd pobierania danych:", e);
+            }
+        }
+
+        function renderData(data) {
+            // KPI
+            const total = data.length;
+            const occupied = data.filter(d => d.status === 1).length;
+            const free = data.filter(d => d.status === 0).length;
+            
+            document.getElementById('count-total').innerText = total;
+            document.getElementById('count-occupied').innerText = occupied;
+            document.getElementById('count-free').innerText = free;
+
+            // Tabela
+            const tbody = document.getElementById('table-body');
+            tbody.innerHTML = '';
+            data.forEach(row => {
+                const tr = document.createElement('tr');
+                tr.className = "hover:bg-gray-50 border-b";
+                
+                let statusBadge = '';
+                if(row.status === 0) statusBadge = '<span class="px-2 py-1 rounded text-xs font-bold bg-green-100 text-green-800">WOLNE</span>';
+                else if(row.status === 1) statusBadge = '<span class="px-2 py-1 rounded text-xs font-bold bg-red-100 text-red-800">ZAJĘTE</span>';
+                else statusBadge = '<span class="px-2 py-1 rounded text-xs font-bold bg-gray-200 text-gray-800">OFFLINE</span>';
+
+                tr.innerHTML = `
+                    <td class="p-4 font-medium">${row.sensor_id}</td>
+                    <td class="p-4">${statusBadge}</td>
+                    <td class="p-4 text-gray-500">${row.ostatnia_aktualizacja ? new Date(row.ostatnia_aktualizacja).toLocaleTimeString() : '-'}</td>
+                    <td class="p-4"><button class="text-blue-600 hover:underline text-xs">Edytuj</button></td>
+                `;
+                tbody.appendChild(tr);
+            });
+
+            // Wykres
+            const euroCount = data.filter(d => d.sensor_id.startsWith('EURO') && d.status === 1).length;
+            const budCount = data.filter(d => d.sensor_id.startsWith('BUD') && d.status === 1).length;
+            chart.data.datasets[0].data = [euroCount, budCount];
+            chart.update();
+
+            // Mapa (Pinezy)
+            // Czyścimy stare markery (uproszczone)
+            map.eachLayer((layer) => {
+                if (layer instanceof L.Marker) { map.removeLayer(layer); }
+            });
+
+            // Demo lokalizacje (w produkcji brałbyś je z bazy)
+            const locs = {
+                'EURO_1': [52.800306, 18.256735],
+                'EURO_2': [52.800310, 18.256785],
+                'BUD_1': [52.769000, 18.252310],
+            };
+
+            data.forEach(d => {
+                if(locs[d.sensor_id]) {
+                    const color = d.status === 0 ? 'green' : 'red';
+                    // Prosty znacznik kołowy
+                    L.circleMarker(locs[d.sensor_id], {
+                        color: color, fillColor: color, fillOpacity: 0.8, radius: 8
+                    }).bindPopup(`<b>${d.sensor_id}</b><br>Status: ${d.status}`).addTo(map);
+                }
+            });
+        }
+
+        function filterTable() {
+            const term = document.getElementById('search').value.toLowerCase();
+            const rows = document.querySelectorAll('#table-body tr');
+            rows.forEach(row => {
+                const txt = row.innerText.toLowerCase();
+                row.style.display = txt.includes(term) ? '' : 'none';
+            });
+        }
+    </script>
+</body>
+</html>
