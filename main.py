@@ -260,16 +260,16 @@ async def calculate_occupancy_stats_async(sensor_prefix: str, selected_date_obj:
         "przedzial_czasu": f"{czas_poczatek} - {czas_koniec}"
     }
 
-# === Processing (POPRAWIONE LOGOWANIE I PARAMETRY EXPO) ===
+# === Processing (POPRAWIONY URL v2) ===
 def send_push_notification(token: str, title: str, body: str, data: dict):
-    url = "https://exp.host/--/api/v1/push/send"
+    # ZMIANA: API v2
+    url = "https://exp.host/--/api/v2/push/send"
+    
     headers = {
-        "Host": "exp.host",
         "Accept": "application/json",
-        "Accept-Encoding": "gzip, deflate",
         "Content-Type": "application/json"
     }
-    # Dodano kluczowe pola dla Androida: sound, priority, channelId
+    
     payload = {
         "to": token,
         "title": title,
@@ -277,22 +277,35 @@ def send_push_notification(token: str, title: str, body: str, data: dict):
         "data": data,
         "sound": "default",
         "priority": "high",
-        "channelId": "parking-alerts" # Musi pasować do kanału w App.js
+        "channelId": "parking-alerts"
     }
     
     try:
-        response = requests.post(url, json=payload, headers=headers, timeout=5)
+        response = requests.post(url, json=payload, headers=headers, timeout=10)
+        
+        # Logowanie
         logger.info(f"--- PUSH NOTIFICATION ---")
         logger.info(f"Target: {token[:15]}...")
-        logger.info(f"Title: {title}")
         logger.info(f"Status Code: {response.status_code}")
-        if response.status_code != 200:
-             logger.error(f"Expo Error Body: {response.text}")
-        else:
-             logger.info(f"Expo Success: {response.json()}")
+        
+        try:
+            resp_json = response.json()
+            data_status = resp_json.get('data', {}).get('status')
+            
+            if response.status_code != 200:
+                 logger.error(f"HTTP Error: {response.text}")
+            elif data_status == "error":
+                 logger.error(f"Expo API Logic Error: {resp_json}")
+            else:
+                 logger.info(f"Expo Success: {resp_json}")
+                 
+        except json.JSONDecodeError:
+            logger.error(f"Non-JSON Response: {response.text}")
+            
         logger.info(f"-------------------------")
+        
     except Exception as e:
-        logger.error(f"!!! CRITICAL PUSH ERROR !!!: {e}")
+        logger.error(f"!!! CRITICAL PUSH ERROR (Network/Timeout) !!!: {e}")
 
 
 async def process_parking_update(dane: dict, db: AsyncSession):
@@ -321,7 +334,6 @@ async def process_parking_update(dane: dict, db: AsyncSession):
         if prev != status:
             zmiana_stanu = {"sensor_id": sid, "status": status, "ostatnia_aktualizacja": teraz_utc.isoformat()}
             
-            # Wykryto zajęcie miejsca (0 -> 1)
             if prev != 1 and status == 1:
                 limit = datetime.timedelta(minutes=30)
                 obs_res = await db.execute(select(ObserwowaneMiejsca).where(ObserwowaneMiejsca.sensor_id == sid, (teraz_utc - ObserwowaneMiejsca.czas_dodania) < limit))
