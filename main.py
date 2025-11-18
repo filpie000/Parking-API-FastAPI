@@ -70,14 +70,13 @@ SENSOR_MAP = {
     6: "BUD_2",
     7: "BUD_3",
     8: "BUD_4",
-    # Przykład dla ID > 255
     500: "TEST_PARKING_500",
 }
 
 # === Stałe ===
 GRUPY_SENSOROW = ["EURO", "BUD"]
 
-# === Rozszerzona Mapa Świąt 2023-2025 ===
+# === Rozszerzona Mapa Świąt (Księga Świąt) ===
 MANUALNA_MAPA_SWIAT = {
     # --- 2023 ---
     date(2023, 11, 1): "Wszystkich Świętych",
@@ -173,6 +172,7 @@ class ConnectionManager:
 
     async def broadcast(self, message: dict):
         message_json = json.dumps(message, default=str)
+        
         for connection in list(self.active_connections):
             try:
                 await connection.send_text(message_json)
@@ -193,7 +193,7 @@ def check_stale_sensors():
         teraz_utc = now_utc()
         czas_odciecia = teraz_utc - datetime.timedelta(minutes=3)
         
-        logger.info(f"TŁO: Sprawdzam sensory, które nie były aktualizowane od {czas_odciecia}...")
+        # logger.info(f"TŁO: Sprawdzam sensory, które nie były aktualizowane od {czas_odciecia}...")
 
         sensory_do_aktualizacji = db.query(AktualnyStan).filter(
             AktualnyStan.status != 2,
@@ -204,6 +204,7 @@ def check_stale_sensors():
             logger.info(f"TŁO: Znaleziono {len(sensory_do_aktualizacji)} przestarzałych sensorów. Ustawiam status 2.")
             
             zmiany_do_broadcastu = []
+            
             for sensor in sensory_do_aktualizacji:
                 sensor.status = 2
                 sensor.ostatnia_aktualizacja = teraz_utc
@@ -214,14 +215,14 @@ def check_stale_sensors():
             if manager.active_connections:
                 logger.info("TŁO: Rozgłaszam zmiany (status 2) przez WebSocket...")
                 asyncio.run_coroutine_threadsafe(manager.broadcast(zmiany_do_broadcastu), asyncio.get_event_loop())
-        else:
-            logger.info("TŁO: Wszystkie sensory są aktualne.")
-
+                
     except Exception as e:
         logger.error(f"TŁO: Błąd podczas sprawdzania sensorów: {e}")
-        if db: db.rollback()
+        if db:
+            db.rollback()
     finally:
-        if db: db.close()
+        if db:
+            db.close()
 
 def sensor_checker_thread():
     try:
@@ -259,12 +260,14 @@ class StatystykiZapytanie(BaseModel):
     selected_date: str
     selected_hour: int
 
+# Model dla Dashboardu
 class RaportRequest(BaseModel):
     start_date: str
     end_date: str
     groups: List[str]
     include_workdays: bool
     include_weekends: bool
+    include_holidays: bool
 
 # === PUSH ===
 def send_push_notification(token: str, title: str, body: str, data: dict):
@@ -293,9 +296,11 @@ async def process_parking_update(dane: dict, db: Session):
         dane_cz = WymaganyFormat(**dane)
         sensor_id = dane_cz.sensor_id
         nowy_status = dane_cz.status
+        
+        # Sprawdzamy czy to święto w księdze świąt
         nazwa_swieta = MANUALNA_MAPA_SWIAT.get(teraz_pl.date())
         
-        # Zapis historii / świąt
+        # Zapis do odpowiedniej tabeli historii
         if nazwa_swieta:
             db.add(DaneSwieta(
                 czas_pomiaru=teraz_utc, sensor_id=sensor_id,
@@ -366,11 +371,11 @@ async def process_parking_update(dane: dict, db: Session):
                             {
                                 "sensor_id": sensor_id, 
                                 "action": czynnosc,
-                                "new_target": nowy_cel
+                                "new_target": nowy_cel # Wysyłamy ID nowego miejsca do apki
                             }
                         )
                     
-                    # ZAWSZE czyścimy obserwację
+                    # ZAWSZE czyścimy obserwację, bo apka sama wyśle nowe żądanie jeśli dostanie new_target
                     db.query(ObserwowaneMiejsca).filter(
                         ObserwowaneMiejsca.device_token.in_([o.device_token for o in obserwatorzy])
                     ).delete(synchronize_session=False)
@@ -525,9 +530,92 @@ async def dashboard():
 @app.get("/api/v1/aktualny_stan")
 async def pobierz_aktualny_stan(limit: int = 100, db: Session = Depends(get_db)):
     logger.info(f"API: Pobieram aktualny stan (limit: {limit}) z bazy danych.")
-    # Sortujemy np. po ID, żeby wyniki były deterministyczne
     wyniki = db.query(AktualnyStan).limit(limit).all()
     return [miejsce.to_dict() for miejsce in wyniki]
+
+# --- NOWOŚĆ: Generator Raportu dla Dashboardu (Agregacja 0-23h) ---
+@app.post("/api/v1/dashboard/raport")
+def generuj_raport_zbiorczy(req: RaportRequest, db: Session = Depends(get_db)):
+    # logger.info(f"RAPORT: Generuję dane dla {req.groups}...")
+    
+    try:
+        s_date = datetime.datetime.strptime(req.start_date, "%Y-%m-%d").date()
+        e_date = datetime.datetime.strptime(req.end_date, "%Y-%m-%d").date()
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Zły format daty")
+
+    # Pobieramy dane z obu tabel, jeśli trzeba
+    all_rows = []
+
+    # 1. Dane Historyczne (Dni Powszednie/Weekendy)
+    if req.include_workdays or req.include_weekends:
+        hist_data = db.query(DaneHistoryczne).filter(
+            DaneHistoryczne.czas_pomiaru >= s_date,
+            DaneHistoryczne.czas_pomiaru <= e_date + datetime.timedelta(days=1)
+        ).all()
+        all_rows.extend(hist_data)
+
+    # 2. Dane Świąteczne (Jeśli zaznaczone)
+    if req.include_holidays:
+        hol_data = db.query(DaneSwieta).filter(
+            DaneSwieta.czas_pomiaru >= s_date,
+            DaneSwieta.czas_pomiaru <= e_date + datetime.timedelta(days=1)
+        ).all()
+        all_rows.extend(hol_data)
+
+    # Agregacja
+    agregacja = {g: {h: [] for h in range(24)} for g in req.groups}
+
+    for row in all_rows:
+        # Konwersja czasu
+        if row.czas_pomiaru.tzinfo is None:
+             local_time = row.czas_pomiaru.replace(tzinfo=PL_TZ) # Zakładamy PL jeśli brak info
+        else:
+             local_time = row.czas_pomiaru.astimezone(PL_TZ)
+
+        dt_date = local_time.date()
+        hour = local_time.hour
+        weekday = dt_date.weekday() # 0=Pon, 6=Niedz
+
+        # === FILTROWANIE ===
+        # Sprawdzamy czy ten konkretny rekord pasuje do wybranych filtrów
+        
+        # Czy to rekord ze świąt? (sprawdzamy typ obiektu lub tabele)
+        is_holiday_record = isinstance(row, DaneSwieta)
+        
+        if is_holiday_record:
+            # Jeśli to rekord ze święta, a user nie chciał świąt -> pomiń
+            if not req.include_holidays: continue
+        else:
+            # To rekord zwykły. Sprawdzamy czy weekend czy roboczy
+            is_weekend = (weekday >= 5)
+            if is_weekend and not req.include_weekends: continue
+            if not is_weekend and not req.include_workdays: continue
+
+        # Przypisanie do grupy
+        try:
+            sensor_group = row.sensor_id.split('_')[0]
+        except:
+            continue
+            
+        if sensor_group in agregacja:
+            agregacja[sensor_group][hour].append(row.status)
+
+    # Obliczanie średnich (%)
+    wynik_finalny = {}
+    
+    for group in req.groups:
+        dane_godzinowe = []
+        for h in range(24):
+            pomiary = agregacja[group][h]
+            if not pomiary:
+                dane_godzinowe.append(0)
+            else:
+                procent = (sum(pomiary) / len(pomiary)) * 100
+                dane_godzinowe.append(round(procent, 1))
+        wynik_finalny[group] = dane_godzinowe
+
+    return wynik_finalny
 
 # === ENDPOINT DEBUGERSKI ===
 @app.post("/api/v1/debug/symulacja_sensora")
@@ -629,6 +717,12 @@ def pobierz_prognoze(db: Session = Depends(get_db), target_date: Optional[str] =
             prognozy[grupa] = 0.0
     return prognozy
 
+@app.get("/api/v1/aktualny_stan")
+async def pobierz_aktualny_stan(db: Session = Depends(get_db)):
+    logger.info("API: Pobieram aktualny stan (początkowy) z bazy danych.")
+    wyniki = db.query(AktualnyStan).all()
+    return [miejsce.to_dict() for miejsce in wyniki]
+
 # === Endpoint WebSocket ===
 @app.websocket("/ws/stan")
 async def websocket_endpoint(websocket: WebSocket):
@@ -644,63 +738,7 @@ async def websocket_endpoint(websocket: WebSocket):
     except Exception as e:
         logger.error(f"WebSocket: Błąd połączenia: {e}")
         manager.disconnect(websocket)
-# --- NOWOŚĆ: Generator Raportu dla Dashboardu ---
-@app.post("/api/v1/dashboard/raport")
-def generuj_raport_zbiorczy(req: RaportRequest, db: Session = Depends(get_db)):
-    logger.info(f"RAPORT: Generuję dane dla {req.groups} od {req.start_date} do {req.end_date}")
-    
-    try:
-        s_date = datetime.datetime.strptime(req.start_date, "%Y-%m-%d").date()
-        e_date = datetime.datetime.strptime(req.end_date, "%Y-%m-%d").date()
-    except ValueError:
-        raise HTTPException(status_code=400, detail="Zły format daty")
 
-    # 1. Pobierz WSZYSTKIE dane historyczne z tego zakresu
-    # Robimy to jednym zapytaniem, a potem filtrujemy w Pythonie (prostsze przy SQLite/Postgres)
-    raw_data = db.query(DaneHistoryczne).filter(
-        DaneHistoryczne.czas_pomiaru >= s_date,
-        DaneHistoryczne.czas_pomiaru <= e_date + datetime.timedelta(days=1) # do końca dnia
-    ).all()
-
-    # Struktura na wyniki: { "EURO": { 0: [], 1: [], ... 23: [] }, "BUD": ... }
-    agregacja = {g: {h: [] for h in range(24)} for g in req.groups}
-
-    for row in raw_data:
-        # Konwersja na czas lokalny (żeby godzina 14:00 była 14:00 w Polsce)
-        local_time = row.czas_pomiaru.astimezone(PL_TZ)
-        dt_date = local_time.date()
-        hour = local_time.hour
-        weekday = dt_date.weekday() # 0=Pon, 6=Niedz
-
-        # Filtrowanie dni
-        is_weekend = (weekday >= 5)
-        if is_weekend and not req.include_weekends:
-            continue
-        if not is_weekend and not req.include_workdays:
-            continue
-
-        # Sprawdzenie grupy (np. czy EURO_1 należy do grupy EURO)
-        sensor_group = row.sensor_id.split('_')[0]
-        if sensor_group in agregacja:
-            # Dodajemy status (0 lub 1) do listy dla danej godziny
-            agregacja[sensor_group][hour].append(row.status)
-
-    # Obliczanie średnich (%)
-    wynik_finalny = {}
-    
-    for group in req.groups:
-        dane_godzinowe = []
-        for h in range(24):
-            pomiary = agregacja[group][h]
-            if not pomiary:
-                dane_godzinowe.append(0) # Brak danych = 0%
-            else:
-                # Suma zajętych (1) / Ilość wszystkich * 100
-                procent = (sum(pomiary) / len(pomiary)) * 100
-                dane_godzinowe.append(round(procent, 1))
-        wynik_finalny[group] = dane_godzinowe
-
-    return wynik_finalny
 # === MQTT ===
 mqtt_client = mqtt.Client()
 
@@ -779,4 +817,3 @@ def shutdown_event():
     shutdown_event_flag.set()
     logger.info("Wysłano sygnał zamknięcia do wątków.")
     time.sleep(1.5)
-
