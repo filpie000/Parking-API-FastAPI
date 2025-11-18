@@ -272,20 +272,119 @@ class StatystykiZapytanie(BaseModel):
     selected_hour: int
 
 # === PUSH ===
-def send_push_notification(token: str, sensor_id: str):
-    logger.info(f"Wysyłam PUSH do {token} (sensor: {sensor_id})")
+# === ZMODYFIKOWANA FUNKCJA PUSH (bardziej elastyczna) ===
+def send_push_notification(token: str, title: str, body: str, data: dict):
+    logger.info(f"Wysyłam PUSH do {token}: {title}")
     try:
         requests.post(
             "https://exp.host/--/api/v2/push/send",
             json={
-                "to": token, "sound": "default",
-                "title": "❌ Miejsce parkingowe zajęte!",
-                "body": f"Miejsce {sensor_id}, do którego nawigujesz, zostało zajęte.",
-                "data": {"sensor_id": sensor_id, "action": "reroute"}
+                "to": token,
+                "sound": "default",
+                "title": title,
+                "body": body,
+                "data": data
             }
         )
     except Exception as e:
         logger.error(f"Błąd podczas wysyłania PUSH: {e}")
+
+# === ZMODYFIKOWANA LOGIKA PRZETWARZANIA (Neighbor Check) ===
+async def process_parking_update(dane: dict, db: Session):
+    teraz_utc = now_utc()
+    teraz_pl = teraz_utc.astimezone(PL_TZ)
+    zmiana_stanu = None
+    
+    if "sensor_id" in dane:
+        dane_cz = WymaganyFormat(**dane)
+        sensor_id = dane_cz.sensor_id
+        nowy_status = dane_cz.status
+        nazwa_swieta = MANUALNA_MAPA_SWIAT.get(teraz_pl.date())
+        
+        # Zapis historii / świąt
+        if nazwa_swieta:
+            db.add(DaneSwieta(
+                czas_pomiaru=teraz_utc, sensor_id=sensor_id,
+                status=nowy_status, nazwa_swieta=nazwa_swieta
+            ))
+        else:
+            db.add(DaneHistoryczne(
+                czas_pomiaru=teraz_utc, sensor_id=sensor_id, status=nowy_status
+            ))
+            
+        miejsce = db.query(AktualnyStan).filter(AktualnyStan.sensor_id == sensor_id).first()
+        poprzedni = -1
+        
+        if miejsce:
+            poprzedni = miejsce.status
+            miejsce.status = nowy_status
+            miejsce.ostatnia_aktualizacja = teraz_utc
+        else:
+            db.add(AktualnyStan(
+                sensor_id=sensor_id, status=nowy_status,
+                ostatnia_aktualizacja=teraz_utc
+            ))
+        
+        # Wykryto zmianę
+        if poprzedni != nowy_status:
+            logger.info(f"WYKRYTO ZMIANĘ STANU dla {sensor_id}: {poprzedni} -> {nowy_status}")
+            zmiana_stanu = {"sensor_id": sensor_id, "status": nowy_status, "ostatnia_aktualizacja": teraz_utc.isoformat()}
+            
+            # === LOGIKA POWIADOMIEŃ (INTELIGENTNA) ===
+            # Tylko jeśli miejsce zmienia się z Wolnego/Nieznanego na ZAJĘTE (1)
+            if poprzedni != 1 and nowy_status == 1:
+                limit = datetime.timedelta(minutes=30)
+                
+                # Pobieramy obserwatorów tego konkretnego miejsca
+                obserwatorzy = db.query(ObserwowaneMiejsca).filter(
+                    ObserwowaneMiejsca.sensor_id == sensor_id,
+                    (teraz_utc - ObserwowaneMiejsca.czas_dodania) < limit
+                ).all()
+                
+                if obserwatorzy:
+                    # 1. Sprawdź czy są inni "sąsiedzi" z tej samej grupy, którzy są WOLNI
+                    grupa_prefix = sensor_id.split('_')[0] # np. "EURO" z "EURO_1"
+                    
+                    wolni_sasiedzi = db.query(AktualnyStan).filter(
+                        AktualnyStan.sensor_id.startswith(grupa_prefix), # Ten sam parking
+                        AktualnyStan.sensor_id != sensor_id,             # Inne miejsce niż to zajęte
+                        AktualnyStan.status == 0                         # Status Wolny
+                    ).all()
+                    
+                    # Domyślne wartości dla "PANIKI" (wszystko zajęte)
+                    tytul_push = "❌ Miejsce zajęte!"
+                    czynnosc = "reroute" # App.js: przekieruj na ekran wyników
+                    tresc_push = f"Miejsce {sensor_id} zostało zajęte. Szukam alternatywy..."
+                    
+                    # Jeśli znaleziono wolnego sąsiada -> Zmieniamy na "SPOKOJNIE"
+                    if wolni_sasiedzi:
+                        najlepszy_sasiad = wolni_sasiedzi[0].sensor_id
+                        tytul_push = "⚠️ Zmiana miejsca"
+                        czynnosc = "info" # App.js: tylko wyświetl alert, nie zmieniaj ekranu
+                        tresc_push = f"Miejsce {sensor_id} zajęte, ale {najlepszy_sasiad} obok jest wolne! Kieruj się tam."
+
+                    # Wysyłamy powiadomienia
+                    for o in obserwatorzy:
+                        send_push_notification(
+                            o.device_token, 
+                            tytul_push, 
+                            tresc_push, 
+                            {"sensor_id": sensor_id, "action": czynnosc}
+                        )
+                    
+                    # Czyścimy obserwację (bo kierowca już dostał info)
+                    db.query(ObserwowaneMiejsca).filter(
+                        ObserwowaneMiejsca.device_token.in_([o.device_token for o in obserwatorzy])
+                    ).delete(synchronize_session=False)
+                    
+        db.commit()
+        
+        if zmiana_stanu and manager.active_connections:
+            await manager.broadcast([zmiana_stanu])
+            
+        return {"status": "ok"}
+        
+    return {"status": "unknown format"}
 
 # === STATYSTYKI (Logika biznesowa) ===
 def get_time_with_offset(base_hour, offset_minutes):
@@ -681,5 +780,6 @@ def shutdown_event():
     shutdown_event_flag.set()
     logger.info("Wysłano sygnał zamknięcia do wątków.")
     time.sleep(1.5)
+
 
 
