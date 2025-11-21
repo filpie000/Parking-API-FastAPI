@@ -13,6 +13,7 @@ python-dotenv
 msgpack
 passlib[bcrypt]
 python-multipart
+psycopg2-binary
 
 
 
