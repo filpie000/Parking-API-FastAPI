@@ -10,21 +10,16 @@ from typing import Optional, List, Dict
 from zoneinfo import ZoneInfo
 from datetime import date
 
-# FastAPI
 from fastapi import FastAPI, Depends, HTTPException, Header, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
-# SQLAlchemy
 from sqlalchemy import create_engine, Column, Integer, String, DateTime, Boolean, ForeignKey
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, Session, relationship
 
-# Security (BCRYPT bezpośrednio)
 import bcrypt 
-
-# Networking
 import requests
 import paho.mqtt.client as mqtt
 import redis
@@ -33,13 +28,31 @@ import msgpack
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# === CONFIG ===
 UTC = datetime.timezone.utc
 PL_TZ = ZoneInfo("Europe/Warsaw")
 
 def now_utc() -> datetime.datetime:
     return datetime.datetime.now(UTC)
 
+# --- UTILS ---
+def get_time_with_offset(base_hour, offset_minutes):
+    base_dt = datetime.datetime(2000, 1, 1, base_hour, 0)
+    offset_dt = base_dt + datetime.timedelta(minutes=offset_minutes)
+    return offset_dt.time()
+
+def get_password_hash(password: str) -> str:
+    pwd_bytes = password.encode('utf-8')
+    salt = bcrypt.gensalt()
+    hashed = bcrypt.hashpw(pwd_bytes, salt)
+    return hashed.decode('utf-8')
+
+def verify_password(plain_password: str, hashed_password: str) -> bool:
+    try:
+        return bcrypt.checkpw(plain_password.encode('utf-8'), hashed_password.encode('utf-8'))
+    except:
+        return False
+
+# --- CONFIG ---
 MQTT_BROKER = os.environ.get('MQTT_BROKER', 'broker.emqx.io')
 MQTT_PORT = int(os.environ.get('MQTT_PORT', 1883))
 MQTT_TOPIC_SUBSCRIBE = os.environ.get('MQTT_TOPIC', "parking/tester/status")
@@ -59,7 +72,6 @@ def get_db():
     try: yield db
     finally: db.close()
 
-# === REDIS ===
 REDIS_URL = os.environ.get('REDIS_URL')
 redis_client = None
 if REDIS_URL:
@@ -67,27 +79,11 @@ if REDIS_URL:
         redis_client = redis.from_url(REDIS_URL, decode_responses=True)
     except: pass
 
-# === SECURITY (BCRYPT FIX) ===
-def get_password_hash(password: str) -> str:
-    pwd_bytes = password.encode('utf-8')
-    salt = bcrypt.gensalt()
-    hashed = bcrypt.hashpw(pwd_bytes, salt)
-    return hashed.decode('utf-8')
-
-def verify_password(plain_password: str, hashed_password: str) -> bool:
-    try:
-        pwd_bytes = plain_password.encode('utf-8')
-        hash_bytes = hashed_password.encode('utf-8')
-        return bcrypt.checkpw(pwd_bytes, hash_bytes)
-    except:
-        return False
-
-# === STAŁE ===
 SENSOR_MAP = { 1: "EURO_1", 2: "EURO_2", 3: "EURO_3", 4: "EURO_4", 5: "BUD_1", 6: "BUD_2", 7: "BUD_3", 8: "BUD_4" }
 GRUPY_SENSOROW = ["EURO", "BUD"]
 MANUALNA_MAPA_SWIAT = { date(2025, 1, 1): "Nowy Rok", date(2025, 4, 20): "Wielkanoc" }
 
-# === MODELE DB ===
+# --- DB MODELS ---
 class AktualnyStan(Base):
     __tablename__ = "aktualny_stan"
     sensor_id = Column(String, primary_key=True, index=True)
@@ -135,7 +131,7 @@ class Vehicle(Base):
 
 Base.metadata.create_all(bind=engine)
 
-# === PYDANTIC ===
+# --- PYDANTIC ---
 class UserAuth(BaseModel):
     email: str
     password: str
@@ -161,6 +157,67 @@ class RaportRequest(BaseModel):
     include_weekends: bool
     include_holidays: bool
 
+# --- LOGIC FOR FORECAST ---
+def calculate_occupancy_stats(sensor_prefix: str, selected_date_obj: date, selected_hour: int, db: Session) -> dict:
+    # Jeśli brakuje sensor_prefix (np. prognoza ogólna), bierzemy pierwszą grupę
+    if not sensor_prefix: sensor_prefix = "EURO"
+    
+    nazwa_swieta = MANUALNA_MAPA_SWIAT.get(selected_date_obj)
+    query = None
+    kategoria_str = ""
+    dni_do_uwzglednienia = []
+
+    if nazwa_swieta:
+        kategoria_str = f"Święto: {nazwa_swieta}"
+        query = db.query(DaneSwieta).filter(DaneSwieta.sensor_id.startswith(sensor_prefix), DaneSwieta.nazwa_swieta == nazwa_swieta)
+    else:
+        wd = selected_date_obj.weekday()
+        if wd <= 3: kategoria_str = "Dni robocze"; dni_do_uwzglednienia = [0,1,2,3]
+        elif wd == 4: kategoria_str = "Piątek"; dni_do_uwzglednienia = [4]
+        else: kategoria_str = "Weekend"; dni_do_uwzglednienia = [5,6]
+        query = db.query(DaneHistoryczne).filter(DaneHistoryczne.sensor_id.startswith(sensor_prefix))
+
+    OFFSET = 60
+    try:
+        pocz = get_time_with_offset(selected_hour, -OFFSET)
+        kon = get_time_with_offset(selected_hour, OFFSET)
+    except: return {"procent_zajetosci": 0, "liczba_pomiarow": 0, "kategoria": "Błąd czasu"}
+
+    rows = query.all()
+    pasujace = []
+    
+    for r in rows:
+        if not r.czas_pomiaru: continue
+        # Konwersja string->datetime dla sqlite
+        if isinstance(r.czas_pomiaru, str):
+             try: czas_db = datetime.datetime.fromisoformat(r.czas_pomiaru)
+             except: continue
+        else: czas_db = r.czas_pomiaru
+        
+        if czas_db.tzinfo is None: czas_pl = czas_db.replace(tzinfo=PL_TZ)
+        else: czas_pl = czas_db.astimezone(PL_TZ)
+
+        if not nazwa_swieta and czas_pl.weekday() not in dni_do_uwzglednienia: continue
+        
+        t = czas_pl.time()
+        match = False
+        if pocz > kon: 
+            if t >= pocz or t < kon: match = True
+        else:
+            if pocz <= t < kon: match = True
+        
+        if match: pasujace.append(r.status)
+
+    if not pasujace: return {"procent_zajetosci": 0, "liczba_pomiarow": 0, "kategoria": kategoria_str}
+    
+    zajete = pasujace.count(1)
+    return {
+        "procent_zajetosci": round((zajete / len(pasujace)) * 100, 1),
+        "liczba_pomiarow": len(pasujace),
+        "kategoria": kategoria_str,
+        "przedzial_czasu": f"{pocz} - {kon}"
+    }
+
 # === APP ===
 app = FastAPI()
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
@@ -181,7 +238,6 @@ class ConnectionManager:
         except: pass
 manager = ConnectionManager()
 
-# === LOGIC ===
 def send_push_notification(token, title, body, data):
     try: requests.post("https://exp.host/--/api/v2/push/send", json={"to": token, "title": title, "body": body, "data": data}, timeout=5)
     except: pass
@@ -190,6 +246,7 @@ async def process_parking_update(dane: dict, db: Session):
     if "sensor_id" not in dane: return
     sid = dane["sensor_id"]; status = dane["status"]; teraz = now_utc()
     
+    # Zapis historii
     db.add(DaneHistoryczne(czas_pomiaru=teraz, sensor_id=sid, status=status))
     
     m = db.query(AktualnyStan).filter(AktualnyStan.sensor_id == sid).first()
@@ -201,7 +258,6 @@ async def process_parking_update(dane: dict, db: Session):
     
     if prev != status:
         chg = {"sensor_id": sid, "status": status}
-        # PUSH LOGIC here (skrócona dla czytelności)
         if prev != 1 and status == 1:
              limit = datetime.timedelta(minutes=30)
              obs = db.query(ObserwowaneMiejsca).filter(ObserwowaneMiejsca.sensor_id == sid, (teraz - ObserwowaneMiejsca.czas_dodania) < limit).all()
@@ -209,7 +265,6 @@ async def process_parking_update(dane: dict, db: Session):
                  for o in obs:
                      send_push_notification(o.device_token, "Zajęte!", f"{sid} zajęte.", {"action": "reroute"})
                      db.delete(o)
-        
         db.commit()
         if manager.active_connections: await manager.broadcast([chg])
 
@@ -224,8 +279,7 @@ def dash():
 
 @app.post("/api/v1/auth/register")
 def register(u: UserAuth, db: Session = Depends(get_db)):
-    if db.query(User).filter(User.email == u.email).first():
-        raise HTTPException(400, "Email zajęty")
+    if db.query(User).filter(User.email == u.email).first(): raise HTTPException(400, "Email zajęty")
     db.add(User(email=u.email, hashed_password=get_password_hash(u.password)))
     db.commit()
     return {"status": "ok"}
@@ -233,8 +287,7 @@ def register(u: UserAuth, db: Session = Depends(get_db)):
 @app.post("/api/v1/auth/login")
 def login(u: UserAuth, db: Session = Depends(get_db)):
     user = db.query(User).filter(User.email == u.email).first()
-    if not user or not verify_password(u.password, user.hashed_password):
-        raise HTTPException(401, "Błędne dane")
+    if not user or not verify_password(u.password, user.hashed_password): raise HTTPException(401, "Błędne dane")
     token = secrets.token_hex(16)
     user.token = token
     db.commit()
@@ -267,18 +320,39 @@ def get_stat(limit: int = 100, db: Session = Depends(get_db)):
     return [m.to_dict() for m in db.query(AktualnyStan).limit(limit).all()]
 
 @app.get("/api/v1/prognoza/wszystkie_miejsca")
-def forecast(): return {g: 0 for g in GRUPY_SENSOROW}
+def forecast(target_date: Optional[str] = None, target_hour: Optional[int] = None, db: Session = Depends(get_db)):
+    # FIX: Przywrócona logika prognozowania
+    teraz_pl = now_utc().astimezone(PL_TZ)
+    if target_date and target_hour is not None:
+        try: dt = datetime.datetime.strptime(target_date, "%Y-%m-%d").date(); hour = int(target_hour)
+        except: dt = teraz_pl.date(); hour = teraz_pl.hour
+    else:
+        dt = teraz_pl.date(); hour = teraz_pl.hour
+    
+    prognozy = {}
+    for grupa in GRUPY_SENSOROW:
+        try:
+            # Wywołujemy funkcję obliczającą (nie zwracamy 0 na sztywno)
+            wynik = calculate_occupancy_stats(grupa, dt, hour, db)
+            prognozy[grupa] = wynik["procent_zajetosci"]
+        except:
+            prognozy[grupa] = 0.0
+    return prognozy
 
 @app.post("/api/v1/statystyki/zajetosc")
-def stats(z: StatystykiZapytanie):
+def stats(z: StatystykiZapytanie, db: Session = Depends(get_db)):
     key = f"stats:{z.sensor_id}:{z.selected_date}:{z.selected_hour}"
     if redis_client:
         c = redis_client.get(key)
         if c: return {"wynik_dynamiczny": json.loads(c)}
-    # Placeholder logic
-    res = {"procent_zajetosci": 0, "liczba_pomiarow": 0, "kategoria": "Brak danych"}
-    if redis_client: redis_client.set(key, json.dumps(res), ex=3600)
-    return {"wynik_dynamiczny": res}
+    
+    try:
+        dt = datetime.datetime.strptime(z.selected_date, "%Y-%m-%d").date()
+    except: raise HTTPException(400, "Zła data")
+
+    wynik = calculate_occupancy_stats(z.sensor_id, dt, z.selected_hour, db)
+    if redis_client: redis_client.set(key, json.dumps(wynik), ex=3600)
+    return {"wynik_dynamiczny": wynik}
 
 @app.post("/api/v1/obserwuj_miejsce")
 def obs(r: ObserwujRequest, db: Session = Depends(get_db)):
@@ -289,7 +363,11 @@ def obs(r: ObserwujRequest, db: Session = Depends(get_db)):
 @app.post("/api/v1/dashboard/raport")
 def rep(r: RaportRequest): return {g: [0]*24 for g in r.groups}
 
-# MQTT & WS
+@app.post("/api/v1/debug/symulacja_sensora")
+async def debug(d: dict, db: Session = Depends(get_db)):
+    await process_parking_update(d, db)
+    return {"status": "ok"}
+
 mqtt_c = mqtt.Client()
 def mqtt_loop():
     mqtt_c.on_connect = lambda c,u,f,r: c.subscribe(MQTT_TOPIC_SUBSCRIBE)
