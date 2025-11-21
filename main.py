@@ -47,7 +47,7 @@ def verify_password(plain_password, hashed_password):
     return pwd_context.verify(plain_password, hashed_password)
 
 def get_password_hash(password):
-    return pwd_context.hash(password)
+    return pwd_context.hash(password[:72])
 
 # === Konfiguracja Zmiennych Środowiskowych ===
 MQTT_BROKER = os.environ.get('MQTT_BROKER', 'broker.emqx.io')
@@ -450,3 +450,4 @@ async def ws(ws: WebSocket):
             if d!="ping": pass
             await ws.send_text("pong")
     except: manager.disconnect(ws)
+
