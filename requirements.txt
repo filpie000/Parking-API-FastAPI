@@ -10,6 +10,10 @@ greenlet
 aiosqlite
 pydantic
 python-dotenv
+msgpack
+passlib[bcrypt]
+python-multipart
+
 
 
 
