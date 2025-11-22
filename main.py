@@ -226,7 +226,7 @@ def send_push_notification(token, title, body, data):
     try: requests.post("https://exp.host/--/api/v2/push/send", json={"to": token, "title": title, "body": body, "data": data}, timeout=5)
     except Exception as e: logger.error(f"PUSH Error: {e}")
 
-# === LOGIKA UPDATE I PUSH ===
+# === LOGIKA HEARTBEAT I PUSH ===
 async def process_parking_update(dane: dict, db: Session):
     if "sensor_id" not in dane: return
     sid = dane["sensor_id"]
@@ -238,55 +238,49 @@ async def process_parking_update(dane: dict, db: Session):
     
     if m:
         prev_status = m.status
+        # Zawsze aktualizuj czas (Heartbeat)
         m.ostatnia_aktualizacja = teraz
         m.status = status
     else:
         db.add(AktualnyStan(sensor_id=sid, status=status, ostatnia_aktualizacja=teraz))
     
+    # Tylko jeśli zmienił się stan:
     if prev_status != status:
-        # Zapisz historię tylko przy zmianie
+        # 1. Zapisz historię
         db.add(DaneHistoryczne(czas_pomiaru=teraz, sensor_id=sid, status=status))
         
+        # 2. Wyślij powiadomienia
         chg = {"sensor_id": sid, "status": status}
         
-        # === LOGIKA POWIADOMIEŃ (2 SCENARIUSZE) ===
-        # Jeśli miejsce zmieniło się na ZAJĘTE (1), a było WOLNE/NIEZNANE
+        # Jeśli zmieniło się na ZAJĘTE (1), a nie było (0 lub 2)
         if prev_status != 1 and status == 1:
              limit = datetime.timedelta(minutes=30)
-             # Szukamy osób, które obserwują TO miejsce
              obs = db.query(ObserwowaneMiejsca).filter(ObserwowaneMiejsca.sensor_id == sid, (teraz - ObserwowaneMiejsca.czas_dodania) < limit).all()
-             
              if obs:
                  logger.info(f"Znaleziono {len(obs)} obserwatorów dla {sid}")
-                 
-                 # Szukamy alternatywy (wolnego sąsiada)
                  grp = sid.split('_')[0]
-                 wolny = db.query(AktualnyStan).filter(
-                     AktualnyStan.sensor_id.startswith(grp), 
-                     AktualnyStan.sensor_id != sid, 
-                     AktualnyStan.status == 0
-                 ).first()
+                 wolny = db.query(AktualnyStan).filter(AktualnyStan.sensor_id.startswith(grp), AktualnyStan.sensor_id != sid, AktualnyStan.status == 0).first()
                  
                  tytul = "❌ Miejsce zajęte!"
-                 tresc = f"Twoje miejsce {sid} zostało właśnie zajęte."
+                 tresc = f"{sid} zostało zajęte."
                  akcja = "reroute"
                  target = None
                  
                  if wolny:
-                     tytul = "⚠️ Zmiana planu"
-                     tresc = f"{sid} zajęte. Jedź na {wolny.sensor_id} (jest wolne!)"
+                     tytul = "⚠️ Alternatywa"
+                     tresc = f"{sid} zajęte. Wolne: {wolny.sensor_id}"
                      akcja = "info"
                      target = wolny.sensor_id
                  
                  for o in obs:
                      send_push_notification(o.device_token, tytul, tresc, {"action": akcja, "new_target": target})
-                     # Usuwamy obserwację po wysłaniu
                      db.delete(o)
         
         db.commit()
         if manager.active_connections: await manager.broadcast([chg])
     else:
-        db.commit() # Tylko timestamp
+        # Tylko timestamp
+        db.commit()
 
 # === ENDPOINTS ===
 @app.get("/")
@@ -366,26 +360,56 @@ def stats(z: StatystykiZapytanie, db: Session = Depends(get_db)):
     if redis_client: redis_client.set(key, json.dumps(wynik), ex=3600)
     return {"wynik_dynamiczny": wynik}
 
+# === FIX: OBSŁUGA DUPLIKATÓW TOKENA (UPSERT) ===
 @app.post("/api/v1/obserwuj_miejsce")
 def obs(r: ObserwujRequest, db: Session = Depends(get_db)):
-    logger.info(f"OBSERWACJA: Rejestruję token {r.device_token[:10]}... dla {r.sensor_id}")
-    db.add(ObserwowaneMiejsca(device_token=r.device_token, sensor_id=r.sensor_id))
-    db.commit()
-    return {"status": "ok"}
+    logger.info(f"API: Próba obserwacji {r.sensor_id} przez {r.device_token[:10]}...")
+    
+    istniejacy = db.query(ObserwowaneMiejsca).filter(ObserwowaneMiejsca.device_token == r.device_token).first()
+    
+    if istniejacy:
+        logger.info("API: Token znany - aktualizuję.")
+        istniejacy.sensor_id = r.sensor_id
+        istniejacy.czas_dodania = now_utc()
+    else:
+        logger.info("API: Nowy token - dodaję.")
+        db.add(ObserwowaneMiejsca(device_token=r.device_token, sensor_id=r.sensor_id))
+    
+    try:
+        db.commit()
+        return {"status": "ok"}
+    except Exception as e:
+        logger.error(f"DB ERROR: {e}")
+        db.rollback()
+        raise HTTPException(500, f"Błąd bazy: {str(e)}")
 
+# === FIX: RATE LIMIT Z FALLBACKIEM ===
+request_counts = {} 
 @app.post("/api/v1/dashboard/raport")
 def rep(r: RaportRequest, request: Request):
     client_ip = request.client.host
+    current_time = time.time()
     limit_key = f"ratelimit:report:{client_ip}"
+    
     if redis_client:
         current = redis_client.get(limit_key)
         if current and int(current) >= 2:
             ttl = redis_client.ttl(limit_key)
-            raise HTTPException(429, f"Zbyt wiele zapytań. Spróbuj za {ttl} sekund.")
+            raise HTTPException(429, f"Limit. Czekaj {ttl}s.")
         pipe = redis_client.pipeline()
         pipe.incr(limit_key)
         if not current: pipe.expire(limit_key, 60) 
         pipe.execute()
+    else:
+        # Fallback RAM
+        if client_ip in request_counts:
+            last_time, count = request_counts[client_ip]
+            if current_time - last_time < 60:
+                if count >= 2: raise HTTPException(429, "Limit (2/min).")
+                request_counts[client_ip] = [last_time, count + 1]
+            else: request_counts[client_ip] = [current_time, 1]
+        else: request_counts[client_ip] = [current_time, 1]
+        
     return {g: [0]*24 for g in r.groups}
 
 @app.post("/api/v1/debug/symulacja_sensora")
@@ -409,12 +433,12 @@ def mqtt_loop():
     try: mqtt_c.connect(MQTT_BROKER, MQTT_PORT, 60); mqtt_c.loop_forever()
     except: pass
 
-# === FIX: BACKGROUND THREAD FOR STALE SENSORS (5 minut) ===
+# === FIX: THREAD 5 MIN ===
 def check_stale():
-    while not shutdown_event.is_set():
+    while not threading.main_thread().is_alive() is False: # Keep alive
         try:
             db = SessionLocal()
-            cut = now_utc() - datetime.timedelta(minutes=5) # ZMIANA NA 5 MINUT
+            cut = now_utc() - datetime.timedelta(minutes=5) # 5 MINUT
             old = db.query(AktualnyStan).filter(AktualnyStan.status != 2, (AktualnyStan.ostatnia_aktualizacja < cut)|(AktualnyStan.ostatnia_aktualizacja == None)).all()
             if old:
                 chg = []
@@ -427,9 +451,7 @@ def check_stale():
                     asyncio.run_coroutine_threadsafe(manager.broadcast(chg), asyncio.get_event_loop())
             db.close()
         except: pass
-        time.sleep(60) # Sprawdzaj co minutę
-
-shutdown_event = threading.Event()
+        time.sleep(60)
 
 @app.on_event("startup")
 async def start(): 
@@ -437,9 +459,7 @@ async def start():
     threading.Thread(target=check_stale, daemon=True).start()
 
 @app.on_event("shutdown")
-def stop():
-    shutdown_event.set()
-    mqtt_client.disconnect()
+def stop(): mqtt_client.disconnect()
 
 @app.websocket("/ws/stan")
 async def ws(ws: WebSocket):
