@@ -34,24 +34,6 @@ PL_TZ = ZoneInfo("Europe/Warsaw")
 def now_utc() -> datetime.datetime:
     return datetime.datetime.now(UTC)
 
-# --- UTILS ---
-def get_time_with_offset(base_hour, offset_minutes):
-    base_dt = datetime.datetime(2000, 1, 1, base_hour, 0)
-    offset_dt = base_dt + datetime.timedelta(minutes=offset_minutes)
-    return offset_dt.time()
-
-def get_password_hash(password: str) -> str:
-    pwd_bytes = password.encode('utf-8')
-    salt = bcrypt.gensalt()
-    hashed = bcrypt.hashpw(pwd_bytes, salt)
-    return hashed.decode('utf-8')
-
-def verify_password(plain_password: str, hashed_password: str) -> bool:
-    try:
-        return bcrypt.checkpw(plain_password.encode('utf-8'), hashed_password.encode('utf-8'))
-    except:
-        return False
-
 # --- CONFIG ---
 MQTT_BROKER = os.environ.get('MQTT_BROKER', 'broker.emqx.io')
 MQTT_PORT = int(os.environ.get('MQTT_PORT', 1883))
@@ -157,7 +139,22 @@ class RaportRequest(BaseModel):
     include_weekends: bool
     include_holidays: bool
 
-# --- LOGIC FOR FORECAST ---
+# --- UTILS ---
+def get_time_with_offset(base_hour, offset_minutes):
+    base_dt = datetime.datetime(2000, 1, 1, base_hour, 0)
+    offset_dt = base_dt + datetime.timedelta(minutes=offset_minutes)
+    return offset_dt.time()
+
+def get_password_hash(password: str) -> str:
+    pwd_bytes = password.encode('utf-8')
+    salt = bcrypt.gensalt()
+    hashed = bcrypt.hashpw(pwd_bytes, salt)
+    return hashed.decode('utf-8')
+
+def verify_password(plain_password: str, hashed_password: str) -> bool:
+    try: return bcrypt.checkpw(plain_password.encode('utf-8'), hashed_password.encode('utf-8'))
+    except: return False
+
 def calculate_occupancy_stats(sensor_prefix: str, selected_date_obj: date, selected_hour: int, db: Session) -> dict:
     if not sensor_prefix: sensor_prefix = "EURO"
     nazwa_swieta = MANUALNA_MAPA_SWIAT.get(selected_date_obj)
@@ -225,52 +222,71 @@ class ConnectionManager:
 manager = ConnectionManager()
 
 def send_push_notification(token, title, body, data):
+    logger.info(f"PUSH -> {token[:10]}... | {title}")
     try: requests.post("https://exp.host/--/api/v2/push/send", json={"to": token, "title": title, "body": body, "data": data}, timeout=5)
-    except: pass
+    except Exception as e: logger.error(f"PUSH Error: {e}")
 
-# === FIX: Logika Heartbeat ===
+# === LOGIKA UPDATE I PUSH ===
 async def process_parking_update(dane: dict, db: Session):
     if "sensor_id" not in dane: return
     sid = dane["sensor_id"]
     status = dane["status"]
     teraz = now_utc()
     
-    # Sprawdź aktualny stan
     m = db.query(AktualnyStan).filter(AktualnyStan.sensor_id == sid).first()
     prev_status = -1
     
     if m:
         prev_status = m.status
-        # Zawsze aktualizujemy timestamp (Heartbeat - "żyję!")
         m.ostatnia_aktualizacja = teraz
-        # Aktualizuj status
         m.status = status
     else:
-        # Nowy sensor
         db.add(AktualnyStan(sensor_id=sid, status=status, ostatnia_aktualizacja=teraz))
     
-    # Logika ZMIANY STANU (Tylko wtedy zapisujemy historię i wysyłamy powiadomienia)
     if prev_status != status:
-        # Zapisz do historii tylko przy zmianie (oszczędność bazy)
+        # Zapisz historię tylko przy zmianie
         db.add(DaneHistoryczne(czas_pomiaru=teraz, sensor_id=sid, status=status))
         
         chg = {"sensor_id": sid, "status": status}
         
-        # Push notifications (Tylko jak zmieniło się na zajęte)
+        # === LOGIKA POWIADOMIEŃ (2 SCENARIUSZE) ===
+        # Jeśli miejsce zmieniło się na ZAJĘTE (1), a było WOLNE/NIEZNANE
         if prev_status != 1 and status == 1:
              limit = datetime.timedelta(minutes=30)
+             # Szukamy osób, które obserwują TO miejsce
              obs = db.query(ObserwowaneMiejsca).filter(ObserwowaneMiejsca.sensor_id == sid, (teraz - ObserwowaneMiejsca.czas_dodania) < limit).all()
+             
              if obs:
+                 logger.info(f"Znaleziono {len(obs)} obserwatorów dla {sid}")
+                 
+                 # Szukamy alternatywy (wolnego sąsiada)
+                 grp = sid.split('_')[0]
+                 wolny = db.query(AktualnyStan).filter(
+                     AktualnyStan.sensor_id.startswith(grp), 
+                     AktualnyStan.sensor_id != sid, 
+                     AktualnyStan.status == 0
+                 ).first()
+                 
+                 tytul = "❌ Miejsce zajęte!"
+                 tresc = f"Twoje miejsce {sid} zostało właśnie zajęte."
+                 akcja = "reroute"
+                 target = None
+                 
+                 if wolny:
+                     tytul = "⚠️ Zmiana planu"
+                     tresc = f"{sid} zajęte. Jedź na {wolny.sensor_id} (jest wolne!)"
+                     akcja = "info"
+                     target = wolny.sensor_id
+                 
                  for o in obs:
-                     send_push_notification(o.device_token, "Zajęte!", f"{sid} zajęte.", {"action": "reroute"})
+                     send_push_notification(o.device_token, tytul, tresc, {"action": akcja, "new_target": target})
+                     # Usuwamy obserwację po wysłaniu
                      db.delete(o)
         
         db.commit()
-        # Broadcast przez WebSocket (żeby mapy się odświeżyły)
         if manager.active_connections: await manager.broadcast([chg])
     else:
-        # Tylko commit timestampu (Heartbeat)
-        db.commit()
+        db.commit() # Tylko timestamp
 
 # === ENDPOINTS ===
 @app.get("/")
@@ -352,28 +368,24 @@ def stats(z: StatystykiZapytanie, db: Session = Depends(get_db)):
 
 @app.post("/api/v1/obserwuj_miejsce")
 def obs(r: ObserwujRequest, db: Session = Depends(get_db)):
+    logger.info(f"OBSERWACJA: Rejestruję token {r.device_token[:10]}... dla {r.sensor_id}")
     db.add(ObserwowaneMiejsca(device_token=r.device_token, sensor_id=r.sensor_id))
     db.commit()
     return {"status": "ok"}
 
-# FIX: RATE LIMIT DLA RAPORTÓW
 @app.post("/api/v1/dashboard/raport")
 def rep(r: RaportRequest, request: Request):
     client_ip = request.client.host
     limit_key = f"ratelimit:report:{client_ip}"
-    
     if redis_client:
         current = redis_client.get(limit_key)
         if current and int(current) >= 2:
             ttl = redis_client.ttl(limit_key)
             raise HTTPException(429, f"Zbyt wiele zapytań. Spróbuj za {ttl} sekund.")
-        
         pipe = redis_client.pipeline()
         pipe.incr(limit_key)
-        if not current:
-            pipe.expire(limit_key, 60) 
+        if not current: pipe.expire(limit_key, 60) 
         pipe.execute()
-        
     return {g: [0]*24 for g in r.groups}
 
 @app.post("/api/v1/debug/symulacja_sensora")
@@ -397,8 +409,37 @@ def mqtt_loop():
     try: mqtt_c.connect(MQTT_BROKER, MQTT_PORT, 60); mqtt_c.loop_forever()
     except: pass
 
+# === FIX: BACKGROUND THREAD FOR STALE SENSORS (5 minut) ===
+def check_stale():
+    while not shutdown_event.is_set():
+        try:
+            db = SessionLocal()
+            cut = now_utc() - datetime.timedelta(minutes=5) # ZMIANA NA 5 MINUT
+            old = db.query(AktualnyStan).filter(AktualnyStan.status != 2, (AktualnyStan.ostatnia_aktualizacja < cut)|(AktualnyStan.ostatnia_aktualizacja == None)).all()
+            if old:
+                chg = []
+                for s in old:
+                    s.status = 2
+                    s.ostatnia_aktualizacja = now_utc()
+                    chg.append(s.to_dict())
+                db.commit()
+                if chg and manager.active_connections:
+                    asyncio.run_coroutine_threadsafe(manager.broadcast(chg), asyncio.get_event_loop())
+            db.close()
+        except: pass
+        time.sleep(60) # Sprawdzaj co minutę
+
+shutdown_event = threading.Event()
+
 @app.on_event("startup")
-async def start(): threading.Thread(target=mqtt_loop, daemon=True).start()
+async def start(): 
+    threading.Thread(target=mqtt_loop, daemon=True).start()
+    threading.Thread(target=check_stale, daemon=True).start()
+
+@app.on_event("shutdown")
+def stop():
+    shutdown_event.set()
+    mqtt_client.disconnect()
 
 @app.websocket("/ws/stan")
 async def ws(ws: WebSocket):
