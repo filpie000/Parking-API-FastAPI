@@ -112,7 +112,6 @@ class Vehicle(Base):
     user_id = Column(Integer, ForeignKey("users.id"))
     owner = relationship("User", back_populates="vehicles")
 
-# NOWA TABELA: BILETY
 class Ticket(Base):
     __tablename__ = "tickets"
     id = Column(Integer, primary_key=True, autoincrement=True)
@@ -157,7 +156,7 @@ class TicketAdd(BaseModel):
     sensor_id: str
     place_name: str
     plate: str
-    end_time: str # ISO format
+    end_time: str
     price: float
 
 # --- UTILS ---
@@ -243,7 +242,7 @@ class ConnectionManager:
 manager = ConnectionManager()
 
 def send_push_notification(token, title, body, data):
-    logger.info(f"PUSH TRY -> {token[:10]}... | {title}")
+    logger.info(f"PUSH TRY -> {token[:15]}... | {title}")
     try: 
         payload = {
             "to": token,
@@ -251,9 +250,9 @@ def send_push_notification(token, title, body, data):
             "body": body,
             "data": data,
             "sound": "default", 
-            "priority": "high", 
-            "_displayInForeground": True,
-            "channelId": "default"
+            "priority": "high",
+            "channelId": "default",
+            "_displayInForeground": True 
         }
         res = requests.post("https://exp.host/--/api/v2/push/send", json=payload, timeout=5)
         logger.info(f"PUSH EXPO RESPONSE: {res.status_code} | {res.text}") 
@@ -279,29 +278,24 @@ async def process_parking_update(dane: dict, db: Session):
     if prev_status != status:
         db.add(DaneHistoryczne(czas_pomiaru=teraz, sensor_id=sid, status=status))
         chg = {"sensor_id": sid, "status": status}
-        
         if prev_status != 1 and status == 1:
-             limit = datetime.timedelta(minutes=30)
+             limit = datetime.timedelta(minutes=60)
              obs = db.query(ObserwowaneMiejsca).filter(ObserwowaneMiejsca.sensor_id == sid, (teraz - ObserwowaneMiejsca.czas_dodania) < limit).all()
              if obs:
                  grp = sid.split('_')[0]
                  wolny = db.query(AktualnyStan).filter(AktualnyStan.sensor_id.startswith(grp), AktualnyStan.sensor_id != sid, AktualnyStan.status == 0).first()
-                 
                  tytul = "❌ Miejsce zajęte!"
                  tresc = f"{sid} zostało zajęte."
                  akcja = "reroute"
                  target = None
-                 
                  if wolny:
                      tytul = "⚠️ Alternatywa"
-                     tresc = f"{sid} zajęte. Wolne: {wolny.sensor_id}"
+                     tresc = f"{sid} zajęte. Jedź na {wolny.sensor_id}!"
                      akcja = "info"
                      target = wolny.sensor_id
-                 
                  for o in obs:
                      send_push_notification(o.device_token, tytul, tresc, {"action": akcja, "new_target": target})
                      db.delete(o)
-        
         db.commit()
         if manager.active_connections: await manager.broadcast([chg])
     else:
@@ -354,28 +348,15 @@ def add_veh(v: VehicleAdd, db: Session = Depends(get_db)):
     db.commit()
     return {"status": "added"}
 
-# --- BILETY API ---
 @app.post("/api/v1/user/ticket")
 def buy_ticket(t: TicketAdd, db: Session = Depends(get_db)):
     user = db.query(User).filter(User.token == t.token).first()
     if not user: raise HTTPException(401, "Auth error")
-    
     try:
-        # Obsługa strefy czasowej z +00:00 lub Z
         end_time_str = t.end_time.replace('Z', '+00:00')
         end_dt = datetime.datetime.fromisoformat(end_time_str)
-    except:
-        end_dt = now_utc() + datetime.timedelta(hours=1)
-
-    new_ticket = Ticket(
-        user_id=user.id,
-        sensor_id=t.sensor_id,
-        place_name=t.place_name,
-        plate=t.plate,
-        start_time=now_utc(),
-        end_time=end_dt,
-        price=t.price
-    )
+    except: end_dt = now_utc() + datetime.timedelta(hours=1)
+    new_ticket = Ticket(user_id=user.id, sensor_id=t.sensor_id, place_name=t.place_name, plate=t.plate, start_time=now_utc(), end_time=end_dt, price=t.price)
     db.add(new_ticket)
     db.commit()
     return {"status": "ticket_created", "id": new_ticket.id}
@@ -384,19 +365,10 @@ def buy_ticket(t: TicketAdd, db: Session = Depends(get_db)):
 def get_active_ticket(token: str, db: Session = Depends(get_db)):
     user = db.query(User).filter(User.token == token).first()
     if not user: raise HTTPException(401, "Auth error")
-    
     teraz = now_utc()
     ticket = db.query(Ticket).filter(Ticket.user_id == user.id, Ticket.end_time > teraz).order_by(Ticket.end_time.desc()).first()
-    
     if ticket:
-        return {
-            "placeName": ticket.place_name,
-            "sensorId": ticket.sensor_id,
-            "plate": ticket.plate,
-            "startTime": ticket.start_time.isoformat(),
-            "endTime": ticket.end_time.isoformat(),
-            "price": ticket.price
-        }
+        return {"placeName": ticket.place_name, "sensorId": ticket.sensor_id, "plate": ticket.plate, "startTime": ticket.start_time.isoformat(), "endTime": ticket.end_time.isoformat(), "price": ticket.price}
     return None
 
 @app.get("/api/v1/aktualny_stan")
