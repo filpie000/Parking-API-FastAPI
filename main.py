@@ -241,6 +241,7 @@ class ConnectionManager:
         except: pass
 manager = ConnectionManager()
 
+# === FIX: KANAŁ POWIADOMIEŃ "parking_channel" ===
 def send_push_notification(token, title, body, data):
     logger.info(f"PUSH TRY -> {token[:15]}... | {title}")
     try: 
@@ -251,11 +252,12 @@ def send_push_notification(token, title, body, data):
             "data": data,
             "sound": "default", 
             "priority": "high",
-            "channelId": "default",
+            "channelId": "parking_channel", # <--- ZMIENIONE NA SPÓJNY KANAŁ
             "_displayInForeground": True 
         }
         res = requests.post("https://exp.host/--/api/v2/push/send", json=payload, timeout=5)
-        logger.info(f"PUSH EXPO RESPONSE: {res.status_code} | {res.text}") 
+        # LOGUJEMY ODPOWIEDŹ EXPO
+        logger.info(f"PUSH RESULT: {res.status_code} | {res.text}") 
     except Exception as e: 
         logger.error(f"PUSH NETWORK ERROR: {e}")
 
@@ -278,24 +280,38 @@ async def process_parking_update(dane: dict, db: Session):
     if prev_status != status:
         db.add(DaneHistoryczne(czas_pomiaru=teraz, sensor_id=sid, status=status))
         chg = {"sensor_id": sid, "status": status}
-        if prev_status != 1 and status == 1:
-             limit = datetime.timedelta(minutes=60)
-             obs = db.query(ObserwowaneMiejsca).filter(ObserwowaneMiejsca.sensor_id == sid, (teraz - ObserwowaneMiejsca.czas_dodania) < limit).all()
+        
+        # === POWIADOMIENIE TYLKO GDY: STATUS ZMIENIA SIĘ NA 1 (ZAJĘTE) ===
+        if status == 1:
+             # FIX: Czas obserwacji wydłużony do 24h na potrzeby testów
+             limit = datetime.timedelta(hours=24)
+             obs = db.query(ObserwowaneMiejsca).filter(
+                 ObserwowaneMiejsca.sensor_id == sid, 
+                 (teraz - ObserwowaneMiejsca.czas_dodania) < limit
+             ).all()
+             
              if obs:
+                 logger.info(f"ZNALEZIONO {len(obs)} OBSERWATORÓW DLA {sid}!")
                  grp = sid.split('_')[0]
                  wolny = db.query(AktualnyStan).filter(AktualnyStan.sensor_id.startswith(grp), AktualnyStan.sensor_id != sid, AktualnyStan.status == 0).first()
+                 
                  tytul = "❌ Miejsce zajęte!"
                  tresc = f"{sid} zostało zajęte."
                  akcja = "reroute"
                  target = None
+                 
                  if wolny:
-                     tytul = "⚠️ Alternatywa"
+                     tytul = "⚠️ Zmiana planu"
                      tresc = f"{sid} zajęte. Jedź na {wolny.sensor_id}!"
                      akcja = "info"
                      target = wolny.sensor_id
+                 
                  for o in obs:
                      send_push_notification(o.device_token, tytul, tresc, {"action": akcja, "new_target": target})
                      db.delete(o)
+             else:
+                 logger.info(f"Brak obserwatorów dla {sid} (lub token wygasł).")
+        
         db.commit()
         if manager.active_connections: await manager.broadcast([chg])
     else:
