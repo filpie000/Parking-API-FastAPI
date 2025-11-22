@@ -15,7 +15,7 @@ from fastapi.responses import HTMLResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
-from sqlalchemy import create_engine, Column, Integer, String, DateTime, Boolean, ForeignKey
+from sqlalchemy import create_engine, Column, Integer, String, DateTime, Boolean, ForeignKey, Float
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, Session, relationship
 
@@ -102,6 +102,7 @@ class User(Base):
     token = Column(String, index=True, nullable=True)
     is_disabled = Column(Boolean, default=False)
     vehicles = relationship("Vehicle", back_populates="owner")
+    tickets = relationship("Ticket", back_populates="owner")
 
 class Vehicle(Base):
     __tablename__ = "vehicles"
@@ -110,6 +111,19 @@ class Vehicle(Base):
     license_plate = Column(String)
     user_id = Column(Integer, ForeignKey("users.id"))
     owner = relationship("User", back_populates="vehicles")
+
+# NOWA TABELA: BILETY
+class Ticket(Base):
+    __tablename__ = "tickets"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(Integer, ForeignKey("users.id"))
+    sensor_id = Column(String)
+    place_name = Column(String)
+    plate = Column(String)
+    start_time = Column(DateTime(timezone=True))
+    end_time = Column(DateTime(timezone=True))
+    price = Column(Float)
+    owner = relationship("User", back_populates="tickets")
 
 Base.metadata.create_all(bind=engine)
 
@@ -138,6 +152,13 @@ class RaportRequest(BaseModel):
     include_workdays: bool
     include_weekends: bool
     include_holidays: bool
+class TicketAdd(BaseModel):
+    token: str
+    sensor_id: str
+    place_name: str
+    plate: str
+    end_time: str # ISO format
+    price: float
 
 # --- UTILS ---
 def get_time_with_offset(base_hour, offset_minutes):
@@ -221,7 +242,6 @@ class ConnectionManager:
         except: pass
 manager = ConnectionManager()
 
-# === FIX: ULEPSZONE WYSYŁANIE PUSH (LOGOWANIE I PARAMETRY) ===
 def send_push_notification(token, title, body, data):
     logger.info(f"PUSH TRY -> {token[:10]}... | {title}")
     try: 
@@ -230,12 +250,13 @@ def send_push_notification(token, title, body, data):
             "title": title,
             "body": body,
             "data": data,
-            "sound": "default", # WAŻNE: Wymuszenie dźwięku
-            "priority": "high", # WAŻNE: Priorytet dla Androida
-            "_displayInForeground": True # Żeby pokazać w Expo Go/Dev Client
+            "sound": "default", 
+            "priority": "high", 
+            "_displayInForeground": True,
+            "channelId": "default"
         }
         res = requests.post("https://exp.host/--/api/v2/push/send", json=payload, timeout=5)
-        logger.info(f"PUSH EXPO RESPONSE: {res.status_code} | {res.text}") # Zobaczysz w logach co odpowiedziało Expo
+        logger.info(f"PUSH EXPO RESPONSE: {res.status_code} | {res.text}") 
     except Exception as e: 
         logger.error(f"PUSH NETWORK ERROR: {e}")
 
@@ -259,13 +280,10 @@ async def process_parking_update(dane: dict, db: Session):
         db.add(DaneHistoryczne(czas_pomiaru=teraz, sensor_id=sid, status=status))
         chg = {"sensor_id": sid, "status": status}
         
-        # SCENARIUSZ PUSH
         if prev_status != 1 and status == 1:
              limit = datetime.timedelta(minutes=30)
              obs = db.query(ObserwowaneMiejsca).filter(ObserwowaneMiejsca.sensor_id == sid, (teraz - ObserwowaneMiejsca.czas_dodania) < limit).all()
-             
              if obs:
-                 logger.info(f"Znaleziono {len(obs)} obserwatorów dla {sid}")
                  grp = sid.split('_')[0]
                  wolny = db.query(AktualnyStan).filter(AktualnyStan.sensor_id.startswith(grp), AktualnyStan.sensor_id != sid, AktualnyStan.status == 0).first()
                  
@@ -336,6 +354,51 @@ def add_veh(v: VehicleAdd, db: Session = Depends(get_db)):
     db.commit()
     return {"status": "added"}
 
+# --- BILETY API ---
+@app.post("/api/v1/user/ticket")
+def buy_ticket(t: TicketAdd, db: Session = Depends(get_db)):
+    user = db.query(User).filter(User.token == t.token).first()
+    if not user: raise HTTPException(401, "Auth error")
+    
+    try:
+        # Obsługa strefy czasowej z +00:00 lub Z
+        end_time_str = t.end_time.replace('Z', '+00:00')
+        end_dt = datetime.datetime.fromisoformat(end_time_str)
+    except:
+        end_dt = now_utc() + datetime.timedelta(hours=1)
+
+    new_ticket = Ticket(
+        user_id=user.id,
+        sensor_id=t.sensor_id,
+        place_name=t.place_name,
+        plate=t.plate,
+        start_time=now_utc(),
+        end_time=end_dt,
+        price=t.price
+    )
+    db.add(new_ticket)
+    db.commit()
+    return {"status": "ticket_created", "id": new_ticket.id}
+
+@app.get("/api/v1/user/ticket/active")
+def get_active_ticket(token: str, db: Session = Depends(get_db)):
+    user = db.query(User).filter(User.token == token).first()
+    if not user: raise HTTPException(401, "Auth error")
+    
+    teraz = now_utc()
+    ticket = db.query(Ticket).filter(Ticket.user_id == user.id, Ticket.end_time > teraz).order_by(Ticket.end_time.desc()).first()
+    
+    if ticket:
+        return {
+            "placeName": ticket.place_name,
+            "sensorId": ticket.sensor_id,
+            "plate": ticket.plate,
+            "startTime": ticket.start_time.isoformat(),
+            "endTime": ticket.end_time.isoformat(),
+            "price": ticket.price
+        }
+    return None
+
 @app.get("/api/v1/aktualny_stan")
 def get_stat(limit: int = 100, db: Session = Depends(get_db)):
     return [m.to_dict() for m in db.query(AktualnyStan).limit(limit).all()]
@@ -387,7 +450,6 @@ def obs(r: ObserwujRequest, db: Session = Depends(get_db)):
 def rep(r: RaportRequest, request: Request):
     client_ip = request.client.host
     limit_key = f"ratelimit:report:{client_ip}"
-    
     if redis_client:
         current = redis_client.get(limit_key)
         if current and int(current) >= 2:
@@ -397,11 +459,6 @@ def rep(r: RaportRequest, request: Request):
         pipe.incr(limit_key)
         if not current: pipe.expire(limit_key, 60) 
         pipe.execute()
-    else:
-        # Fallback Logic (gdy brak Redisa)
-        # ... (uproszczone, bo zakładamy Redis) ...
-        pass
-        
     return {g: [0]*24 for g in r.groups}
 
 @app.post("/api/v1/debug/symulacja_sensora")
