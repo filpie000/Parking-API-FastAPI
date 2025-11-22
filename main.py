@@ -159,9 +159,7 @@ class RaportRequest(BaseModel):
 
 # --- LOGIC FOR FORECAST ---
 def calculate_occupancy_stats(sensor_prefix: str, selected_date_obj: date, selected_hour: int, db: Session) -> dict:
-    # Jeśli brakuje sensor_prefix (np. prognoza ogólna), bierzemy pierwszą grupę
     if not sensor_prefix: sensor_prefix = "EURO"
-    
     nazwa_swieta = MANUALNA_MAPA_SWIAT.get(selected_date_obj)
     query = None
     kategoria_str = ""
@@ -185,40 +183,28 @@ def calculate_occupancy_stats(sensor_prefix: str, selected_date_obj: date, selec
 
     rows = query.all()
     pasujace = []
-    
     for r in rows:
         if not r.czas_pomiaru: continue
-        # Konwersja string->datetime dla sqlite
         if isinstance(r.czas_pomiaru, str):
              try: czas_db = datetime.datetime.fromisoformat(r.czas_pomiaru)
              except: continue
         else: czas_db = r.czas_pomiaru
-        
         if czas_db.tzinfo is None: czas_pl = czas_db.replace(tzinfo=PL_TZ)
         else: czas_pl = czas_db.astimezone(PL_TZ)
-
         if not nazwa_swieta and czas_pl.weekday() not in dni_do_uwzglednienia: continue
-        
         t = czas_pl.time()
         match = False
         if pocz > kon: 
             if t >= pocz or t < kon: match = True
         else:
             if pocz <= t < kon: match = True
-        
         if match: pasujace.append(r.status)
 
     if not pasujace: return {"procent_zajetosci": 0, "liczba_pomiarow": 0, "kategoria": kategoria_str}
-    
     zajete = pasujace.count(1)
-    return {
-        "procent_zajetosci": round((zajete / len(pasujace)) * 100, 1),
-        "liczba_pomiarow": len(pasujace),
-        "kategoria": kategoria_str,
-        "przedzial_czasu": f"{pocz} - {kon}"
-    }
+    return {"procent_zajetosci": round((zajete / len(pasujace)) * 100, 1), "liczba_pomiarow": len(pasujace), "kategoria": kategoria_str, "przedzial_czasu": f"{pocz} - {kon}"}
 
-# === APP ===
+# --- APP ---
 app = FastAPI()
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 
@@ -245,17 +231,11 @@ def send_push_notification(token, title, body, data):
 async def process_parking_update(dane: dict, db: Session):
     if "sensor_id" not in dane: return
     sid = dane["sensor_id"]; status = dane["status"]; teraz = now_utc()
-    
-    # Zapis historii
     db.add(DaneHistoryczne(czas_pomiaru=teraz, sensor_id=sid, status=status))
-    
     m = db.query(AktualnyStan).filter(AktualnyStan.sensor_id == sid).first()
     prev = -1
-    if m:
-        prev = m.status; m.status = status; m.ostatnia_aktualizacja = teraz
-    else:
-        db.add(AktualnyStan(sensor_id=sid, status=status, ostatnia_aktualizacja=teraz))
-    
+    if m: prev = m.status; m.status = status; m.ostatnia_aktualizacja = teraz
+    else: db.add(AktualnyStan(sensor_id=sid, status=status, ostatnia_aktualizacja=teraz))
     if prev != status:
         chg = {"sensor_id": sid, "status": status}
         if prev != 1 and status == 1:
@@ -321,22 +301,17 @@ def get_stat(limit: int = 100, db: Session = Depends(get_db)):
 
 @app.get("/api/v1/prognoza/wszystkie_miejsca")
 def forecast(target_date: Optional[str] = None, target_hour: Optional[int] = None, db: Session = Depends(get_db)):
-    # FIX: Przywrócona logika prognozowania
     teraz_pl = now_utc().astimezone(PL_TZ)
     if target_date and target_hour is not None:
         try: dt = datetime.datetime.strptime(target_date, "%Y-%m-%d").date(); hour = int(target_hour)
         except: dt = teraz_pl.date(); hour = teraz_pl.hour
-    else:
-        dt = teraz_pl.date(); hour = teraz_pl.hour
-    
+    else: dt = teraz_pl.date(); hour = teraz_pl.hour
     prognozy = {}
     for grupa in GRUPY_SENSOROW:
         try:
-            # Wywołujemy funkcję obliczającą (nie zwracamy 0 na sztywno)
             wynik = calculate_occupancy_stats(grupa, dt, hour, db)
             prognozy[grupa] = wynik["procent_zajetosci"]
-        except:
-            prognozy[grupa] = 0.0
+        except: prognozy[grupa] = 0.0
     return prognozy
 
 @app.post("/api/v1/statystyki/zajetosc")
@@ -345,11 +320,8 @@ def stats(z: StatystykiZapytanie, db: Session = Depends(get_db)):
     if redis_client:
         c = redis_client.get(key)
         if c: return {"wynik_dynamiczny": json.loads(c)}
-    
-    try:
-        dt = datetime.datetime.strptime(z.selected_date, "%Y-%m-%d").date()
+    try: dt = datetime.datetime.strptime(z.selected_date, "%Y-%m-%d").date()
     except: raise HTTPException(400, "Zła data")
-
     wynik = calculate_occupancy_stats(z.sensor_id, dt, z.selected_hour, db)
     if redis_client: redis_client.set(key, json.dumps(wynik), ex=3600)
     return {"wynik_dynamiczny": wynik}
@@ -360,8 +332,29 @@ def obs(r: ObserwujRequest, db: Session = Depends(get_db)):
     db.commit()
     return {"status": "ok"}
 
+# FIX: RATE LIMIT DLA RAPORTÓW
 @app.post("/api/v1/dashboard/raport")
-def rep(r: RaportRequest): return {g: [0]*24 for g in r.groups}
+def rep(r: RaportRequest, request: Request):
+    # Sprawdzamy limit w Redis (jeśli dostępny)
+    client_ip = request.client.host
+    limit_key = f"ratelimit:report:{client_ip}"
+    
+    if redis_client:
+        # Pobierz obecną liczbę żądań
+        current = redis_client.get(limit_key)
+        if current and int(current) >= 2:
+            # Jeśli przekroczono 2 żądania, sprawdź TTL
+            ttl = redis_client.ttl(limit_key)
+            raise HTTPException(429, f"Zbyt wiele zapytań. Spróbuj za {ttl} sekund.")
+        
+        # Inkrementacja licznika
+        pipe = redis_client.pipeline()
+        pipe.incr(limit_key)
+        if not current:
+            pipe.expire(limit_key, 60) # Wygasa po 60s
+        pipe.execute()
+        
+    return {g: [0]*24 for g in r.groups}
 
 @app.post("/api/v1/debug/symulacja_sensora")
 async def debug(d: dict, db: Session = Depends(get_db)):
