@@ -228,25 +228,49 @@ def send_push_notification(token, title, body, data):
     try: requests.post("https://exp.host/--/api/v2/push/send", json={"to": token, "title": title, "body": body, "data": data}, timeout=5)
     except: pass
 
+# === FIX: Logika Heartbeat ===
 async def process_parking_update(dane: dict, db: Session):
     if "sensor_id" not in dane: return
-    sid = dane["sensor_id"]; status = dane["status"]; teraz = now_utc()
-    db.add(DaneHistoryczne(czas_pomiaru=teraz, sensor_id=sid, status=status))
+    sid = dane["sensor_id"]
+    status = dane["status"]
+    teraz = now_utc()
+    
+    # Sprawdź aktualny stan
     m = db.query(AktualnyStan).filter(AktualnyStan.sensor_id == sid).first()
-    prev = -1
-    if m: prev = m.status; m.status = status; m.ostatnia_aktualizacja = teraz
-    else: db.add(AktualnyStan(sensor_id=sid, status=status, ostatnia_aktualizacja=teraz))
-    if prev != status:
+    prev_status = -1
+    
+    if m:
+        prev_status = m.status
+        # Zawsze aktualizujemy timestamp (Heartbeat - "żyję!")
+        m.ostatnia_aktualizacja = teraz
+        # Aktualizuj status
+        m.status = status
+    else:
+        # Nowy sensor
+        db.add(AktualnyStan(sensor_id=sid, status=status, ostatnia_aktualizacja=teraz))
+    
+    # Logika ZMIANY STANU (Tylko wtedy zapisujemy historię i wysyłamy powiadomienia)
+    if prev_status != status:
+        # Zapisz do historii tylko przy zmianie (oszczędność bazy)
+        db.add(DaneHistoryczne(czas_pomiaru=teraz, sensor_id=sid, status=status))
+        
         chg = {"sensor_id": sid, "status": status}
-        if prev != 1 and status == 1:
+        
+        # Push notifications (Tylko jak zmieniło się na zajęte)
+        if prev_status != 1 and status == 1:
              limit = datetime.timedelta(minutes=30)
              obs = db.query(ObserwowaneMiejsca).filter(ObserwowaneMiejsca.sensor_id == sid, (teraz - ObserwowaneMiejsca.czas_dodania) < limit).all()
              if obs:
                  for o in obs:
                      send_push_notification(o.device_token, "Zajęte!", f"{sid} zajęte.", {"action": "reroute"})
                      db.delete(o)
+        
         db.commit()
+        # Broadcast przez WebSocket (żeby mapy się odświeżyły)
         if manager.active_connections: await manager.broadcast([chg])
+    else:
+        # Tylko commit timestampu (Heartbeat)
+        db.commit()
 
 # === ENDPOINTS ===
 @app.get("/")
@@ -335,23 +359,19 @@ def obs(r: ObserwujRequest, db: Session = Depends(get_db)):
 # FIX: RATE LIMIT DLA RAPORTÓW
 @app.post("/api/v1/dashboard/raport")
 def rep(r: RaportRequest, request: Request):
-    # Sprawdzamy limit w Redis (jeśli dostępny)
     client_ip = request.client.host
     limit_key = f"ratelimit:report:{client_ip}"
     
     if redis_client:
-        # Pobierz obecną liczbę żądań
         current = redis_client.get(limit_key)
         if current and int(current) >= 2:
-            # Jeśli przekroczono 2 żądania, sprawdź TTL
             ttl = redis_client.ttl(limit_key)
             raise HTTPException(429, f"Zbyt wiele zapytań. Spróbuj za {ttl} sekund.")
         
-        # Inkrementacja licznika
         pipe = redis_client.pipeline()
         pipe.incr(limit_key)
         if not current:
-            pipe.expire(limit_key, 60) # Wygasa po 60s
+            pipe.expire(limit_key, 60) 
         pipe.execute()
         
     return {g: [0]*24 for g in r.groups}
