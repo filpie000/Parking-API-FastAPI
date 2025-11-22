@@ -241,7 +241,6 @@ class ConnectionManager:
         except: pass
 manager = ConnectionManager()
 
-# === FIX: KANAŁ POWIADOMIEŃ ===
 def send_push_notification(token, title, body, data):
     logger.info(f"PUSH TRY -> {token[:15]}... | {title}")
     try: 
@@ -252,7 +251,6 @@ def send_push_notification(token, title, body, data):
             "data": data,
             "sound": "default", 
             "priority": "high",
-            # KLUCZOWE: Musi być taki sam jak w App.js
             "channelId": "parking_channel", 
             "_displayInForeground": True 
         }
@@ -281,9 +279,7 @@ async def process_parking_update(dane: dict, db: Session):
         db.add(DaneHistoryczne(czas_pomiaru=teraz, sensor_id=sid, status=status))
         chg = {"sensor_id": sid, "status": status}
         
-        # LOGIKA: Zmiana na ZAJĘTE (1)
         if status == 1:
-             # FIX: Dłuższy czas ważności (24h)
              limit = datetime.timedelta(hours=24)
              obs = db.query(ObserwowaneMiejsca).filter(
                  ObserwowaneMiejsca.sensor_id == sid, 
@@ -291,21 +287,17 @@ async def process_parking_update(dane: dict, db: Session):
              ).all()
              
              if obs:
-                 logger.info(f"Znaleziono {len(obs)} obserwatorów dla {sid}")
                  grp = sid.split('_')[0]
                  wolny = db.query(AktualnyStan).filter(AktualnyStan.sensor_id.startswith(grp), AktualnyStan.sensor_id != sid, AktualnyStan.status == 0).first()
-                 
                  tytul = "❌ Miejsce zajęte!"
                  tresc = f"Miejsce {sid} zostało zajęte."
                  akcja = "reroute"
                  target = None
-                 
                  if wolny:
                      tytul = "⚠️ Zmiana miejsca"
                      tresc = f"{sid} zajęte. Jedź na {wolny.sensor_id}!"
                      akcja = "info"
                      target = wolny.sensor_id
-                 
                  for o in obs:
                      send_push_notification(o.device_token, tytul, tresc, {"action": akcja, "new_target": target})
                      db.delete(o)
@@ -432,20 +424,63 @@ def obs(r: ObserwujRequest, db: Session = Depends(get_db)):
         db.rollback()
         raise HTTPException(500, f"Błąd bazy: {e}")
 
+# FIX: RATE LIMIT & RAPORTY (Pełna logika agregacji)
 @app.post("/api/v1/dashboard/raport")
-def rep(r: RaportRequest, request: Request):
+def rep(r: RaportRequest, request: Request, db: Session = Depends(get_db)):
     client_ip = request.client.host
     limit_key = f"ratelimit:report:{client_ip}"
     if redis_client:
         current = redis_client.get(limit_key)
         if current and int(current) >= 2:
             ttl = redis_client.ttl(limit_key)
-            raise HTTPException(429, f"Limit. Czekaj {ttl}s.")
+            raise HTTPException(429, f"Limit zapytań. Czekaj {ttl}s.")
         pipe = redis_client.pipeline()
         pipe.incr(limit_key)
-        if not current: pipe.expire(limit_key, 60) 
+        if not current: pipe.expire(limit_key, 60)
         pipe.execute()
-    return {g: [0]*24 for g in r.groups}
+    
+    try:
+        s_date = datetime.datetime.strptime(r.start_date, "%Y-%m-%d").date()
+        e_date = datetime.datetime.strptime(r.end_date, "%Y-%m-%d").date()
+    except: raise HTTPException(400, "Zła data")
+
+    all_rows = []
+    if r.include_workdays or r.include_weekends:
+        all_rows.extend(db.query(DaneHistoryczne).filter(DaneHistoryczne.czas_pomiaru >= s_date, DaneHistoryczne.czas_pomiaru <= e_date + datetime.timedelta(days=1)).all())
+    if r.include_holidays:
+        all_rows.extend(db.query(DaneSwieta).filter(DaneSwieta.czas_pomiaru >= s_date, DaneSwieta.czas_pomiaru <= e_date + datetime.timedelta(days=1)).all())
+
+    agg = {g: {h: [] for h in range(24)} for g in r.groups}
+    
+    for row in all_rows:
+        if row.czas_pomiaru.tzinfo is None: local_time = row.czas_pomiaru.replace(tzinfo=UTC).astimezone(PL_TZ)
+        else: local_time = row.czas_pomiaru.astimezone(PL_TZ)
+        
+        if not (s_date <= local_time.date() <= e_date): continue
+        
+        is_holiday = isinstance(row, DaneSwieta)
+        is_weekend = local_time.weekday() >= 5
+        
+        if is_holiday:
+            if not r.include_holidays: continue
+        else:
+            if is_weekend and not r.include_weekends: continue
+            if not is_weekend and not r.include_workdays: continue
+            
+        group = row.sensor_id.split('_')[0]
+        if group in agg:
+            agg[group][local_time.hour].append(row.status)
+
+    result = {}
+    for g in r.groups:
+        data_points = []
+        for h in range(24):
+            values = agg[g][h]
+            if not values: data_points.append(0)
+            else: data_points.append(round((sum(values) / len(values)) * 100, 1))
+        result[g] = data_points
+        
+    return result
 
 @app.post("/api/v1/debug/symulacja_sensora")
 async def debug(d: dict, db: Session = Depends(get_db)):
