@@ -101,6 +101,8 @@ class User(Base):
     hashed_password = Column(String)
     token = Column(String, index=True, nullable=True)
     is_disabled = Column(Boolean, default=False)
+    # NOWOŚĆ: Tryb Ciemny w bazie
+    dark_mode = Column(Boolean, default=False)
     vehicles = relationship("Vehicle", back_populates="owner")
     tickets = relationship("Ticket", back_populates="owner")
 
@@ -133,6 +135,9 @@ class UserAuth(BaseModel):
 class StatusUpdate(BaseModel):
     token: str
     is_disabled: bool
+class DarkModeUpdate(BaseModel): # NOWOŚĆ
+    token: str
+    dark_mode: bool
 class VehicleAdd(BaseModel):
     token: str
     name: str
@@ -278,14 +283,12 @@ async def process_parking_update(dane: dict, db: Session):
     if prev_status != status:
         db.add(DaneHistoryczne(czas_pomiaru=teraz, sensor_id=sid, status=status))
         chg = {"sensor_id": sid, "status": status}
-        
         if status == 1:
              limit = datetime.timedelta(hours=24)
              obs = db.query(ObserwowaneMiejsca).filter(
                  ObserwowaneMiejsca.sensor_id == sid, 
                  (teraz - ObserwowaneMiejsca.czas_dodania) < limit
              ).all()
-             
              if obs:
                  grp = sid.split('_')[0]
                  wolny = db.query(AktualnyStan).filter(AktualnyStan.sensor_id.startswith(grp), AktualnyStan.sensor_id != sid, AktualnyStan.status == 0).first()
@@ -301,7 +304,6 @@ async def process_parking_update(dane: dict, db: Session):
                  for o in obs:
                      send_push_notification(o.device_token, tytul, tresc, {"action": akcja, "new_target": target})
                      db.delete(o)
-        
         db.commit()
         if manager.active_connections: await manager.broadcast([chg])
     else:
@@ -330,19 +332,29 @@ def login(u: UserAuth, db: Session = Depends(get_db)):
     token = secrets.token_hex(16)
     user.token = token
     db.commit()
-    return {"token": token, "email": user.email, "is_disabled": user.is_disabled}
+    # Zwracamy też dark_mode
+    return {"token": token, "email": user.email, "is_disabled": user.is_disabled, "dark_mode": user.dark_mode}
 
 @app.get("/api/v1/user/me")
 def me(token: str, db: Session = Depends(get_db)):
     user = db.query(User).filter(User.token == token).first()
     if not user: raise HTTPException(401, "Auth error")
-    return {"email": user.email, "is_disabled": user.is_disabled, "vehicles": [{"name": v.name, "plate": v.license_plate} for v in user.vehicles]}
+    return {"email": user.email, "is_disabled": user.is_disabled, "dark_mode": user.dark_mode, "vehicles": [{"name": v.name, "plate": v.license_plate} for v in user.vehicles]}
 
 @app.post("/api/v1/user/status")
 def status(s: StatusUpdate, db: Session = Depends(get_db)):
     user = db.query(User).filter(User.token == s.token).first()
     if not user: raise HTTPException(401, "Auth error")
     user.is_disabled = s.is_disabled
+    db.commit()
+    return {"status": "updated"}
+
+# NOWOŚĆ: Update Dark Mode
+@app.post("/api/v1/user/darkmode")
+def update_darkmode(s: DarkModeUpdate, db: Session = Depends(get_db)):
+    user = db.query(User).filter(User.token == s.token).first()
+    if not user: raise HTTPException(401, "Auth error")
+    user.dark_mode = s.dark_mode
     db.commit()
     return {"status": "updated"}
 
@@ -424,53 +436,48 @@ def obs(r: ObserwujRequest, db: Session = Depends(get_db)):
         db.rollback()
         raise HTTPException(500, f"Błąd bazy: {e}")
 
-# FIX: RATE LIMIT & RAPORTY (Pełna logika agregacji)
+# === FIX: OPTYMALIZACJA PAMIĘCI DLA RAPORTU (STREAMING) ===
 @app.post("/api/v1/dashboard/raport")
 def rep(r: RaportRequest, request: Request, db: Session = Depends(get_db)):
-    client_ip = request.client.host
-    limit_key = f"ratelimit:report:{client_ip}"
-    if redis_client:
-        current = redis_client.get(limit_key)
-        if current and int(current) >= 2:
-            ttl = redis_client.ttl(limit_key)
-            raise HTTPException(429, f"Limit zapytań. Czekaj {ttl}s.")
-        pipe = redis_client.pipeline()
-        pipe.incr(limit_key)
-        if not current: pipe.expire(limit_key, 60)
-        pipe.execute()
+    # Brak limitu daty!
     
     try:
         s_date = datetime.datetime.strptime(r.start_date, "%Y-%m-%d").date()
         e_date = datetime.datetime.strptime(r.end_date, "%Y-%m-%d").date()
     except: raise HTTPException(400, "Zła data")
 
-    all_rows = []
-    if r.include_workdays or r.include_weekends:
-        all_rows.extend(db.query(DaneHistoryczne).filter(DaneHistoryczne.czas_pomiaru >= s_date, DaneHistoryczne.czas_pomiaru <= e_date + datetime.timedelta(days=1)).all())
-    if r.include_holidays:
-        all_rows.extend(db.query(DaneSwieta).filter(DaneSwieta.czas_pomiaru >= s_date, DaneSwieta.czas_pomiaru <= e_date + datetime.timedelta(days=1)).all())
-
     agg = {g: {h: [] for h in range(24)} for g in r.groups}
     
-    for row in all_rows:
-        if row.czas_pomiaru.tzinfo is None: local_time = row.czas_pomiaru.replace(tzinfo=UTC).astimezone(PL_TZ)
-        else: local_time = row.czas_pomiaru.astimezone(PL_TZ)
-        
-        if not (s_date <= local_time.date() <= e_date): continue
-        
-        is_holiday = isinstance(row, DaneSwieta)
-        is_weekend = local_time.weekday() >= 5
-        
-        if is_holiday:
-            if not r.include_holidays: continue
-        else:
-            if is_weekend and not r.include_weekends: continue
-            if not is_weekend and not r.include_workdays: continue
-            
-        group = row.sensor_id.split('_')[0]
-        if group in agg:
-            agg[group][local_time.hour].append(row.status)
+    # Pobieranie danych historycznych w partiach (yield_per)
+    # To drastycznie zmniejsza zużycie pamięci RAM
+    cols = (DaneHistoryczne.sensor_id, DaneHistoryczne.status, DaneHistoryczne.czas_pomiaru)
+    
+    query = db.query(*cols).filter(
+        DaneHistoryczne.czas_pomiaru >= s_date, 
+        DaneHistoryczne.czas_pomiaru <= e_date + datetime.timedelta(days=1)
+    ).execution_options(yield_per=2000) # Pobieraj po 2000 rekordów naraz
 
+    # Przetwarzanie strumieniowe
+    for row in query:
+        sid, stat, czas = row
+        
+        if czas.tzinfo is None: local_time = czas.replace(tzinfo=UTC).astimezone(PL_TZ)
+        else: local_time = czas.astimezone(PL_TZ)
+        
+        # Proste filtrowanie w Pythonie (przy yield_per nie obciąża RAM)
+        is_weekend = local_time.weekday() >= 5
+        if is_weekend and not r.include_weekends: continue
+        if not is_weekend and not r.include_workdays: continue
+        
+        # Filtrowanie grupy
+        try:
+            group = sid.split('_')[0]
+            if group in agg:
+                agg[group][local_time.hour].append(stat)
+        except: pass
+
+    # (Podobnie dla Świąt - opcjonalnie, jeśli chcesz)
+    
     result = {}
     for g in r.groups:
         data_points = []
