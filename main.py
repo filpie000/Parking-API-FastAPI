@@ -226,7 +226,6 @@ def send_push_notification(token, title, body, data):
     try: requests.post("https://exp.host/--/api/v2/push/send", json={"to": token, "title": title, "body": body, "data": data}, timeout=5)
     except Exception as e: logger.error(f"PUSH Error: {e}")
 
-# === LOGIKA HEARTBEAT I PUSH ===
 async def process_parking_update(dane: dict, db: Session):
     if "sensor_id" not in dane: return
     sid = dane["sensor_id"]
@@ -238,48 +237,24 @@ async def process_parking_update(dane: dict, db: Session):
     
     if m:
         prev_status = m.status
-        # Zawsze aktualizuj czas (Heartbeat)
         m.ostatnia_aktualizacja = teraz
         m.status = status
     else:
         db.add(AktualnyStan(sensor_id=sid, status=status, ostatnia_aktualizacja=teraz))
     
-    # Tylko jeśli zmienił się stan:
     if prev_status != status:
-        # 1. Zapisz historię
         db.add(DaneHistoryczne(czas_pomiaru=teraz, sensor_id=sid, status=status))
-        
-        # 2. Wyślij powiadomienia
         chg = {"sensor_id": sid, "status": status}
-        
-        # Jeśli zmieniło się na ZAJĘTE (1), a nie było (0 lub 2)
         if prev_status != 1 and status == 1:
              limit = datetime.timedelta(minutes=30)
              obs = db.query(ObserwowaneMiejsca).filter(ObserwowaneMiejsca.sensor_id == sid, (teraz - ObserwowaneMiejsca.czas_dodania) < limit).all()
              if obs:
-                 logger.info(f"Znaleziono {len(obs)} obserwatorów dla {sid}")
-                 grp = sid.split('_')[0]
-                 wolny = db.query(AktualnyStan).filter(AktualnyStan.sensor_id.startswith(grp), AktualnyStan.sensor_id != sid, AktualnyStan.status == 0).first()
-                 
-                 tytul = "❌ Miejsce zajęte!"
-                 tresc = f"{sid} zostało zajęte."
-                 akcja = "reroute"
-                 target = None
-                 
-                 if wolny:
-                     tytul = "⚠️ Alternatywa"
-                     tresc = f"{sid} zajęte. Wolne: {wolny.sensor_id}"
-                     akcja = "info"
-                     target = wolny.sensor_id
-                 
                  for o in obs:
-                     send_push_notification(o.device_token, tytul, tresc, {"action": akcja, "new_target": target})
+                     send_push_notification(o.device_token, "Zajęte!", f"{sid} zajęte.", {"action": "reroute"})
                      db.delete(o)
-        
         db.commit()
         if manager.active_connections: await manager.broadcast([chg])
     else:
-        # Tylko timestamp
         db.commit()
 
 # === ENDPOINTS ===
@@ -360,37 +335,28 @@ def stats(z: StatystykiZapytanie, db: Session = Depends(get_db)):
     if redis_client: redis_client.set(key, json.dumps(wynik), ex=3600)
     return {"wynik_dynamiczny": wynik}
 
-# === FIX: OBSŁUGA DUPLIKATÓW TOKENA (UPSERT) ===
 @app.post("/api/v1/obserwuj_miejsce")
 def obs(r: ObserwujRequest, db: Session = Depends(get_db)):
-    logger.info(f"API: Próba obserwacji {r.sensor_id} przez {r.device_token[:10]}...")
+    logger.info(f"OBSERWACJA: Rejestruję token {r.device_token[:10]}... dla {r.sensor_id}")
     
     istniejacy = db.query(ObserwowaneMiejsca).filter(ObserwowaneMiejsca.device_token == r.device_token).first()
-    
     if istniejacy:
-        logger.info("API: Token znany - aktualizuję.")
         istniejacy.sensor_id = r.sensor_id
         istniejacy.czas_dodania = now_utc()
     else:
-        logger.info("API: Nowy token - dodaję.")
         db.add(ObserwowaneMiejsca(device_token=r.device_token, sensor_id=r.sensor_id))
     
     try:
         db.commit()
         return {"status": "ok"}
     except Exception as e:
-        logger.error(f"DB ERROR: {e}")
         db.rollback()
-        raise HTTPException(500, f"Błąd bazy: {str(e)}")
+        raise HTTPException(500, f"Błąd bazy: {e}")
 
-# === FIX: RATE LIMIT Z FALLBACKIEM ===
-request_counts = {} 
 @app.post("/api/v1/dashboard/raport")
 def rep(r: RaportRequest, request: Request):
     client_ip = request.client.host
-    current_time = time.time()
     limit_key = f"ratelimit:report:{client_ip}"
-    
     if redis_client:
         current = redis_client.get(limit_key)
         if current and int(current) >= 2:
@@ -400,16 +366,6 @@ def rep(r: RaportRequest, request: Request):
         pipe.incr(limit_key)
         if not current: pipe.expire(limit_key, 60) 
         pipe.execute()
-    else:
-        # Fallback RAM
-        if client_ip in request_counts:
-            last_time, count = request_counts[client_ip]
-            if current_time - last_time < 60:
-                if count >= 2: raise HTTPException(429, "Limit (2/min).")
-                request_counts[client_ip] = [last_time, count + 1]
-            else: request_counts[client_ip] = [current_time, 1]
-        else: request_counts[client_ip] = [current_time, 1]
-        
     return {g: [0]*24 for g in r.groups}
 
 @app.post("/api/v1/debug/symulacja_sensora")
@@ -417,7 +373,8 @@ async def debug(d: dict, db: Session = Depends(get_db)):
     await process_parking_update(d, db)
     return {"status": "ok"}
 
-mqtt_c = mqtt.Client()
+# === FIX: VARIABLE NAME FOR SHUTDOWN ===
+mqtt_c = mqtt.Client() # ZMIENNA GLOBALNA mqtt_c
 def mqtt_loop():
     mqtt_c.on_connect = lambda c,u,f,r: c.subscribe(MQTT_TOPIC_SUBSCRIBE)
     def on_m(c,u,m):
@@ -433,12 +390,11 @@ def mqtt_loop():
     try: mqtt_c.connect(MQTT_BROKER, MQTT_PORT, 60); mqtt_c.loop_forever()
     except: pass
 
-# === FIX: THREAD 5 MIN ===
 def check_stale():
-    while not threading.main_thread().is_alive() is False: # Keep alive
+    while not threading.main_thread().is_alive() is False:
         try:
             db = SessionLocal()
-            cut = now_utc() - datetime.timedelta(minutes=5) # 5 MINUT
+            cut = now_utc() - datetime.timedelta(minutes=5)
             old = db.query(AktualnyStan).filter(AktualnyStan.status != 2, (AktualnyStan.ostatnia_aktualizacja < cut)|(AktualnyStan.ostatnia_aktualizacja == None)).all()
             if old:
                 chg = []
@@ -459,7 +415,9 @@ async def start():
     threading.Thread(target=check_stale, daemon=True).start()
 
 @app.on_event("shutdown")
-def stop(): mqtt_client.disconnect()
+def stop(): 
+    # FIX: Używamy poprawnej nazwy zmiennej
+    mqtt_c.disconnect()
 
 @app.websocket("/ws/stan")
 async def ws(ws: WebSocket):
