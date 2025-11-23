@@ -113,10 +113,10 @@ class User(Base):
     is_disabled = Column(Boolean, default=False)
     dark_mode = Column(Boolean, default=False)
     
-    # UPRAWNIENIA (RBAC)
-    perm_euro = Column(Boolean, default=False)
-    perm_ev = Column(Boolean, default=False)
-    perm_disabled = Column(Boolean, default=False)
+    # UPRAWNIENIA (RBAC dla kierowców)
+    perm_euro = Column(Boolean, default=False)     # Dostęp do strefy EURO
+    perm_ev = Column(Boolean, default=False)       # Dostęp do ładowarek
+    perm_disabled = Column(Boolean, default=False) # Dostęp do miejsc niepełnosprawnych
 
     vehicles = relationship("Vehicle", back_populates="owner")
     tickets = relationship("Ticket", back_populates="owner")
@@ -311,8 +311,13 @@ async def process_parking_update(dane: dict, db: Session):
     sid = dane["sensor_id"]; status = dane["status"]; teraz = now_utc()
     m = db.query(AktualnyStan).filter(AktualnyStan.sensor_id == sid).first()
     prev = -1
-    if m: prev = m.status; m.status = status; m.ostatnia_aktualizacja = teraz
-    else: db.add(AktualnyStan(sensor_id=sid, status=status, ostatnia_aktualizacja=teraz))
+    if m:
+        prev_status = m.status
+        m.ostatnia_aktualizacja = teraz
+        m.status = status
+    else:
+        db.add(AktualnyStan(sensor_id=sid, status=status, ostatnia_aktualizacja=teraz))
+    
     if prev != status:
         db.add(DaneHistoryczne(czas_pomiaru=teraz, sensor_id=sid, status=status))
         chg = {"sensor_id": sid, "status": status}
@@ -353,15 +358,8 @@ def list_admins(db: Session = Depends(get_db)):
 
 @app.post("/api/v1/admin/create")
 def create_admin(a: NewAdmin, db: Session = Depends(get_db)):
-    if db.query(Admin).filter(Admin.username == a.username).first(): raise HTTPException(400, "Username zajęty")
-    new_admin = Admin(
-        username=a.username,
-        password_hash=get_password_hash(a.password),
-        role="CUSTOM",
-        badge_name=a.badge_name,
-        permissions=a.permissions
-    )
-    db.add(new_admin)
+    if db.query(Admin).filter(Admin.username == a.username).first(): raise HTTPException(400, "Zajęty")
+    db.add(Admin(username=a.username, password_hash=get_password_hash(a.password), role="CUSTOM", badge_name=a.badge_name, permissions=a.permissions))
     db.commit()
     return {"status": "created"}
 
@@ -379,23 +377,25 @@ def update_admin(u: AdminUpdate, db: Session = Depends(get_db)):
 def delete_admin(d: AdminDelete, db: Session = Depends(get_db)):
     target = db.query(Admin).filter(Admin.id == d.target_id).first()
     if not target: raise HTTPException(404, "Not found")
-    if target.username == "admin": raise HTTPException(403, "Nie można usunąć Super Admina")
+    if target.username == "admin": raise HTTPException(403, "Super Admin protected")
     db.delete(target); db.commit()
     return {"status": "deleted"}
 
 # --- USER API ---
 @app.post("/api/v1/auth/register")
 def register(u: UserAuth, db: Session = Depends(get_db)):
-    if db.query(User).filter(User.email == u.email).first(): raise HTTPException(400, "Email zajęty")
-    db.add(User(email=u.email, hashed_password=get_password_hash(u.password), perm_euro=True, perm_ev=False, perm_disabled=False))
+    if db.query(User).filter(User.email == u.email).first(): raise HTTPException(400, "Zajęty")
+    db.add(User(email=u.email, hashed_password=get_password_hash(u.password), perm_euro=False, perm_ev=False, perm_disabled=False))
     db.commit(); return {"status": "ok"}
+
 @app.post("/api/v1/auth/login")
 def login(u: UserAuth, db: Session = Depends(get_db)):
     user = db.query(User).filter(User.email == u.email).first()
-    if not user or not verify_password(u.password, user.hashed_password): raise HTTPException(401, "Błędne dane")
+    if not user or not verify_password(u.password, user.hashed_password): raise HTTPException(401, "Błędne")
     token = secrets.token_hex(16); user.token = token; db.commit()
     dm = getattr(user, 'dark_mode', False)
     return {"token": token, "email": user.email, "is_disabled": user.is_disabled, "dark_mode": dm}
+
 @app.get("/api/v1/user/me")
 def me(token: str, db: Session = Depends(get_db)):
     user = db.query(User).filter(User.token == token).first()
@@ -404,12 +404,13 @@ def me(token: str, db: Session = Depends(get_db)):
     return {
         "email": user.email, 
         "is_disabled": user.is_disabled, 
-        "perm_disabled": user.perm_disabled, 
-        "perm_ev": user.perm_ev, 
-        "perm_euro": user.perm_euro, 
+        "perm_disabled": getattr(user, 'perm_disabled', False), 
+        "perm_ev": getattr(user, 'perm_ev', False), 
+        "perm_euro": getattr(user, 'perm_euro', False), 
         "dark_mode": dm, 
         "vehicles": [{"name": v.name, "plate": v.license_plate} for v in user.vehicles]
     }
+
 @app.post("/api/v1/user/status")
 def status(s: StatusUpdate, db: Session = Depends(get_db)):
     user = db.query(User).filter(User.token == s.token).first()
@@ -417,13 +418,13 @@ def status(s: StatusUpdate, db: Session = Depends(get_db)):
     user.is_disabled = s.is_disabled; user.perm_disabled = s.is_disabled; db.commit(); return {"status": "updated"}
 @app.post("/api/v1/user/darkmode")
 def update_darkmode(s: DarkModeUpdate, db: Session = Depends(get_db)):
-    user = db.query(User).filter(User.token == s.token).first()
+    user = db.query(User).filter(User.token == s.token).first() 
     if not user: raise HTTPException(401, "Auth error")
     if hasattr(user, 'dark_mode'): user.dark_mode = s.dark_mode; db.commit()
     return {"status": "updated"}
 @app.post("/api/v1/user/vehicle")
 def add_veh(v: VehicleAdd, db: Session = Depends(get_db)):
-    user = db.query(User).filter(User.token == v.token).first()
+    user = db.query(User).filter(User.token == v.token).first() 
     if not user: raise HTTPException(401, "Auth error")
     db.add(Vehicle(name=v.name, license_plate=v.license_plate, user_id=user.id)); db.commit(); return {"status": "added"}
 @app.post("/api/v1/user/ticket")
@@ -445,11 +446,9 @@ def get_active_ticket(token: str, db: Session = Depends(get_db)):
 def get_stat(limit: int = 100, db: Session = Depends(get_db)):
     return [m.to_dict() for m in db.query(AktualnyStan).limit(limit).all()]
 @app.get("/api/v1/prognoza/wszystkie_miejsca")
-def forecast(target_date: Optional[str] = None, target_hour: Optional[int] = None, db: Session = Depends(get_db)):
-    return {} 
+def forecast(target_date: Optional[str] = None, target_hour: Optional[int] = None, db: Session = Depends(get_db)): return {}
 @app.post("/api/v1/statystyki/zajetosc")
-def stats(z: StatystykiZapytanie, db: Session = Depends(get_db)):
-    return {"wynik_dynamiczny": {"procent_zajetosci": 0, "liczba_pomiarow": 0}} 
+def stats(z: StatystykiZapytanie, db: Session = Depends(get_db)): return {"wynik_dynamiczny": {"procent_zajetosci": 0, "liczba_pomiarow": 0}}
 @app.post("/api/v1/obserwuj_miejsce")
 def obs(r: ObserwujRequest, db: Session = Depends(get_db)):
     istniejacy = db.query(ObserwowaneMiejsca).filter(ObserwowaneMiejsca.device_token == r.device_token).first()
@@ -458,16 +457,69 @@ def obs(r: ObserwujRequest, db: Session = Depends(get_db)):
     try: db.commit(); return {"status": "ok"}
     except: db.rollback(); raise HTTPException(500, "Error")
 
+# === FIX: RAPORT Z FILTROWANIEM UPRAWNIEŃ ===
 @app.post("/api/v1/dashboard/raport")
 def rep(r: RaportRequest, request: Request, db: Session = Depends(get_db)):
-    return {} 
+    client_ip = request.client.host
+    limit_key = f"ratelimit:report:{client_ip}"
+    if redis_client:
+        if redis_client.get(limit_key) and int(redis_client.get(limit_key)) >= 5: raise HTTPException(429, "Limit")
+        redis_client.incr(limit_key); redis_client.expire(limit_key, 60)
+    
+    try: s_date = datetime.datetime.strptime(r.start_date, "%Y-%m-%d").date(); e_date = datetime.datetime.strptime(r.end_date, "%Y-%m-%d").date()
+    except: raise HTTPException(400, "Zła data")
 
-@app.post("/api/v1/debug/symulacja_sensora")
-async def debug(d: dict, db: Session = Depends(get_db)):
-    await process_parking_update(d, db)
-    return {"status": "ok"}
+    admin_perms = r.requester_permissions or "ALL"
+    
+    allowed_groups = []
+    if "ALL" in admin_perms:
+        allowed_groups = r.groups
+    else:
+        for g in r.groups:
+            if f"VIEW_{g}" in admin_perms:
+                allowed_groups.append(g)
+    
+    if not allowed_groups:
+        return {}
 
-# === AIRBNB ===
+    agg = {g: {h: [] for h in range(24)} for g in allowed_groups}
+    
+    cols = (DaneHistoryczne.sensor_id, DaneHistoryczne.status, DaneHistoryczne.czas_pomiaru)
+    query = db.query(*cols).filter(DaneHistoryczne.czas_pomiaru >= s_date, DaneHistoryczne.czas_pomiaru <= e_date + datetime.timedelta(days=1)).yield_per(1000)
+
+    for row in query:
+        sid, stat, czas = row
+        if not czas: continue
+        
+        if "ALL" not in admin_perms:
+            is_ev = sid == "EURO_3"; is_disabled = sid == "EURO_4"; is_euro = sid.startswith("EURO"); is_bud = sid.startswith("BUD")
+            pass_check = False
+            if "VIEW_EURO" in admin_perms and is_euro: pass_check = True
+            if "VIEW_BUD" in admin_perms and is_bud: pass_check = True
+            if "VIEW_EV" in admin_perms and is_ev: pass_check = True
+            if "VIEW_DISABLED" in admin_perms and is_disabled: pass_check = True
+            if not pass_check: continue
+
+        local_time = czas.replace(tzinfo=UTC).astimezone(PL_TZ) if czas.tzinfo is None else czas.astimezone(PL_TZ)
+        is_weekend = local_time.weekday() >= 5
+        if is_weekend and not r.include_weekends: continue
+        if not is_weekend and not r.include_workdays: continue
+        try:
+            group = sid.split('_')[0]
+            if group in agg: agg[group][local_time.hour].append(stat)
+        except: pass
+
+    result = {}
+    for g in allowed_groups:
+        data_points = []
+        for h in range(24):
+            values = agg[g][h]
+            if not values: data_points.append(0)
+            else: data_points.append(round((sum(values) / len(values)) * 100, 1))
+        result[g] = data_points
+    return result
+
+# === OTHER API ===
 @app.get("/api/v1/airbnb/offers")
 def get_airbnb_offers(db: Session = Depends(get_db)):
     offers = db.query(AirbnbOffer).order_by(AirbnbOffer.created_at.desc()).all()
@@ -493,7 +545,7 @@ def delete_offer(d: AirbnbDelete, db: Session = Depends(get_db)):
     try: oid = int(d.offer_id)
     except: raise HTTPException(400, "Złe ID")
     offer = db.query(AirbnbOffer).filter(AirbnbOffer.id == oid).first()
-    if not offer: raise HTTPException(404, "Nie ma oferty")
+    if not offer: raise HTTPException(404, "Not found")
     if offer.owner_name != user.email.split('@')[0]: raise HTTPException(403, "Brak uprawnień")
     db.delete(offer); db.commit(); return {"status": "deleted"}
 @app.post("/api/v1/airbnb/update")
@@ -510,11 +562,20 @@ def update_offer_details(u: AirbnbUpdate, db: Session = Depends(get_db)):
     db.commit()
     return {"status": "updated"}
 
-# === ADMIN USERS ===
+# === FIX: USER MANAGEMENT ===
 @app.get("/api/v1/admin/users")
 def get_all_users(db: Session = Depends(get_db)):
     users = db.query(User).all()
-    return [UserList(email=u.email, is_disabled=u.is_disabled, vehicle_count=len(u.vehicles), perm_euro=getattr(u, 'perm_euro', False), perm_ev=getattr(u, 'perm_ev', False), perm_disabled=getattr(u, 'perm_disabled', False)) for u in users]
+    return [
+        UserList(
+            email=u.email,
+            is_disabled=u.is_disabled,
+            vehicle_count=len(u.vehicles),
+            perm_euro=getattr(u, 'perm_euro', False),
+            perm_ev=getattr(u, 'perm_ev', False),
+            perm_disabled=getattr(u, 'perm_disabled', False)
+        ) for u in users
+    ]
 
 @app.post("/api/v1/admin/toggle_user")
 def toggle_user_status(u: AdminStatusUpdate, db: Session = Depends(get_db)):
@@ -559,7 +620,6 @@ def mqtt_loop():
     mqtt_c.on_message = on_m
     try: mqtt_c.connect(MQTT_BROKER, MQTT_PORT, 60); mqtt_c.loop_forever()
     except: pass
-
 def check_stale():
     while not threading.main_thread().is_alive() is False:
         try:
@@ -576,8 +636,7 @@ def check_stale():
 
 @app.on_event("startup")
 async def start(): 
-    threading.Thread(target=mqtt_loop, daemon=True).start()
-    threading.Thread(target=check_stale, daemon=True).start()
+    threading.Thread(target=mqtt_loop, daemon=True).start(); threading.Thread(target=check_stale, daemon=True).start()
     with SessionLocal() as db: create_default_admins(db)
 
 @app.on_event("shutdown")
