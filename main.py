@@ -310,12 +310,10 @@ def me(token: str, db: Session = Depends(get_db)):
     if not user: raise HTTPException(401, "Auth error")
     dm = getattr(user, 'dark_mode', False)
     
-    # Zwracamy uprawnienia do frontendu (możesz to wykorzystać w App.js do ukrywania sekcji)
-    # Na razie frontend używa tylko is_disabled (jako perm_disabled), ale backend jest gotowy.
     return {
         "email": user.email, 
-        "is_disabled": user.is_disabled, # Legacy (dla kompatybilności)
-        "perm_disabled": user.perm_disabled, # New
+        "is_disabled": user.is_disabled, 
+        "perm_disabled": user.perm_disabled, 
         "perm_ev": user.perm_ev,
         "perm_euro": user.perm_euro,
         "dark_mode": dm, 
@@ -465,7 +463,6 @@ def toggle_user_status(u: AdminStatusUpdate, db: Session = Depends(get_db)):
     db.commit()
     return {"status": "updated"}
 
-# NOWY ENDPOINT: AKTUALIZACJA UPRAWNIEŃ
 @app.post("/api/v1/admin/update_permissions")
 def update_user_permissions(u: UserPermissionsUpdate, db: Session = Depends(get_db)):
     target = db.query(User).filter(User.email == u.target_email).first()
@@ -473,10 +470,7 @@ def update_user_permissions(u: UserPermissionsUpdate, db: Session = Depends(get_
     target.perm_euro = u.perm_euro
     target.perm_ev = u.perm_ev
     target.perm_disabled = u.perm_disabled
-    
-    # Synchronizacja is_disabled z perm_disabled dla starej logiki
     target.is_disabled = u.perm_disabled
-    
     db.commit()
     return {"status": "updated"}
 
