@@ -13,6 +13,8 @@
         .scrollbar-thin::-webkit-scrollbar-thumb { background-color: #94a3b8; border-radius: 3px; }
         .scrollbar-thin::-webkit-scrollbar-track { background-color: transparent; }
         body, div, table, th, td, nav, aside, header, input, select { transition: background-color 0.3s ease, color 0.3s ease, border-color 0.3s ease; }
+        .group-checkbox:checked + div { background-color: #eff6ff; border-color: #3b82f6; }
+        .dark .group-checkbox:checked + div { background-color: #1e3a8a; border-color: #60a5fa; }
     </style>
 </head>
 <body class="bg-gray-100 dark:bg-gray-900 text-gray-800 dark:text-gray-200 font-sans h-screen flex flex-col overflow-hidden">
@@ -93,6 +95,7 @@
                     <div class="bg-white dark:bg-gray-800 p-6 rounded-lg shadow">
                         <h2 class="text-2xl font-bold mb-6 dark:text-white">Zarządzanie Administratorami</h2>
                         
+                        <!-- Formularz dodawania -->
                         <div class="mb-6 p-4 bg-gray-50 dark:bg-gray-700 rounded border dark:border-gray-600">
                             <h3 class="font-bold mb-3 dark:text-white">Dodaj / Edytuj</h3>
                             <input type="hidden" id="edit-admin-id">
@@ -159,7 +162,7 @@
             const errorMsg = document.getElementById('login-error');
             const btn = document.getElementById('login-btn');
 
-            if(!user || !pass) return;
+            if(!user || !pass) { errorMsg.innerText = "Wypełnij pola."; errorMsg.classList.remove('hidden'); return; }
             btn.disabled = true; btn.innerText = "Logowanie...";
             errorMsg.classList.add('hidden');
 
@@ -185,9 +188,7 @@
                         if (p.includes('MANAGE_USERS')) document.getElementById('nav-users').classList.remove('hidden');
                     }
                     initDashboard();
-                } else {
-                    errorMsg.innerText = "Błąd logowania"; errorMsg.classList.remove('hidden');
-                }
+                } else { errorMsg.innerText = "Błąd logowania"; errorMsg.classList.remove('hidden'); }
             } catch(e) { errorMsg.innerText = "Błąd sieci"; errorMsg.classList.remove('hidden'); } 
             finally { btn.disabled = false; btn.innerText = "Zaloguj się"; }
         }
@@ -264,10 +265,7 @@
         
         async function deleteAdmin(id) {
             if(!confirm("Usunąć?")) return;
-            await fetch(API_BASE + "/api/v1/admin/delete", { 
-                method: 'POST', headers: { 'Content-Type': 'application/json' }, 
-                body: JSON.stringify({ target_id: id }) 
-            });
+            await fetch(API_BASE + "/api/v1/admin/delete", { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ target_id: id }) });
             fetchAdmins();
         }
 
@@ -345,7 +343,12 @@
         async function generateReport() {
             const start = document.getElementById('date-start').value;
             const end = document.getElementById('date-end').value;
-            const groups = ["EURO", "BUD"]; 
+            // FIX: Pobieramy tylko zaznaczone grupy
+            const checkedBoxes = document.querySelectorAll('.group-checkbox:checked');
+            const groups = Array.from(checkedBoxes).map(cb => cb.value);
+            
+            if(groups.length === 0) { alert("Wybierz strefę!"); return; }
+
             const requesterPerms = CURRENT_USER.permissions || "ALL";
             try {
                 const res = await fetch(API_BASE + "/api/v1/dashboard/raport", {
