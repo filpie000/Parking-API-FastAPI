@@ -25,7 +25,6 @@ import paho.mqtt.client as mqtt
 import redis
 import msgpack
 
-# Konfiguracja logowania - mniej spamu w konsoli
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
@@ -46,8 +45,7 @@ if not DATABASE_URL:
 elif DATABASE_URL.startswith("postgres://"):
     DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
 
-# Użycie puli połączeń (ważne dla wydajności!)
-engine = create_engine(DATABASE_URL, pool_pre_ping=True, pool_size=10, max_overflow=20)
+engine = create_engine(DATABASE_URL)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 
@@ -192,24 +190,31 @@ class AirbnbLocationUpdate(BaseModel):
     offer_id: str
     latitude: float
     longitude: float
+    
+# NOWE MODELE DO EDYCJI I USUWANIA
+class AirbnbUpdate(BaseModel):
+    token: str
+    offer_id: str
+    title: str
+    description: str
+    price: str
+    availability: str
+
+class AirbnbDelete(BaseModel):
+    token: str
+    offer_id: str
 
 # --- UTILS ---
 def get_time_with_offset(base_hour, offset_minutes):
     base_dt = datetime.datetime(2000, 1, 1, base_hour, 0)
     offset_dt = base_dt + datetime.timedelta(minutes=offset_minutes)
     return offset_dt.time()
-
 def get_password_hash(password: str) -> str:
-    pwd_bytes = password.encode('utf-8')
-    salt = bcrypt.gensalt()
-    hashed = bcrypt.hashpw(pwd_bytes, salt)
-    return hashed.decode('utf-8')
-
+    pwd_bytes = password.encode('utf-8'); salt = bcrypt.gensalt(); hashed = bcrypt.hashpw(pwd_bytes, salt); return hashed.decode('utf-8')
 def verify_password(plain_password: str, hashed_password: str) -> bool:
     try: return bcrypt.checkpw(plain_password.encode('utf-8'), hashed_password.encode('utf-8'))
     except: return False
-
-def calculate_occupancy_stats(sensor_prefix: str, selected_date_obj: date, selected_hour: int, db: Session) -> dict:
+def calculate_occupancy_stats(sensor_prefix, selected_date_obj, selected_hour, db):
     if not sensor_prefix: sensor_prefix = "EURO"
     nazwa_swieta = MANUALNA_MAPA_SWIAT.get(selected_date_obj)
     query = None
@@ -292,7 +297,6 @@ def send_push_notification(token, title, body, data):
             "channelId": "parking_alerts_v2", 
             "_displayInForeground": True 
         }
-        # Timeout 3s wystarczy
         requests.post("https://exp.host/--/api/v2/push/send", json=payload, timeout=3)
     except Exception as e: 
         logger.error(f"PUSH NETWORK ERROR: {e}")
@@ -319,7 +323,6 @@ async def process_parking_update(dane: dict, db: Session):
         chg = {"sensor_id": sid, "status": status}
         
         if status == 1:
-             # Skróćmy szukanie do 12h wstecz, to wystarczy
              limit = datetime.timedelta(hours=12)
              obs = db.query(ObserwowaneMiejsca).filter(
                  ObserwowaneMiejsca.sensor_id == sid, 
@@ -328,7 +331,6 @@ async def process_parking_update(dane: dict, db: Session):
              
              if obs:
                  grp = sid.split('_')[0]
-                 # Limit 1 dla wydajności
                  wolny = db.query(AktualnyStan).filter(AktualnyStan.sensor_id.startswith(grp), AktualnyStan.sensor_id != sid, AktualnyStan.status == 0).first()
                  
                  tytul = "❌ Miejsce zajęte!"
@@ -481,8 +483,7 @@ def obs(r: ObserwujRequest, db: Session = Depends(get_db)):
 
 @app.post("/api/v1/dashboard/raport")
 def rep(r: RaportRequest, request: Request, db: Session = Depends(get_db)):
-    # ... (Logika raportu) ...
-    # Użyjmy tu uproszczonej wersji dla oszczędności pamięci (jak wcześniej)
+    # Logika raportu (skopiowana z wersji Low Memory)
     client_ip = request.client.host
     limit_key = f"ratelimit:report:{client_ip}"
     if redis_client:
@@ -535,7 +536,7 @@ async def debug(d: dict, db: Session = Depends(get_db)):
     await process_parking_update(d, db)
     return {"status": "ok"}
 
-# === AIRBNB ENDPOINTS ===
+# === AIRBNB ENDPOINTS (UPDATE & DELETE) ===
 @app.get("/api/v1/airbnb/offers")
 def get_airbnb_offers(db: Session = Depends(get_db)):
     offers = db.query(AirbnbOffer).order_by(AirbnbOffer.created_at.desc()).all()
@@ -563,6 +564,41 @@ def update_offer_location(u: AirbnbLocationUpdate, db: Session = Depends(get_db)
     if not offer: raise HTTPException(404, "Oferta nie znaleziona")
     if offer.owner_name != user.email.split('@')[0]: raise HTTPException(403, "Brak uprawnień")
     offer.latitude = u.latitude; offer.longitude = u.longitude; db.commit(); return {"status": "location_updated"}
+
+@app.post("/api/v1/airbnb/delete")
+def delete_offer(d: AirbnbDelete, db: Session = Depends(get_db)):
+    user = db.query(User).filter(User.token == d.token).first()
+    if not user: raise HTTPException(401, "Auth error")
+    
+    offer = db.query(AirbnbOffer).filter(AirbnbOffer.id == int(d.offer_id)).first()
+    if not offer: raise HTTPException(404, "Oferta nie znaleziona")
+    
+    # Weryfikacja właściciela
+    if offer.owner_name != user.email.split('@')[0]: 
+        raise HTTPException(403, "Brak uprawnień do usunięcia tej oferty")
+        
+    db.delete(offer)
+    db.commit()
+    return {"status": "deleted"}
+
+@app.post("/api/v1/airbnb/update")
+def update_offer_details(u: AirbnbUpdate, db: Session = Depends(get_db)):
+    user = db.query(User).filter(User.token == u.token).first()
+    if not user: raise HTTPException(401, "Auth error")
+    
+    offer = db.query(AirbnbOffer).filter(AirbnbOffer.id == int(u.offer_id)).first()
+    if not offer: raise HTTPException(404, "Oferta nie znaleziona")
+    
+    # Weryfikacja właściciela
+    if offer.owner_name != user.email.split('@')[0]: 
+        raise HTTPException(403, "Brak uprawnień do edycji tej oferty")
+    
+    offer.title = u.title
+    offer.description = u.description
+    offer.price = u.price
+    offer.availability = u.availability
+    db.commit()
+    return {"status": "updated"}
 
 mqtt_c = mqtt.Client()
 def mqtt_loop():
