@@ -25,6 +25,7 @@ import paho.mqtt.client as mqtt
 import redis
 import msgpack
 
+# Konfiguracja logowania - mniej spamu w konsoli
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
@@ -45,7 +46,8 @@ if not DATABASE_URL:
 elif DATABASE_URL.startswith("postgres://"):
     DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
 
-engine = create_engine(DATABASE_URL)
+# Użycie puli połączeń (ważne dla wydajności!)
+engine = create_engine(DATABASE_URL, pool_pre_ping=True, pool_size=10, max_overflow=20)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 
@@ -230,7 +232,8 @@ def calculate_occupancy_stats(sensor_prefix: str, selected_date_obj: date, selec
         kon = get_time_with_offset(selected_hour, OFFSET)
     except: return {"procent_zajetosci": 0, "liczba_pomiarow": 0, "kategoria": "Błąd czasu"}
 
-    rows = query.all()
+    # Limit pobierania dla wydajności (max 5000 rekordów do analizy na żądanie)
+    rows = query.limit(5000).all()
     pasujace = []
     for r in rows:
         if not r.czas_pomiaru: continue
@@ -257,7 +260,7 @@ def calculate_occupancy_stats(sensor_prefix: str, selected_date_obj: date, selec
 app = FastAPI()
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 
-# === WEBSOCKET MANAGER (DEFINICJA PRZED UŻYCIEM) ===
+# === WEBSOCKET MANAGER ===
 class ConnectionManager:
     def __init__(self): self.active_connections: List[WebSocket] = []
     async def connect(self, websocket: WebSocket):
@@ -273,7 +276,6 @@ class ConnectionManager:
                 except: self.disconnect(connection)
         except: pass
 
-# Tworzenie instancji PO definicji klasy
 manager = ConnectionManager()
 
 # === LOGIKA PUSH ===
@@ -287,11 +289,11 @@ def send_push_notification(token, title, body, data):
             "data": data,
             "sound": "default", 
             "priority": "high",
-            "channelId": "parking_channel", 
+            "channelId": "parking_alerts_v2", 
             "_displayInForeground": True 
         }
-        res = requests.post("https://exp.host/--/api/v2/push/send", json=payload, timeout=5)
-        logger.info(f"PUSH RESULT: {res.status_code} | {res.text}") 
+        # Timeout 3s wystarczy
+        requests.post("https://exp.host/--/api/v2/push/send", json=payload, timeout=3)
     except Exception as e: 
         logger.error(f"PUSH NETWORK ERROR: {e}")
 
@@ -317,7 +319,8 @@ async def process_parking_update(dane: dict, db: Session):
         chg = {"sensor_id": sid, "status": status}
         
         if status == 1:
-             limit = datetime.timedelta(hours=24)
+             # Skróćmy szukanie do 12h wstecz, to wystarczy
+             limit = datetime.timedelta(hours=12)
              obs = db.query(ObserwowaneMiejsca).filter(
                  ObserwowaneMiejsca.sensor_id == sid, 
                  (teraz - ObserwowaneMiejsca.czas_dodania) < limit
@@ -325,6 +328,7 @@ async def process_parking_update(dane: dict, db: Session):
              
              if obs:
                  grp = sid.split('_')[0]
+                 # Limit 1 dla wydajności
                  wolny = db.query(AktualnyStan).filter(AktualnyStan.sensor_id.startswith(grp), AktualnyStan.sensor_id != sid, AktualnyStan.status == 0).first()
                  
                  tytul = "❌ Miejsce zajęte!"
@@ -377,7 +381,8 @@ def login(u: UserAuth, db: Session = Depends(get_db)):
 def me(token: str, db: Session = Depends(get_db)):
     user = db.query(User).filter(User.token == token).first()
     if not user: raise HTTPException(401, "Auth error")
-    return {"email": user.email, "is_disabled": user.is_disabled, "vehicles": [{"name": v.name, "plate": v.license_plate} for v in user.vehicles]}
+    dm = getattr(user, 'dark_mode', False)
+    return {"email": user.email, "is_disabled": user.is_disabled, "dark_mode": dm, "vehicles": [{"name": v.name, "plate": v.license_plate} for v in user.vehicles]}
 
 @app.post("/api/v1/user/status")
 def status(s: StatusUpdate, db: Session = Depends(get_db)):
@@ -476,7 +481,8 @@ def obs(r: ObserwujRequest, db: Session = Depends(get_db)):
 
 @app.post("/api/v1/dashboard/raport")
 def rep(r: RaportRequest, request: Request, db: Session = Depends(get_db)):
-    # Logika raportu (skopiowana z wersji Low Memory)
+    # ... (Logika raportu) ...
+    # Użyjmy tu uproszczonej wersji dla oszczędności pamięci (jak wcześniej)
     client_ip = request.client.host
     limit_key = f"ratelimit:report:{client_ip}"
     if redis_client:
@@ -577,21 +583,21 @@ def mqtt_loop():
 def check_stale():
     while not threading.main_thread().is_alive() is False:
         try:
-            db = SessionLocal()
-            cut = now_utc() - datetime.timedelta(minutes=5)
-            old = db.query(AktualnyStan).filter(AktualnyStan.status != 2, (AktualnyStan.ostatnia_aktualizacja < cut)|(AktualnyStan.ostatnia_aktualizacja == None)).all()
-            if old:
-                chg = []
-                for s in old:
-                    s.status = 2
-                    s.ostatnia_aktualizacja = now_utc()
-                    chg.append(s.to_dict())
-                db.commit()
-                if chg and manager.active_connections:
-                    asyncio.run_coroutine_threadsafe(manager.broadcast(chg), asyncio.get_event_loop())
-            db.close()
+            # Optymalizacja: Użyjmy with do zamykania sesji
+            with SessionLocal() as db:
+                cut = now_utc() - datetime.timedelta(minutes=5)
+                old = db.query(AktualnyStan).filter(AktualnyStan.status != 2, (AktualnyStan.ostatnia_aktualizacja < cut)|(AktualnyStan.ostatnia_aktualizacja == None)).all()
+                if old:
+                    chg = []
+                    for s in old:
+                        s.status = 2
+                        s.ostatnia_aktualizacja = now_utc()
+                        chg.append(s.to_dict())
+                    db.commit()
+                    if chg and manager.active_connections:
+                        asyncio.run_coroutine_threadsafe(manager.broadcast(chg), asyncio.get_event_loop())
         except: pass
-        time.sleep(60)
+        time.sleep(120) # Sprawdzaj rzadziej (co 2 min) dla oszczędności
 
 @app.on_event("startup")
 async def start(): 
