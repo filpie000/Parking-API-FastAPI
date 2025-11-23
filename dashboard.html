@@ -1,386 +1,486 @@
 <!DOCTYPE html>
 <html lang="pl">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Parking IoT - Panel Admina</title>
-    <script src="https://cdn.tailwindcss.com"></script>
-    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" />
-    <script> tailwind.config = { darkMode: 'class' } </script>
-    <style>
-        .scrollbar-thin::-webkit-scrollbar { width: 6px; height: 6px; }
-        .scrollbar-thin::-webkit-scrollbar-thumb { background-color: #94a3b8; border-radius: 3px; }
-        .scrollbar-thin::-webkit-scrollbar-track { background-color: transparent; }
-        body, div, table, th, td, nav, aside, header, input, select { transition: background-color 0.3s ease, color 0.3s ease, border-color 0.3s ease; }
-        .group-checkbox:checked + div { background-color: #eff6ff; border-color: #3b82f6; }
-        .dark .group-checkbox:checked + div { background-color: #1e3a8a; border-color: #60a5fa; }
-    </style>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Parking IoT - Panel Admina</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" />
+<script> tailwind.config = { darkMode: 'class' } </script>
+<style>
+.scrollbar-thin::-webkit-scrollbar { width: 6px; height: 6px; }
+.scrollbar-thin::-webkit-scrollbar-thumb { background-color: #94a3b8; border-radius: 3px; }
+.scrollbar-thin::-webkit-scrollbar-track { background-color: transparent; }
+body, div, table, th, td, nav, aside, header, input, select { transition: background-color 0.3s ease, color 0.3s ease, border-color 0.3s ease; }
+.group-checkbox:checked + div { background-color: #eff6ff; border-color: #3b82f6; }
+.dark .group-checkbox:checked + div { background-color: #1e3a8a; border-color: #60a5fa; }
+</style>
 </head>
 <body class="bg-gray-100 dark:bg-gray-900 text-gray-800 dark:text-gray-200 font-sans h-screen flex flex-col overflow-hidden">
 
-    <!-- LOGIN -->
-    <div id="login-overlay" class="fixed inset-0 bg-gray-900 z-50 flex items-center justify-center">
-        <div class="bg-white dark:bg-gray-800 p-8 rounded-lg shadow-2xl w-96 text-center border dark:border-gray-700">
-            <div class="mb-6">
-                <i class="fas fa-parking text-blue-600 text-5xl"></i>
-                <h2 class="text-2xl font-bold mt-2 text-gray-800 dark:text-white">Smart Parking</h2>
-            </div>
-            <input type="text" id="login-user" placeholder="Login" class="w-full p-3 border rounded mb-3 bg-gray-50 dark:bg-gray-700 dark:border-gray-600 dark:text-white">
-            <input type="password" id="login-pass" placeholder="Hasło" class="w-full p-3 border rounded mb-4 bg-gray-50 dark:bg-gray-700 dark:border-gray-600 dark:text-white">
-            <button onclick="login()" id="login-btn" class="w-full bg-blue-600 text-white py-3 rounded font-bold hover:bg-blue-700 transition">Zaloguj się</button>
-            <p id="login-error" class="text-red-500 mt-3 hidden text-sm font-bold"></p>
+<!-- LOGIN -->
+<div id="login-overlay" class="fixed inset-0 bg-gray-900 z-50 flex items-center justify-center">
+  <div class="bg-white dark:bg-gray-800 p-8 rounded-lg shadow-2xl w-96 text-center border dark:border-gray-700">
+    <div class="mb-6">
+      <i class="fas fa-parking text-blue-600 text-5xl"></i>
+      <h2 class="text-2xl font-bold mt-2 text-gray-800 dark:text-white">Smart Parking</h2>
+    </div>
+    <input type="text" id="login-user" placeholder="Login" class="w-full p-3 border rounded mb-3 bg-gray-50 dark:bg-gray-700 dark:border-gray-600 dark:text-white">
+    <input type="password" id="login-pass" placeholder="Hasło" class="w-full p-3 border rounded mb-4 bg-gray-50 dark:bg-gray-700 dark:border-gray-600 dark:text-white">
+    <button onclick="login()" id="login-btn" class="w-full bg-blue-600 text-white py-3 rounded font-bold hover:bg-blue-700 transition">Zaloguj się</button>
+    <p id="login-error" class="text-red-500 mt-3 hidden text-sm font-bold"></p>
+  </div>
+</div>
+
+<div id="app-content" class="flex h-full hidden">
+  <aside class="w-64 bg-white dark:bg-gray-800 shadow-md flex flex-col z-10 hidden md:flex border-r dark:border-gray-700">
+    <div class="p-4 border-b dark:border-gray-700 flex items-center gap-2">
+      <i class="fas fa-parking text-blue-600 text-2xl"></i>
+      <span class="text-xl font-bold tracking-wide">Panel</span>
+    </div>
+    <nav class="flex-1 p-4 space-y-2">
+      <button onclick="switchView('dashboard')" id="nav-dashboard" class="w-full text-left block p-3 rounded bg-blue-50 dark:bg-blue-900 text-blue-600 dark:text-blue-200 font-semibold transition"><i class="fas fa-chart-area mr-3 w-5"></i> Raporty</button>
+      <button onclick="switchView('admins')" id="nav-admins" class="w-full text-left hidden p-3 rounded hover:bg-gray-50 dark:hover:bg-gray-700 text-gray-600 dark:text-gray-400 transition"><i class="fas fa-user-shield mr-3 w-5"></i> Administratorzy</button>
+      <button onclick="switchView('users')" id="nav-users" class="w-full text-left hidden p-3 rounded hover:bg-gray-50 dark:hover:bg-gray-700 text-gray-600 dark:text-gray-400 transition"><i class="fas fa-users mr-3 w-5"></i> Użytkownicy</button>
+      <button onclick="switchView('settings')" id="nav-settings" class="w-full text-left block p-3 rounded hover:bg-gray-50 dark:hover:bg-gray-700 text-gray-600 dark:text-gray-400 transition"><i class="fas fa-cogs mr-3 w-5"></i> Ustawienia</button>
+    </nav>
+    <div class="p-4 border-t dark:border-gray-700 text-sm text-gray-500 dark:text-gray-400">Zalogowano jako:<br><b id="user-display" class="text-gray-800 dark:text-gray-200">User</b></div>
+  </aside>
+
+  <main class="flex-1 flex flex-col overflow-hidden bg-gray-100 dark:bg-gray-900">
+    <header class="bg-white dark:bg-gray-800 shadow-sm p-4 flex justify-between items-center z-10 border-b dark:border-gray-700">
+      <h1 class="text-2xl font-bold text-gray-700 dark:text-gray-200" id="page-title">Generator Raportów</h1>
+      <div class="flex items-center gap-3">
+        <span class="text-sm bg-blue-100 dark:bg-blue-900 text-blue-800 dark:text-blue-200 px-3 py-1 rounded-full font-medium" id="role-badge">Admin</span>
+        <button onclick="refreshData()" class="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded shadow-sm transition flex items-center text-sm"><i class="fas fa-sync-alt mr-2"></i> Odśwież</button>
+      </div>
+    </header>
+
+    <div class="flex-1 overflow-auto p-6 scrollbar-thin relative">
+
+      <!-- DASHBOARD -->
+      <div id="view-dashboard" class="space-y-6">
+        <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
+          <div class="bg-white dark:bg-gray-800 p-6 rounded-lg shadow border-l-4 border-green-500 flex justify-between items-center"><div><p class="text-sm text-gray-500 dark:text-gray-400 uppercase font-semibold">Wolne</p><h3 class="text-3xl font-bold" id="count-free">--</h3></div></div>
+          <div class="bg-white dark:bg-gray-800 p-6 rounded-lg shadow border-l-4 border-red-500 flex justify-between items-center"><div><p class="text-sm text-gray-500 uppercase">Zajęte</p><h3 class="text-3xl font-bold" id="count-occupied">--</h3></div></div>
+          <div class="bg-white dark:bg-gray-800 p-6 rounded-lg shadow border-l-4 border-blue-500 flex justify-between items-center"><div><p class="text-sm text-gray-500 uppercase">Aktywne</p><h3 class="text-3xl font-bold" id="count-total">--</h3></div></div>
         </div>
-    </div>
 
-    <div id="app-content" class="flex h-full hidden">
-        <aside class="w-64 bg-white dark:bg-gray-800 shadow-md flex flex-col z-10 hidden md:flex border-r dark:border-gray-700">
-            <div class="p-4 border-b dark:border-gray-700 flex items-center gap-2">
-                <i class="fas fa-parking text-blue-600 text-2xl"></i>
-                <span class="text-xl font-bold tracking-wide">Panel</span>
+        <!-- CHART CONFIG -->
+        <div class="bg-white dark:bg-gray-800 p-6 rounded-lg shadow">
+          <div class="flex flex-col md:flex-row justify-between items-end mb-6 gap-4">
+            <div><h3 class="text-xl font-bold dark:text-white">Konfigurator</h3></div>
+            <div class="flex gap-3">
+              <button onclick="generateReport()" class="bg-indigo-600 hover:bg-indigo-700 text-white px-6 py-2 rounded font-bold shadow">Generuj Wykres</button>
             </div>
-            <nav class="flex-1 p-4 space-y-2">
-                <button onclick="switchView('dashboard')" id="nav-dashboard" class="w-full text-left block p-3 rounded bg-blue-50 dark:bg-blue-900 text-blue-600 dark:text-blue-200 font-semibold transition"><i class="fas fa-chart-area mr-3 w-5"></i> Raporty</button>
-                <button onclick="switchView('admins')" id="nav-admins" class="w-full text-left hidden p-3 rounded hover:bg-gray-50 dark:hover:bg-gray-700 text-gray-600 dark:text-gray-400 transition"><i class="fas fa-user-shield mr-3 w-5"></i> Administratorzy</button>
-                <button onclick="switchView('users')" id="nav-users" class="w-full text-left hidden p-3 rounded hover:bg-gray-50 dark:hover:bg-gray-700 text-gray-600 dark:text-gray-400 transition"><i class="fas fa-users mr-3 w-5"></i> Użytkownicy</button>
-                <button onclick="switchView('settings')" id="nav-settings" class="w-full text-left block p-3 rounded hover:bg-gray-50 dark:hover:bg-gray-700 text-gray-600 dark:text-gray-400 transition"><i class="fas fa-cogs mr-3 w-5"></i> Ustawienia</button>
-            </nav>
-            <div class="p-4 border-t dark:border-gray-700 text-sm text-gray-500 dark:text-gray-400">Zalogowano jako:<br><b id="user-display" class="text-gray-800 dark:text-gray-200">User</b></div>
-        </aside>
-
-        <main class="flex-1 flex flex-col overflow-hidden bg-gray-100 dark:bg-gray-900">
-            <header class="bg-white dark:bg-gray-800 shadow-sm p-4 flex justify-between items-center z-10 border-b dark:border-gray-700">
-                <h1 class="text-2xl font-bold text-gray-700 dark:text-gray-200" id="page-title">Generator Raportów</h1>
-                <div class="flex items-center gap-3">
-                    <span class="text-sm bg-blue-100 dark:bg-blue-900 text-blue-800 dark:text-blue-200 px-3 py-1 rounded-full font-medium" id="role-badge">Admin</span>
-                    <button onclick="refreshData()" class="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded shadow-sm transition flex items-center text-sm"><i class="fas fa-sync-alt mr-2"></i> Odśwież</button>
+          </div>
+          <div class="grid grid-cols-1 lg:grid-cols-4 gap-6 mb-6">
+            <div class="lg:col-span-1 space-y-4">
+              <div><label class="block text-sm font-bold mb-1 dark:text-gray-300">Od</label><input type="date" id="date-start" class="w-full p-2 border rounded dark:bg-gray-700 dark:text-white"></div>
+              <div><label class="block text-sm font-bold mb-1 dark:text-gray-300">Do</label><input type="date" id="date-end" class="w-full p-2 border rounded dark:bg-gray-700 dark:text-white"></div>
+              <div class="mt-2">
+                <label class="block text-sm font-bold mb-1 dark:text-gray-300">Filtry dni</label>
+                <div class="flex gap-2 items-center text-sm">
+                  <label><input type="checkbox" id="filter-workdays" checked> Dni robocze</label>
+                  <label><input type="checkbox" id="filter-weekends" checked class="ml-2"> Weekendy</label>
+                  <label><input type="checkbox" id="filter-holidays" checked class="ml-2"> Święta</label>
                 </div>
-            </header>
-
-            <div class="flex-1 overflow-auto p-6 scrollbar-thin relative">
-                
-                <!-- DASHBOARD -->
-                <div id="view-dashboard" class="space-y-6">
-                    <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
-                        <div class="bg-white dark:bg-gray-800 p-6 rounded-lg shadow border-l-4 border-green-500 flex justify-between items-center"><div><p class="text-sm text-gray-500 dark:text-gray-400 uppercase font-semibold">Wolne</p><h3 class="text-3xl font-bold" id="count-free">--</h3></div></div>
-                        <div class="bg-white dark:bg-gray-800 p-6 rounded-lg shadow border-l-4 border-red-500 flex justify-between items-center"><div><p class="text-sm text-gray-500 uppercase">Zajęte</p><h3 class="text-3xl font-bold" id="count-occupied">--</h3></div></div>
-                        <div class="bg-white dark:bg-gray-800 p-6 rounded-lg shadow border-l-4 border-blue-500 flex justify-between items-center"><div><p class="text-sm text-gray-500 uppercase">Aktywne</p><h3 class="text-3xl font-bold" id="count-total">--</h3></div></div>
-                    </div>
-
-                    <!-- CHART CONFIG -->
-                    <div class="bg-white dark:bg-gray-800 p-6 rounded-lg shadow">
-                         <div class="flex flex-col md:flex-row justify-between items-end mb-6 gap-4">
-                             <div><h3 class="text-xl font-bold dark:text-white">Konfigurator</h3></div>
-                             <button onclick="generateReport()" class="bg-indigo-600 hover:bg-indigo-700 text-white px-6 py-2 rounded font-bold shadow">Generuj Wykres</button>
-                         </div>
-                         <div class="grid grid-cols-1 lg:grid-cols-4 gap-6 mb-6">
-                             <div class="lg:col-span-1 space-y-4">
-                                 <div><label class="block text-sm font-bold mb-1 dark:text-gray-300">Od</label><input type="date" id="date-start" class="w-full p-2 border rounded dark:bg-gray-700 dark:text-white"></div>
-                                 <div><label class="block text-sm font-bold mb-1 dark:text-gray-300">Do</label><input type="date" id="date-end" class="w-full p-2 border rounded dark:bg-gray-700 dark:text-white"></div>
-                             </div>
-                             <div class="lg:col-span-3">
-                                 <label class="block text-sm font-bold mb-2 dark:text-gray-300">Strefy:</label>
-                                 <div class="flex flex-wrap gap-3">
-                                     <label><input type="checkbox" class="group-checkbox" value="EURO" checked> EURO</label>
-                                     <label><input type="checkbox" class="group-checkbox" value="BUD" checked> BUD</label>
-                                 </div>
-                             </div>
-                         </div>
-                         <div class="relative h-96 w-full"><canvas id="reportChart"></canvas></div>
-                    </div>
-                </div>
-
-                <!-- ADMINS MANAGEMENT -->
-                <div id="view-admins" class="hidden space-y-6">
-                    <div class="bg-white dark:bg-gray-800 p-6 rounded-lg shadow">
-                        <h2 class="text-2xl font-bold mb-6 dark:text-white">Zarządzanie Administratorami</h2>
-                        
-                        <!-- Formularz dodawania -->
-                        <div class="mb-6 p-4 bg-gray-50 dark:bg-gray-700 rounded border dark:border-gray-600">
-                            <h3 class="font-bold mb-3 dark:text-white">Dodaj / Edytuj</h3>
-                            <input type="hidden" id="edit-admin-id">
-                            <div class="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4">
-                                <input type="text" id="new-admin-user" placeholder="Login" class="p-2 border rounded bg-white dark:bg-gray-800 dark:text-white">
-                                <input type="password" id="new-admin-pass" placeholder="Hasło (puste = bez zmian)" class="p-2 border rounded bg-white dark:bg-gray-800 dark:text-white">
-                                <input type="text" id="new-admin-badge" placeholder="Tytuł" class="p-2 border rounded bg-white dark:bg-gray-800 dark:text-white">
-                            </div>
-                            <div class="mb-4">
-                                <label class="block text-sm font-bold mb-2 dark:text-gray-300">Uprawnienia:</label>
-                                <div class="flex gap-4 flex-wrap dark:text-white">
-                                    <label><input type="checkbox" class="perm-check" value="VIEW_EURO"> Widok EURO</label>
-                                    <label><input type="checkbox" class="perm-check" value="VIEW_BUD"> Widok BUD</label>
-                                    <label><input type="checkbox" class="perm-check" value="VIEW_EV"> Tylko EV</label>
-                                    <label><input type="checkbox" class="perm-check" value="VIEW_DISABLED"> Tylko Niepełnosprawni</label>
-                                    <label><input type="checkbox" class="perm-check" value="CITY_INOWROCLAW"> Inowrocław</label>
-                                    <label><input type="checkbox" class="perm-check" value="MANAGE_USERS"> Zarządzanie Kierowcami</label>
-                                </div>
-                            </div>
-                            <div class="flex gap-2">
-                                <button onclick="saveAdmin()" class="bg-green-600 text-white px-4 py-2 rounded font-bold hover:bg-green-700">Zapisz</button>
-                                <button onclick="cancelEdit()" class="bg-gray-400 text-white px-4 py-2 rounded font-bold hover:bg-gray-500 hidden" id="cancel-edit-btn">Anuluj</button>
-                            </div>
-                        </div>
-
-                        <table class="min-w-full text-left">
-                            <thead class="bg-gray-100 dark:bg-gray-700"><tr><th class="p-4">Login</th><th class="p-4">Rola</th><th class="p-4">Uprawnienia</th><th class="p-4 text-right">Akcja</th></tr></thead>
-                            <tbody id="table-admins-body" class="divide-y dark:divide-gray-700"></tbody>
-                        </table>
-                    </div>
-                </div>
-
-                <!-- USERS MANAGEMENT -->
-                <div id="view-users" class="hidden space-y-6">
-                    <div class="bg-white dark:bg-gray-800 p-6 rounded-lg shadow">
-                        <h2 class="text-2xl font-bold mb-6 dark:text-white">Kierowcy i Uprawnienia</h2>
-                        <table class="min-w-full text-left">
-                            <thead class="bg-gray-100 dark:bg-gray-700">
-                                <tr><th class="p-4">Email</th><th class="p-4">Pojazdy</th><th class="p-4 text-center">EURO</th><th class="p-4 text-center">EV</th><th class="p-4 text-center">ON</th><th class="p-4 text-right">Akcja</th></tr>
-                            </thead>
-                            <tbody id="table-users-body" class="divide-y dark:divide-gray-700"></tbody>
-                        </table>
-                    </div>
-                </div>
-
-                <!-- SETTINGS -->
-                <div id="view-settings" class="hidden space-y-6 max-w-2xl mx-auto">
-                    <div class="bg-white dark:bg-gray-800 p-8 rounded-lg shadow"><h2 class="text-2xl font-bold mb-6 dark:text-white">Konto</h2><button onclick="logout()" class="text-red-600 font-bold">Wyloguj</button></div>
-                </div>
-
+              </div>
             </div>
-        </main>
+
+            <div class="lg:col-span-3">
+              <label class="block text-sm font-bold mb-2 dark:text-gray-300">Strefy / Grupy:</label>
+              <div id="groups-container" class="flex flex-wrap gap-3 mb-4">
+                <!-- checkboxes inserted by JS -->
+              </div>
+
+              <div class="flex gap-3 items-center">
+                <input id="new-group-name" placeholder="Dodaj nową grupę (np. ZIELONA)" class="p-2 border rounded dark:bg-gray-700 dark:text-white text-sm">
+                <button onclick="createGroup()" class="bg-green-600 hover:bg-green-700 text-white px-3 py-2 rounded text-sm">Dodaj grupę</button>
+              </div>
+            </div>
+          </div>
+
+          <div class="relative h-96 w-full"><canvas id="reportChart"></canvas></div>
+        </div>
+      </div>
+
+      <!-- ADMINS MANAGEMENT -->
+      <div id="view-admins" class="hidden space-y-6">
+        <div class="bg-white dark:bg-gray-800 p-6 rounded-lg shadow">
+          <h2 class="text-2xl font-bold mb-6 dark:text-white">Zarządzanie Administratorami</h2>
+
+          <!-- Formularz dodawania -->
+          <div class="mb-6 p-4 bg-gray-50 dark:bg-gray-700 rounded border dark:border-gray-600">
+            <h3 class="font-bold mb-3 dark:text-white">Dodaj / Edytuj</h3>
+            <input type="hidden" id="edit-admin-id">
+            <div class="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4">
+              <input type="text" id="new-admin-user" placeholder="Login" class="p-2 border rounded bg-white dark:bg-gray-800 dark:text-white">
+              <input type="password" id="new-admin-pass" placeholder="Hasło (puste = bez zmian)" class="p-2 border rounded bg-white dark:bg-gray-800 dark:text-white">
+              <input type="text" id="new-admin-badge" placeholder="Tytuł" class="p-2 border rounded bg-white dark:bg-gray-800 dark:text-white">
+            </div>
+            <div class="mb-4">
+              <label class="block text-sm font-bold mb-2 dark:text-gray-300">Uprawnienia:</label>
+              <div id="permissions-list" class="flex gap-4 flex-wrap dark:text-white">
+                <!-- permission checkboxes inserted by JS -->
+              </div>
+              <div class="flex gap-2 mt-3">
+                <input id="new-perm-code" placeholder="Kod uprawnienia (np. VIEW_REPORTS)" class="p-2 border rounded bg-white dark:bg-gray-800 dark:text-white text-sm">
+                <input id="new-perm-desc" placeholder="Opis (opcjonalnie)" class="p-2 border rounded bg-white dark:bg-gray-800 dark:text-white text-sm">
+                <button onclick="createPermission()" class="bg-green-600 text-white px-4 py-2 rounded font-bold hover:bg-green-700 text-sm">Dodaj uprawnienie</button>
+              </div>
+            </div>
+            <div class="flex gap-2">
+              <button onclick="saveAdmin()" class="bg-green-600 text-white px-4 py-2 rounded font-bold hover:bg-green-700">Zapisz</button>
+              <button onclick="cancelEdit()" class="bg-gray-400 text-white px-4 py-2 rounded font-bold hover:bg-gray-500 hidden" id="cancel-edit-btn">Anuluj</button>
+            </div>
+          </div>
+
+          <table class="min-w-full text-left">
+            <thead class="bg-gray-100 dark:bg-gray-700"><tr><th class="p-4">Login</th><th class="p-4">Rola</th><th class="p-4">Uprawnienia</th><th class="p-4 text-right">Akcja</th></tr></thead>
+            <tbody id="table-admins-body" class="divide-y dark:divide-gray-700"></tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- USERS MANAGEMENT -->
+      <div id="view-users" class="hidden space-y-6">
+        <div class="bg-white dark:bg-gray-800 p-6 rounded-lg shadow">
+          <h2 class="text-2xl font-bold mb-6 dark:text-white">Kierowcy i Uprawnienia</h2>
+          <table class="min-w-full text-left">
+            <thead class="bg-gray-100 dark:bg-gray-700">
+              <tr><th class="p-4">Email</th><th class="p-4">Pojazdy</th><th class="p-4 text-center">EURO</th><th class="p-4 text-center">EV</th><th class="p-4 text-center">ON</th><th class="p-4 text-right">Akcja</th></tr>
+            </thead>
+            <tbody id="table-users-body" class="divide-y dark:divide-gray-700"></tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- SETTINGS -->
+      <div id="view-settings" class="hidden space-y-6 max-w-2xl mx-auto">
+        <div class="bg-white dark:bg-gray-800 p-8 rounded-lg shadow">
+          <h2 class="text-2xl font-bold mb-6 dark:text-white">Konto</h2>
+          <button onclick="logout()" class="text-red-600 font-bold">Wyloguj</button>
+        </div>
+      </div>
+
     </div>
+  </main>
+</div>
 
-    <script>
-        const API_BASE = window.location.origin;
-        const API_URL = API_BASE + "/api/v1/aktualny_stan";
-        let CURRENT_USER = null;
-        let reportChart;
+<script>
+const API_BASE = window.location.origin;
+const API_URL = API_BASE + "/api/v1/aktualny_stan";
+let CURRENT_USER = null;
+let reportChart;
+let AVAILABLE_PERMISSIONS = [];
+let AVAILABLE_GROUPS = [];
 
-        async function login() {
-            const user = document.getElementById('login-user').value.trim();
-            const pass = document.getElementById('login-pass').value.trim();
-            const errorMsg = document.getElementById('login-error');
-            const btn = document.getElementById('login-btn');
+async function login() {
+  const user = document.getElementById('login-user').value.trim();
+  const pass = document.getElementById('login-pass').value.trim();
+  const errorMsg = document.getElementById('login-error');
+  const btn = document.getElementById('login-btn');
 
-            if(!user || !pass) { errorMsg.innerText = "Wypełnij pola."; errorMsg.classList.remove('hidden'); return; }
-            btn.disabled = true; btn.innerText = "Logowanie...";
-            errorMsg.classList.add('hidden');
+  if(!user || !pass) { errorMsg.innerText = "Wypełnij pola."; errorMsg.classList.remove('hidden'); return; }
+  btn.disabled = true; btn.innerText = "Logowanie...";
+  errorMsg.classList.add('hidden');
 
-            try {
-                const res = await fetch(API_BASE + "/api/v1/admin/auth", {
-                    method: 'POST', headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ username: user, password: pass })
-                });
-                
-                if(res.ok) {
-                    const data = await res.json();
-                    CURRENT_USER = data;
-                    document.getElementById('login-overlay').style.display = 'none';
-                    document.getElementById('app-content').classList.remove('hidden');
-                    document.getElementById('user-display').innerText = data.username;
-                    document.getElementById('role-badge').innerText = data.badge;
-                    
-                    const p = data.permissions || "";
-                    if (data.role === 'ALL' || p.includes('ALL')) {
-                        document.getElementById('nav-admins').classList.remove('hidden');
-                        document.getElementById('nav-users').classList.remove('hidden');
-                    } else {
-                        if (p.includes('MANAGE_USERS')) document.getElementById('nav-users').classList.remove('hidden');
-                    }
-                    initDashboard();
-                } else { errorMsg.innerText = "Błąd logowania"; errorMsg.classList.remove('hidden'); }
-            } catch(e) { errorMsg.innerText = "Błąd sieci"; errorMsg.classList.remove('hidden'); } 
-            finally { btn.disabled = false; btn.innerText = "Zaloguj się"; }
-        }
+  try {
+    const res = await fetch(API_BASE + "/api/v1/admin/auth", {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username: user, password: pass })
+    });
 
-        async function fetchAdmins() {
-            const tbody = document.getElementById('table-admins-body');
-            try {
-                const res = await fetch(API_BASE + "/api/v1/admin/list");
-                const list = await res.json();
-                tbody.innerHTML = '';
-                list.forEach(a => {
-                    tbody.innerHTML += `
-                        <tr class="hover:bg-gray-50 dark:hover:bg-gray-700 border-b dark:border-gray-700">
-                            <td class="p-4 font-bold dark:text-white">${a.username}</td>
-                            <td class="p-4 dark:text-gray-300">${a.badge_name}</td>
-                            <td class="p-4 text-xs font-mono text-gray-500">${a.permissions}</td>
-                            <td class="p-4 text-right space-x-2">
-                                <button onclick='editAdmin(${JSON.stringify(a)})' class="text-blue-500 font-bold">Edytuj</button>
-                                ${a.username !== 'admin' ? `<button onclick="deleteAdmin(${a.id})" class="text-red-500 font-bold">Usuń</button>` : ''}
-                            </td>
-                        </tr>
-                    `;
-                });
-            } catch(e) {}
-        }
+    if(res.ok) {
+      const data = await res.json();
+      CURRENT_USER = data;
+      document.getElementById('login-overlay').style.display = 'none';
+      document.getElementById('app-content').classList.remove('hidden');
+      document.getElementById('user-display').innerText = data.username;
+      document.getElementById('role-badge').innerText = data.badge;
 
-        async function saveAdmin() {
-            const id = document.getElementById('edit-admin-id').value;
-            const u = document.getElementById('new-admin-user').value;
-            const p = document.getElementById('new-admin-pass').value;
-            const b = document.getElementById('new-admin-badge').value;
-            const perms = Array.from(document.querySelectorAll('.perm-check:checked')).map(c => c.value).join(',');
-            
-            if(!u) return alert("Podaj login");
-            
-            const endpoint = id ? "/api/v1/admin/update" : "/api/v1/admin/create";
-            const payload = { username: u, password: p, badge_name: b || 'Admin', permissions: perms };
-            if(id) payload.id = parseInt(id);
+      const p = data.permissions || "";
+      if (data.role === 'ALL' || p.includes('ALL')) {
+        document.getElementById('nav-admins').classList.remove('hidden');
+        document.getElementById('nav-users').classList.remove('hidden');
+      } else {
+        if (p.includes('MANAGE_USERS')) document.getElementById('nav-users').classList.remove('hidden');
+      }
+      initDashboard();
+      fetchPermissions();
+      fetchGroups();
+    } else {
+      errorMsg.innerText = "Błąd logowania";
+      errorMsg.classList.remove('hidden');
+    }
+  } catch(e) {
+    errorMsg.innerText = "Błąd sieci";
+    errorMsg.classList.remove('hidden');
+  } finally {
+    btn.disabled = false; btn.innerText = "Zaloguj się";
+  }
+}
 
-            try {
-                const res = await fetch(API_BASE + endpoint, {
-                    method: 'POST', headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(payload)
-                });
-                if(res.ok) { alert("Zapisano!"); cancelEdit(); fetchAdmins(); } else alert("Błąd");
-            } catch(e) { alert("Błąd sieci"); }
-        }
+async function fetchPermissions() {
+  try {
+    const res = await fetch(API_BASE + "/api/v1/admin/permissions");
+    if(!res.ok) return;
+    AVAILABLE_PERMISSIONS = await res.json();
+    const container = document.getElementById('permissions-list');
+    container.innerHTML = '';
+    AVAILABLE_PERMISSIONS.forEach(p => {
+      const id = 'perm_' + p.code;
+      container.innerHTML += `<label class="text-sm"><input type="checkbox" class="perm-check" value="${p.code}" id="${id}"> ${p.code}</label>`;
+    });
+  } catch(e){}
+}
 
-        function editAdmin(admin) {
-            document.getElementById('edit-admin-id').value = admin.id;
-            document.getElementById('new-admin-user').value = admin.username;
-            document.getElementById('new-admin-user').disabled = true;
-            document.getElementById('new-admin-badge').value = admin.badge_name;
-            document.getElementById('cancel-edit-btn').classList.remove('hidden');
-            
-            document.querySelectorAll('.perm-check').forEach(c => c.checked = false);
-            if(admin.permissions) {
-                admin.permissions.split(',').forEach(p => {
-                    const cb = document.querySelector(`.perm-check[value="${p}"]`);
-                    if(cb) cb.checked = true;
-                });
-            }
-        }
+async function createPermission() {
+  const code = document.getElementById('new-perm-code').value.trim();
+  const desc = document.getElementById('new-perm-desc').value.trim();
+  if(!code) return alert("Podaj kod uprawnienia");
+  try {
+    const res = await fetch(API_BASE + "/api/v1/admin/permissions/create", {
+      method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ code: code, description: desc })
+    });
+    if(res.ok) { alert("Dodano uprawnienie"); document.getElementById('new-perm-code').value=''; document.getElementById('new-perm-desc').value=''; fetchPermissions(); }
+    else { const j = await res.json(); alert(j.detail || "Błąd"); }
+  } catch(e){ alert("Błąd sieci"); }
+}
 
-        function cancelEdit() {
-            document.getElementById('edit-admin-id').value = '';
-            document.getElementById('new-admin-user').value = '';
-            document.getElementById('new-admin-user').disabled = false;
-            document.getElementById('new-admin-pass').value = '';
-            document.getElementById('new-admin-badge').value = '';
-            document.getElementById('cancel-edit-btn').classList.add('hidden');
-            document.querySelectorAll('.perm-check').forEach(c => c.checked = false);
-        }
-        
-        async function deleteAdmin(id) {
-            if(!confirm("Usunąć?")) return;
-            await fetch(API_BASE + "/api/v1/admin/delete", { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ target_id: id }) });
-            fetchAdmins();
-        }
+async function fetchGroups() {
+  try {
+    const res = await fetch(API_BASE + "/api/v1/admin/groups");
+    if(!res.ok) return;
+    AVAILABLE_GROUPS = await res.json();
+    renderGroupCheckboxes();
+  } catch(e){}
+}
 
-        async function fetchUsers() {
-            const tbody = document.getElementById('table-users-body');
-            try {
-                const res = await fetch(API_BASE + "/api/v1/admin/users");
-                const list = await res.json();
-                tbody.innerHTML = '';
-                list.forEach(u => {
-                    const eid = u.email.replace(/[^a-zA-Z0-9]/g, '_'); 
-                    tbody.innerHTML += `
-                        <tr class="hover:bg-gray-50 dark:hover:bg-gray-700 border-b dark:border-gray-700">
-                            <td class="p-4 font-medium text-xs dark:text-white">${u.email}</td>
-                            <td class="p-4 text-xs dark:text-gray-300">${u.vehicle_count} aut</td>
-                            <td class="p-4 text-center"><input type="checkbox" id="p_euro_${eid}" ${u.perm_euro?'checked':''}></td>
-                            <td class="p-4 text-center"><input type="checkbox" id="p_ev_${eid}" ${u.perm_ev?'checked':''}></td>
-                            <td class="p-4 text-center"><input type="checkbox" id="p_dis_${eid}" ${u.perm_disabled?'checked':''}></td>
-                            <td class="p-4 text-right space-x-2">
-                                <button onclick="saveUserPerms('${u.email}', '${eid}')" class="text-blue-600 font-bold text-xs border border-blue-600 px-2 py-1 rounded">Zapisz</button>
-                                <button onclick="toggleUser('${u.email}', ${!u.is_disabled})" class="${u.is_disabled?'text-green-500':'text-red-500'} font-bold text-xs">
-                                    ${u.is_disabled ? 'Odblokuj' : 'Blokuj'}
-                                </button>
-                            </td>
-                        </tr>
-                    `;
-                });
-            } catch(e) {}
-        }
+function renderGroupCheckboxes() {
+  const container = document.getElementById('groups-container');
+  container.innerHTML = '';
+  AVAILABLE_GROUPS.forEach(g => {
+    const id = 'group_' + g.name;
+    container.innerHTML += `<label class="flex items-center gap-2"><input type="checkbox" class="group-checkbox" value="${g.name}" id="${id}" checked> ${g.name}</label>`;
+  });
+}
 
-        async function saveUserPerms(email, eid) {
-            const euro = document.getElementById(`p_euro_${eid}`).checked;
-            const ev = document.getElementById(`p_ev_${eid}`).checked;
-            const dis = document.getElementById(`p_dis_${eid}`).checked;
-            try {
-                const res = await fetch(API_BASE + "/api/v1/admin/update_permissions", {
-                    method: 'POST', headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ target_email: email, perm_euro: euro, perm_ev: ev, perm_disabled: dis })
-                });
-                if(res.ok) alert("Zapisano!");
-            } catch(e) { alert("Błąd"); }
-        }
+async function createGroup() {
+  const name = document.getElementById('new-group-name').value.trim();
+  if(!name) return alert("Podaj nazwę grupy");
+  try {
+    const res = await fetch(API_BASE + "/api/v1/admin/groups/create", {
+      method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ name: name })
+    });
+    if(res.ok) { alert("Dodano grupę"); document.getElementById('new-group-name').value=''; fetchGroups(); }
+    else { const j = await res.json(); alert(j.detail || "Błąd"); }
+  } catch(e){ alert("Błąd sieci"); }
+}
 
-        async function toggleUser(email, status) {
-             if(!confirm(status ? "Zablokować?" : "Odblokować?")) return;
-             await fetch(API_BASE + "/api/v1/admin/toggle_user", {
-                method: 'POST', headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ target_email: email, is_disabled: status })
-            });
-            fetchUsers();
-        }
+async function fetchAdmins() {
+  const tbody = document.getElementById('table-admins-body');
+  try {
+    const res = await fetch(API_BASE + "/api/v1/admin/list");
+    if(!res.ok) return;
+    const list = await res.json();
+    tbody.innerHTML = '';
+    list.forEach(a => {
+      tbody.innerHTML += `
+      <tr class="hover:bg-gray-50 dark:hover:bg-gray-700 border-b dark:border-gray-700">
+        <td class="p-4 font-bold dark:text-white">${a.username}</td>
+        <td class="p-4 dark:text-gray-300">${a.badge_name}</td>
+        <td class="p-4 text-xs font-mono text-gray-500">${a.permissions}</td>
+        <td class="p-4 text-right space-x-2">
+          <button onclick='editAdmin(${JSON.stringify(a)})' class="text-blue-500 font-bold">Edytuj</button>
+          ${a.username !== 'admin' ? `<button onclick="deleteAdmin(${a.id})" class="text-red-500 font-bold">Usuń</button>` : ''}
+        </td>
+      </tr>
+      `;
+    });
+  } catch(e) {}
+}
 
-        function logout() { location.reload(); }
-        function switchView(v) { 
-            ['dashboard','settings','users','admins'].forEach(x => { document.getElementById('view-'+x)?.classList.add('hidden'); }); 
-            document.getElementById('view-'+v)?.classList.remove('hidden'); 
-            if(v==='admins') fetchAdmins();
-            if(v==='users') fetchUsers();
-        }
+async function saveAdmin() {
+  const id = document.getElementById('edit-admin-id').value;
+  const u = document.getElementById('new-admin-user').value;
+  const p = document.getElementById('new-admin-pass').value;
+  const b = document.getElementById('new-admin-badge').value;
+  const perms = Array.from(document.querySelectorAll('.perm-check:checked')).map(c => c.value).join(',');
 
-        function initDashboard() {
-            const today = new Date();
-            document.getElementById('date-end').valueAsDate = today;
-            const lastWeek = new Date(); lastWeek.setDate(today.getDate() - 7);
-            document.getElementById('date-start').valueAsDate = lastWeek;
-            const ctx = document.getElementById('reportChart').getContext('2d');
-            reportChart = new Chart(ctx, { 
-                type: 'line', 
-                data: { labels: Array.from({length: 24}, (_, i) => `${i}:00`), datasets: [] }, 
-                options: { responsive: true, maintainAspectRatio: false } 
-            });
-            refreshData();
-        }
+  if(!u) return alert("Podaj login");
 
-        async function generateReport() {
-            const start = document.getElementById('date-start').value;
-            const end = document.getElementById('date-end').value;
-            // FIX: Pobieramy tylko zaznaczone grupy
-            const checkedBoxes = document.querySelectorAll('.group-checkbox:checked');
-            const groups = Array.from(checkedBoxes).map(cb => cb.value);
-            
-            if(groups.length === 0) { alert("Wybierz strefę!"); return; }
+  const endpoint = id ? "/api/v1/admin/update" : "/api/v1/admin/create";
+  const payload = { username: u, password: p, badge_name: b || 'Admin', permissions: perms };
+  if(id) { payload.id = parseInt(id); }
+  try {
+    const res = await fetch(API_BASE + endpoint, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+    if(res.ok) { alert("Zapisano!"); cancelEdit(); fetchAdmins(); } else { const j = await res.json(); alert(j.detail || "Błąd"); }
+  } catch(e) { alert("Błąd sieci"); }
+}
 
-            const requesterPerms = CURRENT_USER.permissions || "ALL";
-            try {
-                const res = await fetch(API_BASE + "/api/v1/dashboard/raport", {
-                    method: 'POST', headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        start_date: start, end_date: end, groups: groups,
-                        include_workdays: true, include_weekends: true, include_holidays: true,
-                        requester_permissions: requesterPerms
-                    })
-                });
-                const reportData = await res.json();
-                reportChart.data.datasets = [];
-                groups.forEach(g => {
-                    if (reportData[g]) {
-                        reportChart.data.datasets.push({
-                            label: g, data: reportData[g], borderColor: g==='EURO'?'blue':'red', borderWidth: 2
-                        });
-                    }
-                });
-                reportChart.update();
-            } catch(e) { alert("Błąd raportu"); }
-        }
-        
-        async function refreshData() {
-             try {
-                 const res = await fetch(API_URL + "?limit=500"); 
-                 const data = await res.json(); 
-                 document.getElementById('count-total').innerText = data.length;
-                 document.getElementById('count-occupied').innerText = data.filter(d => d.status === 1).length;
-                 document.getElementById('count-free').innerText = data.filter(d => d.status === 0).length;
-             } catch(e) {}
-        }
-    </script>
+function editAdmin(admin) {
+  document.getElementById('edit-admin-id').value = admin.id;
+  document.getElementById('new-admin-user').value = admin.username;
+  document.getElementById('new-admin-user').disabled = true;
+  document.getElementById('new-admin-badge').value = admin.badge_name;
+  document.getElementById('cancel-edit-btn').classList.remove('hidden');
+
+  document.querySelectorAll('.perm-check').forEach(c => c.checked = false);
+  if(admin.permissions) {
+    admin.permissions.split(',').forEach(p => {
+      const cb = document.querySelector(`.perm-check[value="${p}"]`);
+      if(cb) cb.checked = true;
+    });
+  }
+}
+
+function cancelEdit() {
+  document.getElementById('edit-admin-id').value = '';
+  document.getElementById('new-admin-user').value = '';
+  document.getElementById('new-admin-user').disabled = false;
+  document.getElementById('new-admin-pass').value = '';
+  document.getElementById('new-admin-badge').value = '';
+  document.getElementById('cancel-edit-btn').classList.add('hidden');
+  document.querySelectorAll('.perm-check').forEach(c => c.checked = false);
+}
+
+async function deleteAdmin(id) {
+  if(!confirm("Usunąć?")) return;
+  await fetch(API_BASE + "/api/v1/admin/delete", { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ target_id: id }) });
+  fetchAdmins();
+}
+
+async function fetchUsers() {
+  const tbody = document.getElementById('table-users-body');
+  try {
+    const res = await fetch(API_BASE + "/api/v1/admin/users");
+    if(!res.ok) return;
+    const list = await res.json();
+    tbody.innerHTML = '';
+    list.forEach(u => {
+      const eid = u.email.replace(/[^a-zA-Z0-9]/g, '_');
+      tbody.innerHTML += `
+      <tr class="hover:bg-gray-50 dark:hover:bg-gray-700 border-b dark:border-gray-700">
+        <td class="p-4 font-medium text-xs dark:text-white">${u.email}</td>
+        <td class="p-4 text-xs dark:text-gray-300">${u.vehicle_count} aut</td>
+        <td class="p-4 text-center"><input type="checkbox" id="p_euro_${eid}" ${u.perm_euro?'checked':''}></td>
+        <td class="p-4 text-center"><input type="checkbox" id="p_ev_${eid}" ${u.perm_ev?'checked':''}></td>
+        <td class="p-4 text-center"><input type="checkbox" id="p_dis_${eid}" ${u.perm_disabled?'checked':''}></td>
+        <td class="p-4 text-right space-x-2">
+          <button onclick="saveUserPerms('${u.email}', '${eid}')" class="text-blue-600 font-bold text-xs border border-blue-600 px-2 py-1 rounded">Zapisz</button>
+          <button onclick="toggleUser('${u.email}', ${!u.is_disabled})" class="${u.is_disabled?'text-green-500':'text-red-500'} font-bold text-xs">
+            ${u.is_disabled ? 'Odblokuj' : 'Blokuj'}
+          </button>
+        </td>
+      </tr>
+      `;
+    });
+  } catch(e) {}
+}
+
+async function saveUserPerms(email, eid) {
+  const euro = document.getElementById(`p_euro_${eid}`).checked;
+  const ev = document.getElementById(`p_ev_${eid}`).checked;
+  const dis = document.getElementById(`p_dis_${eid}`).checked;
+  try {
+    const res = await fetch(API_BASE + "/api/v1/admin/update_permissions", {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ target_email: email, perm_euro: euro, perm_ev: ev, perm_disabled: dis })
+    });
+    if(res.ok) alert("Zapisano!");
+  } catch(e) { alert("Błąd"); }
+}
+
+async function toggleUser(email, status) {
+  if(!confirm(status ? "Zablokować?" : "Odblokować?")) return;
+  await fetch(API_BASE + "/api/v1/admin/toggle_user", {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ target_email: email, is_disabled: status })
+  });
+  fetchUsers();
+}
+
+function logout() { location.reload(); }
+function switchView(v) {
+  ['dashboard','settings','users','admins'].forEach(x => { document.getElementById('view-'+x)?.classList.add('hidden'); });
+  document.getElementById('view-'+v)?.classList.remove('hidden');
+  if(v==='admins') fetchAdmins();
+  if(v==='users') fetchUsers();
+}
+
+function initDashboard() {
+  const today = new Date();
+  document.getElementById('date-end').valueAsDate = today;
+  const lastWeek = new Date(); lastWeek.setDate(today.getDate() - 7);
+  document.getElementById('date-start').valueAsDate = lastWeek;
+  const ctx = document.getElementById('reportChart').getContext('2d');
+  reportChart = new Chart(ctx, {
+    type: 'line',
+    data: { labels: Array.from({length: 24}, (_, i) => `${i}:00`), datasets: [] },
+    options: { responsive: true, maintainAspectRatio: false }
+  });
+
+  refreshData();
+  // preload admins & users if allowed
+  fetchAdmins();
+  fetchUsers();
+}
+
+async function generateReport() {
+  const start = document.getElementById('date-start').value;
+  const end = document.getElementById('date-end').value;
+  const checkedBoxes = document.querySelectorAll('.group-checkbox:checked');
+  const groups = Array.from(checkedBoxes).map(cb => cb.value);
+
+  const include_workdays = document.getElementById('filter-workdays').checked;
+  const include_weekends = document.getElementById('filter-weekends').checked;
+  const include_holidays = document.getElementById('filter-holidays').checked;
+
+  if(groups.length === 0) { alert("Wybierz strefę!"); return; }
+
+  const requesterPerms = CURRENT_USER.permissions || "ALL";
+  try {
+    const res = await fetch(API_BASE + "/api/v1/dashboard/raport", {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        start_date: start, end_date: end, groups: groups,
+        include_workdays: include_workdays, include_weekends: include_weekends, include_holidays: include_holidays,
+        requester_permissions: requesterPerms
+      })
+    });
+    if(!res.ok) { const j = await res.json().catch(()=>({})); alert(j.detail || "Błąd raportu"); return; }
+    const reportData = await res.json();
+    reportChart.data.datasets = [];
+    groups.forEach((g, idx) => {
+      if (reportData[g]) {
+        reportChart.data.datasets.push({
+          label: g,
+          data: reportData[g],
+          borderWidth: 2
+        });
+      }
+    });
+    reportChart.update();
+  } catch(e) { alert("Błąd raportu"); }
+}
+
+async function refreshData() {
+  try {
+    const res = await fetch(API_URL + "?limit=500");
+    const data = await res.json();
+    document.getElementById('count-total').innerText = data.length;
+    document.getElementById('count-occupied').innerText = data.filter(d => d.status === 1).length;
+    document.getElementById('count-free').innerText = data.filter(d => d.status === 0).length;
+  } catch(e) {}
+}
+</script>
 </body>
 </html>
