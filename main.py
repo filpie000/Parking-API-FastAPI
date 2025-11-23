@@ -72,9 +72,9 @@ class Admin(Base):
     id = Column(Integer, primary_key=True, autoincrement=True)
     username = Column(String, unique=True, index=True)
     password_hash = Column(String)
-    role = Column(String) # Zostawiamy dla kompatybilności
+    role = Column(String) # 'ALL' (SuperAdmin) lub 'CUSTOM' (Inni)
     badge_name = Column(String)
-    permissions = Column(String, default="") # NOWE: np. "VIEW_EURO,MANAGE_USERS"
+    permissions = Column(String, default="") # np. "VIEW_EURO,MANAGE_USERS"
 
 class AktualnyStan(Base):
     __tablename__ = "aktualny_stan"
@@ -113,10 +113,10 @@ class User(Base):
     is_disabled = Column(Boolean, default=False)
     dark_mode = Column(Boolean, default=False)
     
-    # UPRAWNIENIA UŻYTKOWNIKA (Dla filtrów w Appce)
-    perm_euro = Column(Boolean, default=False)
-    perm_ev = Column(Boolean, default=False)
-    perm_disabled = Column(Boolean, default=False)
+    # UPRAWNIENIA UŻYTKOWNIKA (RBAC dla kierowców)
+    perm_euro = Column(Boolean, default=False)     # Dostęp do strefy EURO
+    perm_ev = Column(Boolean, default=False)       # Dostęp do ładowarek
+    perm_disabled = Column(Boolean, default=False) # Dostęp do miejsc niepełnosprawnych
 
     vehicles = relationship("Vehicle", back_populates="owner")
     tickets = relationship("Ticket", back_populates="owner")
@@ -179,6 +179,7 @@ class UserPermissionsUpdate(BaseModel):
     perm_euro: bool
     perm_ev: bool
     perm_disabled: bool
+
 class DarkModeUpdate(BaseModel):
     token: str
     dark_mode: bool
@@ -200,8 +201,6 @@ class RaportRequest(BaseModel):
     include_workdays: bool
     include_weekends: bool
     include_holidays: bool
-    # Dodatkowe pole, aby backend wiedział, kto pyta (opcjonalnie weryfikacja tokena)
-    admin_role: Optional[str] = "ALL" 
 class TicketAdd(BaseModel):
     token: str
     sensor_id: str
@@ -245,12 +244,11 @@ class UserList(BaseModel):
     perm_ev: bool
     perm_disabled: bool
 
-# NOWE MODELE DLA ADMINÓW
 class NewAdmin(BaseModel):
     username: str
     password: str
     badge_name: str
-    permissions: str # np. "VIEW_EURO,MANAGE_USERS"
+    permissions: str 
 
 class AdminList(BaseModel):
     id: int
@@ -277,6 +275,23 @@ def calculate_occupancy_stats(sensor_prefix, selected_date_obj, selected_hour, d
 # --- APP ---
 app = FastAPI()
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
+
+# WebSocket
+class ConnectionManager:
+    def __init__(self): self.active_connections: List[WebSocket] = []
+    async def connect(self, websocket: WebSocket):
+        await websocket.accept()
+        self.active_connections.append(websocket)
+    def disconnect(self, websocket: WebSocket):
+        if websocket in self.active_connections: self.active_connections.remove(websocket)
+    async def broadcast(self, message: dict):
+        try:
+            message_binary = msgpack.packb(message)
+            for connection in list(self.active_connections):
+                try: await connection.send_bytes(message_binary)
+                except: self.disconnect(connection)
+        except: pass
+
 manager = ConnectionManager() 
 
 def send_push_notification(token, title, body, data):
@@ -322,17 +337,15 @@ def admin_login(data: AdminLogin, db: Session = Depends(get_db)):
     admin = db.query(Admin).filter(Admin.username == data.username).first()
     if not admin or not verify_password(data.password, admin.password_hash):
         raise HTTPException(401, "Błędny login/hasło")
-    
-    # Zwracamy uprawnienia
-    perms = admin.permissions if admin.permissions else ("ALL" if admin.role == "ALL" else "")
+    # SUPER ADMIN MA "ALL" PERMISSIONS
+    perms = "ALL" if admin.role == "ALL" else (admin.permissions or "")
     return {"status": "ok", "username": admin.username, "role": admin.role, "permissions": perms, "badge": admin.badge_name}
 
-# --- ADMIN MANAGEMENT (SUPER ADMIN ONLY) ---
+# --- ADMIN MANAGEMENT ---
 @app.get("/api/v1/admin/list")
 def list_admins(db: Session = Depends(get_db)):
-    # W produkcji tutaj check sesji
     admins = db.query(Admin).all()
-    return [AdminList(id=a.id, username=a.username, badge_name=a.badge_name, permissions=a.permissions or "") for a in admins]
+    return [AdminList(id=a.id, username=a.username, badge_name=a.badge_name, permissions=a.permissions or ("ALL" if a.role == "ALL" else "")) for a in admins]
 
 @app.post("/api/v1/admin/create")
 def create_admin(a: NewAdmin, db: Session = Depends(get_db)):
@@ -377,7 +390,15 @@ def me(token: str, db: Session = Depends(get_db)):
     user = db.query(User).filter(User.token == token).first(); 
     if not user: raise HTTPException(401, "Auth error")
     dm = getattr(user, 'dark_mode', False)
-    return {"email": user.email, "is_disabled": user.is_disabled, "perm_disabled": user.perm_disabled, "perm_ev": user.perm_ev, "perm_euro": user.perm_euro, "dark_mode": dm, "vehicles": [{"name": v.name, "plate": v.license_plate} for v in user.vehicles]}
+    return {
+        "email": user.email, 
+        "is_disabled": user.is_disabled, 
+        "perm_disabled": user.perm_disabled, 
+        "perm_ev": user.perm_ev,
+        "perm_euro": user.perm_euro,
+        "dark_mode": dm, 
+        "vehicles": [{"name": v.name, "plate": v.license_plate} for v in user.vehicles]
+    }
 @app.post("/api/v1/user/status")
 def status(s: StatusUpdate, db: Session = Depends(get_db)):
     user = db.query(User).filter(User.token == s.token).first(); 
@@ -414,7 +435,7 @@ def get_stat(limit: int = 100, db: Session = Depends(get_db)):
     return [m.to_dict() for m in db.query(AktualnyStan).limit(limit).all()]
 @app.get("/api/v1/prognoza/wszystkie_miejsca")
 def forecast(target_date: Optional[str] = None, target_hour: Optional[int] = None, db: Session = Depends(get_db)):
-    return {}
+    return {} 
 @app.post("/api/v1/statystyki/zajetosc")
 def stats(z: StatystykiZapytanie, db: Session = Depends(get_db)):
     return {"wynik_dynamiczny": {"procent_zajetosci": 0, "liczba_pomiarow": 0}} 
@@ -428,7 +449,6 @@ def obs(r: ObserwujRequest, db: Session = Depends(get_db)):
 
 @app.post("/api/v1/dashboard/raport")
 def rep(r: RaportRequest, request: Request, db: Session = Depends(get_db)):
-    # Tutaj można by sprawdzać uprawnienia (r.admin_role lub podobne)
     return {} 
 
 @app.post("/api/v1/debug/symulacja_sensora")
@@ -477,7 +497,7 @@ def update_offer_details(u: AirbnbUpdate, db: Session = Depends(get_db)):
     db.commit()
     return {"status": "updated"}
 
-# === ADMIN MANAGEMENT ===
+# === ADMIN USERS ===
 @app.get("/api/v1/admin/users")
 def get_all_users(db: Session = Depends(get_db)):
     users = db.query(User).all()
@@ -498,7 +518,7 @@ def update_user_permissions(u: UserPermissionsUpdate, db: Session = Depends(get_
     target.perm_euro = u.perm_euro
     target.perm_ev = u.perm_ev
     target.perm_disabled = u.perm_disabled
-    target.is_disabled = u.perm_disabled
+    target.is_disabled = u.perm_disabled # Sync z główną flagą
     db.commit()
     return {"status": "updated"}
 
@@ -539,7 +559,6 @@ def check_stale():
                     if chg and manager.active_connections: asyncio.run_coroutine_threadsafe(manager.broadcast(chg), asyncio.get_event_loop())
         except: pass
         time.sleep(120)
-
 @app.on_event("startup")
 async def start(): 
     threading.Thread(target=mqtt_loop, daemon=True).start(); threading.Thread(target=check_stale, daemon=True).start()
