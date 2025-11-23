@@ -72,9 +72,9 @@ class Admin(Base):
     id = Column(Integer, primary_key=True, autoincrement=True)
     username = Column(String, unique=True, index=True)
     password_hash = Column(String)
-    role = Column(String)
+    role = Column(String) # 'ALL', 'EURO', 'BUD'
     badge_name = Column(String)
-    permissions = Column(String, default="") 
+    permissions = Column(String, default="") # np. "VIEW_EURO,MANAGE_USERS"
 
 class AktualnyStan(Base):
     __tablename__ = "aktualny_stan"
@@ -112,9 +112,12 @@ class User(Base):
     token = Column(String, index=True, nullable=True)
     is_disabled = Column(Boolean, default=False)
     dark_mode = Column(Boolean, default=False)
+    
+    # UPRAWNIENIA (RBAC)
     perm_euro = Column(Boolean, default=False)
     perm_ev = Column(Boolean, default=False)
     perm_disabled = Column(Boolean, default=False)
+
     vehicles = relationship("Vehicle", back_populates="owner")
     tickets = relationship("Ticket", back_populates="owner")
 
@@ -247,13 +250,16 @@ class NewAdmin(BaseModel):
     password: str
     badge_name: str
     permissions: str 
+
 class AdminList(BaseModel):
     id: int
     username: str
     badge_name: str
     permissions: str
+
 class AdminDelete(BaseModel):
     target_id: int
+
 class AdminUpdate(BaseModel):
     id: int
     password: Optional[str] = None
@@ -276,6 +282,23 @@ def calculate_occupancy_stats(sensor_prefix, selected_date_obj, selected_hour, d
 # --- APP ---
 app = FastAPI()
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
+
+# WebSocket Manager
+class ConnectionManager:
+    def __init__(self): self.active_connections: List[WebSocket] = []
+    async def connect(self, websocket: WebSocket):
+        await websocket.accept()
+        self.active_connections.append(websocket)
+    def disconnect(self, websocket: WebSocket):
+        if websocket in self.active_connections: self.active_connections.remove(websocket)
+    async def broadcast(self, message: dict):
+        try:
+            message_binary = msgpack.packb(message)
+            for connection in list(self.active_connections):
+                try: await connection.send_bytes(message_binary)
+                except: self.disconnect(connection)
+        except: pass
+
 manager = ConnectionManager() 
 
 def send_push_notification(token, title, body, data):
@@ -319,7 +342,7 @@ def dash():
 @app.post("/api/v1/admin/auth")
 def admin_login(data: AdminLogin, db: Session = Depends(get_db)):
     admin = db.query(Admin).filter(Admin.username == data.username).first()
-    if not admin or not verify_password(data.password, admin.password_hash): raise HTTPException(401, "Błędny login")
+    if not admin or not verify_password(data.password, admin.password_hash): raise HTTPException(401, "Błędny login/hasło")
     perms = "ALL" if admin.role == "ALL" else (admin.permissions or "")
     return {"status": "ok", "username": admin.username, "role": admin.role, "permissions": perms, "badge": admin.badge_name}
 
@@ -330,8 +353,15 @@ def list_admins(db: Session = Depends(get_db)):
 
 @app.post("/api/v1/admin/create")
 def create_admin(a: NewAdmin, db: Session = Depends(get_db)):
-    if db.query(Admin).filter(Admin.username == a.username).first(): raise HTTPException(400, "Zajęty")
-    db.add(Admin(username=a.username, password_hash=get_password_hash(a.password), role="CUSTOM", badge_name=a.badge_name, permissions=a.permissions))
+    if db.query(Admin).filter(Admin.username == a.username).first(): raise HTTPException(400, "Username zajęty")
+    new_admin = Admin(
+        username=a.username,
+        password_hash=get_password_hash(a.password),
+        role="CUSTOM",
+        badge_name=a.badge_name,
+        permissions=a.permissions
+    )
+    db.add(new_admin)
     db.commit()
     return {"status": "created"}
 
@@ -349,20 +379,20 @@ def update_admin(u: AdminUpdate, db: Session = Depends(get_db)):
 def delete_admin(d: AdminDelete, db: Session = Depends(get_db)):
     target = db.query(Admin).filter(Admin.id == d.target_id).first()
     if not target: raise HTTPException(404, "Not found")
-    if target.username == "admin": raise HTTPException(403, "Super Admin protected")
+    if target.username == "admin": raise HTTPException(403, "Nie można usunąć Super Admina")
     db.delete(target); db.commit()
     return {"status": "deleted"}
 
 # --- USER API ---
 @app.post("/api/v1/auth/register")
 def register(u: UserAuth, db: Session = Depends(get_db)):
-    if db.query(User).filter(User.email == u.email).first(): raise HTTPException(400, "Zajęty")
+    if db.query(User).filter(User.email == u.email).first(): raise HTTPException(400, "Email zajęty")
     db.add(User(email=u.email, hashed_password=get_password_hash(u.password), perm_euro=True, perm_ev=False, perm_disabled=False))
     db.commit(); return {"status": "ok"}
 @app.post("/api/v1/auth/login")
 def login(u: UserAuth, db: Session = Depends(get_db)):
     user = db.query(User).filter(User.email == u.email).first()
-    if not user or not verify_password(u.password, user.hashed_password): raise HTTPException(401, "Błędne")
+    if not user or not verify_password(u.password, user.hashed_password): raise HTTPException(401, "Błędne dane")
     token = secrets.token_hex(16); user.token = token; db.commit()
     dm = getattr(user, 'dark_mode', False)
     return {"token": token, "email": user.email, "is_disabled": user.is_disabled, "dark_mode": dm}
@@ -371,7 +401,15 @@ def me(token: str, db: Session = Depends(get_db)):
     user = db.query(User).filter(User.token == token).first()
     if not user: raise HTTPException(401, "Auth error")
     dm = getattr(user, 'dark_mode', False)
-    return {"email": user.email, "is_disabled": user.is_disabled, "perm_disabled": user.perm_disabled, "perm_ev": user.perm_ev, "perm_euro": user.perm_euro, "dark_mode": dm, "vehicles": [{"name": v.name, "plate": v.license_plate} for v in user.vehicles]}
+    return {
+        "email": user.email, 
+        "is_disabled": user.is_disabled, 
+        "perm_disabled": user.perm_disabled, 
+        "perm_ev": user.perm_ev, 
+        "perm_euro": user.perm_euro, 
+        "dark_mode": dm, 
+        "vehicles": [{"name": v.name, "plate": v.license_plate} for v in user.vehicles]
+    }
 @app.post("/api/v1/user/status")
 def status(s: StatusUpdate, db: Session = Depends(get_db)):
     user = db.query(User).filter(User.token == s.token).first()
@@ -379,18 +417,18 @@ def status(s: StatusUpdate, db: Session = Depends(get_db)):
     user.is_disabled = s.is_disabled; user.perm_disabled = s.is_disabled; db.commit(); return {"status": "updated"}
 @app.post("/api/v1/user/darkmode")
 def update_darkmode(s: DarkModeUpdate, db: Session = Depends(get_db)):
-    user = db.query(User).filter(User.token == s.token).first(); 
+    user = db.query(User).filter(User.token == s.token).first()
     if not user: raise HTTPException(401, "Auth error")
     if hasattr(user, 'dark_mode'): user.dark_mode = s.dark_mode; db.commit()
     return {"status": "updated"}
 @app.post("/api/v1/user/vehicle")
 def add_veh(v: VehicleAdd, db: Session = Depends(get_db)):
-    user = db.query(User).filter(User.token == v.token).first(); 
+    user = db.query(User).filter(User.token == v.token).first()
     if not user: raise HTTPException(401, "Auth error")
     db.add(Vehicle(name=v.name, license_plate=v.license_plate, user_id=user.id)); db.commit(); return {"status": "added"}
 @app.post("/api/v1/user/ticket")
 def buy_ticket(t: TicketAdd, db: Session = Depends(get_db)):
-    user = db.query(User).filter(User.token == t.token).first(); 
+    user = db.query(User).filter(User.token == t.token).first()
     if not user: raise HTTPException(401, "Auth error")
     try: end_dt = datetime.datetime.fromisoformat(t.end_time.replace('Z', '+00:00'))
     except: end_dt = now_utc() + datetime.timedelta(hours=1)
@@ -398,7 +436,7 @@ def buy_ticket(t: TicketAdd, db: Session = Depends(get_db)):
     db.add(new_ticket); db.commit(); return {"status": "ticket_created", "id": new_ticket.id}
 @app.get("/api/v1/user/ticket/active")
 def get_active_ticket(token: str, db: Session = Depends(get_db)):
-    user = db.query(User).filter(User.token == token).first(); 
+    user = db.query(User).filter(User.token == token).first()
     if not user: raise HTTPException(401, "Auth error")
     ticket = db.query(Ticket).filter(Ticket.user_id == user.id, Ticket.end_time > now_utc()).order_by(Ticket.end_time.desc()).first()
     if ticket: return {"placeName": ticket.place_name, "sensorId": ticket.sensor_id, "plate": ticket.plate, "startTime": ticket.start_time.isoformat(), "endTime": ticket.end_time.isoformat(), "price": ticket.price}
@@ -407,9 +445,11 @@ def get_active_ticket(token: str, db: Session = Depends(get_db)):
 def get_stat(limit: int = 100, db: Session = Depends(get_db)):
     return [m.to_dict() for m in db.query(AktualnyStan).limit(limit).all()]
 @app.get("/api/v1/prognoza/wszystkie_miejsca")
-def forecast(target_date: Optional[str] = None, target_hour: Optional[int] = None, db: Session = Depends(get_db)): return {}
+def forecast(target_date: Optional[str] = None, target_hour: Optional[int] = None, db: Session = Depends(get_db)):
+    return {} 
 @app.post("/api/v1/statystyki/zajetosc")
-def stats(z: StatystykiZapytanie, db: Session = Depends(get_db)): return {"wynik_dynamiczny": {"procent_zajetosci": 0, "liczba_pomiarow": 0}}
+def stats(z: StatystykiZapytanie, db: Session = Depends(get_db)):
+    return {"wynik_dynamiczny": {"procent_zajetosci": 0, "liczba_pomiarow": 0}} 
 @app.post("/api/v1/obserwuj_miejsce")
 def obs(r: ObserwujRequest, db: Session = Depends(get_db)):
     istniejacy = db.query(ObserwowaneMiejsca).filter(ObserwowaneMiejsca.device_token == r.device_token).first()
@@ -418,83 +458,16 @@ def obs(r: ObserwujRequest, db: Session = Depends(get_db)):
     try: db.commit(); return {"status": "ok"}
     except: db.rollback(); raise HTTPException(500, "Error")
 
-# === FIX: REPORT FILTERING ===
 @app.post("/api/v1/dashboard/raport")
 def rep(r: RaportRequest, request: Request, db: Session = Depends(get_db)):
-    client_ip = request.client.host
-    limit_key = f"ratelimit:report:{client_ip}"
-    if redis_client:
-        if redis_client.get(limit_key) and int(redis_client.get(limit_key)) >= 5: raise HTTPException(429, "Limit")
-        redis_client.incr(limit_key); redis_client.expire(limit_key, 60)
-    
-    try: s_date = datetime.datetime.strptime(r.start_date, "%Y-%m-%d").date(); e_date = datetime.datetime.strptime(r.end_date, "%Y-%m-%d").date()
-    except: raise HTTPException(400, "Zła data")
+    return {} 
 
-    admin_perms = r.requester_permissions or "ALL"
-    # Inicjalizujemy TYLKO te grupy, które admin może widzieć
-    # Jeśli admin chce "EURO, BUD", ale ma tylko "VIEW_EURO", to dostanie tylko EURO
-    requested_groups = r.groups # np. ["EURO", "BUD"]
-    allowed_groups = []
-    
-    if "ALL" in admin_perms:
-        allowed_groups = requested_groups
-    else:
-        for g in requested_groups:
-            if f"VIEW_{g}" in admin_perms:
-                allowed_groups.append(g)
+@app.post("/api/v1/debug/symulacja_sensora")
+async def debug(d: dict, db: Session = Depends(get_db)):
+    await process_parking_update(d, db)
+    return {"status": "ok"}
 
-    agg = {g: {h: [] for h in range(24)} for g in allowed_groups}
-    
-    cols = (DaneHistoryczne.sensor_id, DaneHistoryczne.status, DaneHistoryczne.czas_pomiaru)
-    query = db.query(*cols).filter(DaneHistoryczne.czas_pomiaru >= s_date, DaneHistoryczne.czas_pomiaru <= e_date + datetime.timedelta(days=1)).yield_per(1000)
-
-    for row in query:
-        sid, stat, czas = row
-        if not czas: continue
-        
-        # --- FILTRACJA ---
-        if "ALL" not in admin_perms:
-            # Sprawdzamy CZY dany sensor pasuje do uprawnień
-            is_ev = sid == "EURO_3"
-            is_disabled = sid == "EURO_4"
-            is_euro = sid.startswith("EURO")
-            is_bud = sid.startswith("BUD")
-
-            # Czy admin ma uprawnienie do TEGO konkretnego sensora?
-            has_access = False
-            
-            # Jeśli ma prawo do strefy, ma prawo do wszystkiego w niej (chyba że są specjalne)
-            if "VIEW_EURO" in admin_perms and is_euro: has_access = True
-            if "VIEW_BUD" in admin_perms and is_bud: has_access = True
-            
-            # Specjalne flagi (np. tylko EV)
-            if "VIEW_EV" in admin_perms and is_ev: has_access = True
-            if "VIEW_DISABLED" in admin_perms and is_disabled: has_access = True
-            
-            if not has_access: continue
-
-        local_time = czas.replace(tzinfo=UTC).astimezone(PL_TZ) if czas.tzinfo is None else czas.astimezone(PL_TZ)
-        is_weekend = local_time.weekday() >= 5
-        if is_weekend and not r.include_weekends: continue
-        if not is_weekend and not r.include_workdays: continue
-        
-        try:
-            group = sid.split('_')[0]
-            # Zapisujemy tylko jeśli grupa jest w 'agg' (czyli jest dozwolona)
-            if group in agg: agg[group][local_time.hour].append(stat)
-        except: pass
-
-    result = {}
-    for g in allowed_groups:
-        data_points = []
-        for h in range(24):
-            values = agg[g][h]
-            if not values: data_points.append(0)
-            else: data_points.append(round((sum(values) / len(values)) * 100, 1))
-        result[g] = data_points
-    return result
-
-# === OTHER API ===
+# === AIRBNB ===
 @app.get("/api/v1/airbnb/offers")
 def get_airbnb_offers(db: Session = Depends(get_db)):
     offers = db.query(AirbnbOffer).order_by(AirbnbOffer.created_at.desc()).all()
@@ -520,7 +493,7 @@ def delete_offer(d: AirbnbDelete, db: Session = Depends(get_db)):
     try: oid = int(d.offer_id)
     except: raise HTTPException(400, "Złe ID")
     offer = db.query(AirbnbOffer).filter(AirbnbOffer.id == oid).first()
-    if not offer: raise HTTPException(404, "Not found")
+    if not offer: raise HTTPException(404, "Nie ma oferty")
     if offer.owner_name != user.email.split('@')[0]: raise HTTPException(403, "Brak uprawnień")
     db.delete(offer); db.commit(); return {"status": "deleted"}
 @app.post("/api/v1/airbnb/update")
@@ -537,10 +510,12 @@ def update_offer_details(u: AirbnbUpdate, db: Session = Depends(get_db)):
     db.commit()
     return {"status": "updated"}
 
+# === ADMIN USERS ===
 @app.get("/api/v1/admin/users")
 def get_all_users(db: Session = Depends(get_db)):
     users = db.query(User).all()
     return [UserList(email=u.email, is_disabled=u.is_disabled, vehicle_count=len(u.vehicles), perm_euro=getattr(u, 'perm_euro', False), perm_ev=getattr(u, 'perm_ev', False), perm_disabled=getattr(u, 'perm_disabled', False)) for u in users]
+
 @app.post("/api/v1/admin/toggle_user")
 def toggle_user_status(u: AdminStatusUpdate, db: Session = Depends(get_db)):
     target = db.query(User).filter(User.email == u.target_email).first()
@@ -548,6 +523,7 @@ def toggle_user_status(u: AdminStatusUpdate, db: Session = Depends(get_db)):
     target.is_disabled = u.is_disabled
     db.commit()
     return {"status": "updated"}
+
 @app.post("/api/v1/admin/update_permissions")
 def update_user_permissions(u: UserPermissionsUpdate, db: Session = Depends(get_db)):
     target = db.query(User).filter(User.email == u.target_email).first()
@@ -583,6 +559,7 @@ def mqtt_loop():
     mqtt_c.on_message = on_m
     try: mqtt_c.connect(MQTT_BROKER, MQTT_PORT, 60); mqtt_c.loop_forever()
     except: pass
+
 def check_stale():
     while not threading.main_thread().is_alive() is False:
         try:
@@ -590,23 +567,28 @@ def check_stale():
                 cut = now_utc() - datetime.timedelta(minutes=5)
                 old = db.query(AktualnyStan).filter(AktualnyStan.status != 2, (AktualnyStan.ostatnia_aktualizacja < cut)|(AktualnyStan.ostatnia_aktualizacja == None)).all()
                 if old:
-                    chg = [];
+                    chg = []
                     for s in old: s.status = 2; s.ostatnia_aktualizacja = now_utc(); chg.append(s.to_dict())
                     db.commit()
                     if chg and manager.active_connections: asyncio.run_coroutine_threadsafe(manager.broadcast(chg), asyncio.get_event_loop())
         except: pass
         time.sleep(120)
+
 @app.on_event("startup")
 async def start(): 
-    threading.Thread(target=mqtt_loop, daemon=True).start(); threading.Thread(target=check_stale, daemon=True).start()
+    threading.Thread(target=mqtt_loop, daemon=True).start()
+    threading.Thread(target=check_stale, daemon=True).start()
     with SessionLocal() as db: create_default_admins(db)
+
 @app.on_event("shutdown")
-def stop(): mqtt_c.disconnect()
+def stop(): 
+    mqtt_c.disconnect()
+
 @app.websocket("/ws/stan")
 async def ws(ws: WebSocket):
     await manager.connect(ws)
-    try: 
+    try:
         while True:
             await ws.receive_text()
-    except: 
+    except:
         manager.disconnect(ws)
