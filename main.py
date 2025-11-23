@@ -125,7 +125,7 @@ class Ticket(Base):
     price = Column(Float)
     owner = relationship("User", back_populates="tickets")
 
-# FIX: AKTUALIZACJA MODELU AIRBNB
+# AIRBNB MODEL
 class AirbnbOffer(Base):
     __tablename__ = "airbnb_offers"
     id = Column(Integer, primary_key=True, autoincrement=True)
@@ -133,17 +133,17 @@ class AirbnbOffer(Base):
     description = Column(String)
     price = Column(String)
     availability = Column(String)
-    period = Column(String) # Np. "Pn-Pt"
+    period = Column(String)
     owner_name = Column(String)
     contact = Column(String)
     rating = Column(Float, default=0.0)
     created_at = Column(DateTime(timezone=True), default=now_utc)
     latitude = Column(Float, nullable=True)
     longitude = Column(Float, nullable=True)
-    # NOWE POLA
+    # Nowe pola
     district = Column(String, nullable=True)
-    start_date = Column(String, nullable=True) # YYYY-MM-DD
-    end_date = Column(String, nullable=True)   # YYYY-MM-DD
+    start_date = Column(String, nullable=True)
+    end_date = Column(String, nullable=True)
 
 Base.metadata.create_all(bind=engine)
 
@@ -182,26 +182,22 @@ class TicketAdd(BaseModel):
     plate: str
     end_time: str
     price: float
-class AirbnbLocationUpdate(BaseModel):
-    token: str
-    offer_id: str
-    latitude: float
-    longitude: float
-
-# AKTUALIZACJA MODELI DANYCH
 class AirbnbAdd(BaseModel):
     token: str
     title: str
     description: str
     price: str
-    availability: str # np. "8-16"
+    availability: str
     latitude: Optional[float] = None
     longitude: Optional[float] = None
-    # NOWE POLA
     district: str
     start_date: str
     end_date: str
-
+class AirbnbLocationUpdate(BaseModel):
+    token: str
+    offer_id: str
+    latitude: float
+    longitude: float
 class AirbnbUpdate(BaseModel):
     token: str
     offer_id: str 
@@ -210,7 +206,6 @@ class AirbnbUpdate(BaseModel):
     price: str
     availability: str
     district: Optional[str] = None
-
 class AirbnbDelete(BaseModel):
     token: str
     offer_id: str
@@ -231,6 +226,23 @@ def calculate_occupancy_stats(sensor_prefix, selected_date_obj, selected_hour, d
 # --- APP ---
 app = FastAPI()
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
+
+# WebSocket
+class ConnectionManager:
+    def __init__(self): self.active_connections: List[WebSocket] = []
+    async def connect(self, websocket: WebSocket):
+        await websocket.accept()
+        self.active_connections.append(websocket)
+    def disconnect(self, websocket: WebSocket):
+        if websocket in self.active_connections: self.active_connections.remove(websocket)
+    async def broadcast(self, message: dict):
+        try:
+            message_binary = msgpack.packb(message)
+            for connection in list(self.active_connections):
+                try: await connection.send_bytes(message_binary)
+                except: self.disconnect(connection)
+        except: pass
+
 manager = ConnectionManager() 
 
 def send_push_notification(token, title, body, data):
@@ -239,9 +251,28 @@ def send_push_notification(token, title, body, data):
         requests.post("https://exp.host/--/api/v2/push/send", json=payload, timeout=3)
     except Exception as e: logger.error(f"PUSH ERROR: {e}")
 
-async def process_parking_update(dane, db):
-    # ... (Logika PUSH bez zmian) ...
-    pass
+async def process_parking_update(dane: dict, db: Session):
+    if "sensor_id" not in dane: return
+    sid = dane["sensor_id"]; status = dane["status"]; teraz = now_utc()
+    m = db.query(AktualnyStan).filter(AktualnyStan.sensor_id == sid).first()
+    prev = -1
+    if m: prev = m.status; m.status = status; m.ostatnia_aktualizacja = teraz
+    else: db.add(AktualnyStan(sensor_id=sid, status=status, ostatnia_aktualizacja=teraz))
+    if prev != status:
+        db.add(DaneHistoryczne(czas_pomiaru=teraz, sensor_id=sid, status=status))
+        chg = {"sensor_id": sid, "status": status}
+        if status == 1:
+             limit = datetime.timedelta(hours=12)
+             obs = db.query(ObserwowaneMiejsca).filter(ObserwowaneMiejsca.sensor_id == sid, (teraz - ObserwowaneMiejsca.czas_dodania) < limit).all()
+             if obs:
+                 grp = sid.split('_')[0]
+                 wolny = db.query(AktualnyStan).filter(AktualnyStan.sensor_id.startswith(grp), AktualnyStan.sensor_id != sid, AktualnyStan.status == 0).first()
+                 for o in obs:
+                     send_push_notification(o.device_token, "❌ Zajęte!", f"{sid} zajęte.", {"action": "reroute"})
+                     db.delete(o)
+        db.commit()
+        if manager.active_connections: await manager.broadcast([chg])
+    else: db.commit()
 
 # === ENDPOINTS ===
 @app.get("/")
@@ -322,34 +353,25 @@ def rep(r: RaportRequest, request: Request, db: Session = Depends(get_db)):
 @app.post("/api/v1/debug/symulacja_sensora")
 async def debug(d: dict, db: Session = Depends(get_db)): await process_parking_update(d, db); return {"status": "ok"}
 
-# === AIRBNB ENDPOINTS (ZMODYFIKOWANE) ===
+# === AIRBNB ENDPOINTS ===
 @app.get("/api/v1/airbnb/offers")
 def get_airbnb_offers(db: Session = Depends(get_db)):
     offers = db.query(AirbnbOffer).order_by(AirbnbOffer.created_at.desc()).all()
     return [{
         "id": str(o.id), "title": o.title, "description": o.description,
         "price": o.price, "availability": o.availability, 
-        "period": f"{o.start_date or 'Brak'} - {o.end_date or 'Brak'}", # Wyświetlamy daty
+        "period": f"{o.start_date or 'Brak'} - {o.end_date or 'Brak'}",
         "owner": o.owner_name, "rating": o.rating,
         "latitude": o.latitude, "longitude": o.longitude,
-        "district": o.district,
-        "start_date": o.start_date, "end_date": o.end_date # Zwracamy surowe daty do filtra
+        "district": o.district, "start_date": o.start_date, "end_date": o.end_date
     } for o in offers]
 
 @app.post("/api/v1/airbnb/add")
 def add_airbnb_offer(a: AirbnbAdd, db: Session = Depends(get_db)):
     user = db.query(User).filter(User.token == a.token).first()
     if not user: raise HTTPException(401, "Auth error")
-    new_offer = AirbnbOffer(
-        title=a.title, description=a.description, price=a.price, 
-        availability=a.availability, period="", # To pole można olać, używamy dat
-        owner_name=user.email.split('@')[0], contact=user.email, 
-        latitude=a.latitude, longitude=a.longitude,
-        district=a.district, start_date=a.start_date, end_date=a.end_date
-    )
-    db.add(new_offer)
-    db.commit()
-    return {"status": "added"}
+    new_offer = AirbnbOffer(title=a.title, description=a.description, price=a.price, availability=a.availability, period="", owner_name=user.email.split('@')[0], contact=user.email, latitude=a.latitude, longitude=a.longitude, district=a.district, start_date=a.start_date, end_date=a.end_date)
+    db.add(new_offer); db.commit(); return {"status": "added"}
 
 @app.post("/api/v1/airbnb/location")
 def update_offer_location(u: AirbnbLocationUpdate, db: Session = Depends(get_db)):
@@ -369,9 +391,7 @@ def delete_offer(d: AirbnbDelete, db: Session = Depends(get_db)):
     offer = db.query(AirbnbOffer).filter(AirbnbOffer.id == oid).first()
     if not offer: raise HTTPException(404, "Oferta nie znaleziona")
     if offer.owner_name != user.email.split('@')[0]: raise HTTPException(403, "Brak uprawnień do usunięcia tej oferty")
-    db.delete(offer)
-    db.commit()
-    return {"status": "deleted"}
+    db.delete(offer); db.commit(); return {"status": "deleted"}
 
 @app.post("/api/v1/airbnb/update")
 def update_offer_details(u: AirbnbUpdate, db: Session = Depends(get_db)):
@@ -382,21 +402,37 @@ def update_offer_details(u: AirbnbUpdate, db: Session = Depends(get_db)):
     offer = db.query(AirbnbOffer).filter(AirbnbOffer.id == oid).first()
     if not offer: raise HTTPException(404, "Oferta nie znaleziona")
     if offer.owner_name != user.email.split('@')[0]: raise HTTPException(403, "Brak uprawnień do edycji tej oferty")
-    offer.title = u.title
-    offer.description = u.description
-    offer.price = u.price
-    offer.availability = u.availability
-    if u.district: offer.district = u.district # Aktualizacja dzielnicy też
+    offer.title = u.title; offer.description = u.description; offer.price = u.price; offer.availability = u.availability; 
+    if u.district: offer.district = u.district
     db.commit()
     return {"status": "updated"}
 
 mqtt_c = mqtt.Client()
 def mqtt_loop():
-    # ...
-    pass
+    mqtt_c.on_connect = lambda c,u,f,r: c.subscribe(MQTT_TOPIC_SUBSCRIBE)
+    def on_m(c,u,m):
+        try:
+            sid_str = SENSOR_MAP.get((m.payload[0]<<8)|m.payload[1])
+            if sid_str:
+                loop = asyncio.new_event_loop(); asyncio.set_event_loop(loop);
+                with SessionLocal() as db: loop.run_until_complete(process_parking_update({"sensor_id": sid_str, "status": int(m.payload[2])}, db))
+        except: pass
+    mqtt_c.on_message = on_m
+    try: mqtt_c.connect(MQTT_BROKER, MQTT_PORT, 60); mqtt_c.loop_forever()
+    except: pass
 def check_stale():
-    # ...
-    pass
+    while not threading.main_thread().is_alive() is False:
+        try:
+            with SessionLocal() as db:
+                cut = now_utc() - datetime.timedelta(minutes=5)
+                old = db.query(AktualnyStan).filter(AktualnyStan.status != 2, (AktualnyStan.ostatnia_aktualizacja < cut)|(AktualnyStan.ostatnia_aktualizacja == None)).all()
+                if old:
+                    chg = [];
+                    for s in old: s.status = 2; s.ostatnia_aktualizacja = now_utc(); chg.append(s.to_dict())
+                    db.commit()
+                    if chg and manager.active_connections: asyncio.run_coroutine_threadsafe(manager.broadcast(chg), asyncio.get_event_loop())
+        except: pass
+        time.sleep(120)
 @app.on_event("startup")
 async def start(): threading.Thread(target=mqtt_loop, daemon=True).start(); threading.Thread(target=check_stale, daemon=True).start()
 @app.on_event("shutdown")
