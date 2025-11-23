@@ -72,7 +72,7 @@ class Admin(Base):
     id = Column(Integer, primary_key=True, autoincrement=True)
     username = Column(String, unique=True, index=True)
     password_hash = Column(String)
-    role = Column(String) # 'ALL' (SuperAdmin) lub 'CUSTOM' (Inni)
+    role = Column(String) # 'ALL', 'EURO', 'BUD'
     badge_name = Column(String)
     permissions = Column(String, default="") # np. "VIEW_EURO,MANAGE_USERS"
 
@@ -179,7 +179,6 @@ class UserPermissionsUpdate(BaseModel):
     perm_euro: bool
     perm_ev: bool
     perm_disabled: bool
-
 class DarkModeUpdate(BaseModel):
     token: str
     dark_mode: bool
@@ -326,6 +325,7 @@ async def process_parking_update(dane: dict, db: Session):
 # === ENDPOINTS ===
 @app.get("/")
 def root(): return {"msg": "API OK"}
+
 @app.get("/dashboard", response_class=HTMLResponse)
 def dash():
     try: return open("dashboard.html", "r", encoding="utf-8").read()
@@ -337,7 +337,6 @@ def admin_login(data: AdminLogin, db: Session = Depends(get_db)):
     admin = db.query(Admin).filter(Admin.username == data.username).first()
     if not admin or not verify_password(data.password, admin.password_hash):
         raise HTTPException(401, "Błędny login/hasło")
-    # SUPER ADMIN MA "ALL" PERMISSIONS
     perms = "ALL" if admin.role == "ALL" else (admin.permissions or "")
     return {"status": "ok", "username": admin.username, "role": admin.role, "permissions": perms, "badge": admin.badge_name}
 
@@ -394,8 +393,8 @@ def me(token: str, db: Session = Depends(get_db)):
         "email": user.email, 
         "is_disabled": user.is_disabled, 
         "perm_disabled": user.perm_disabled, 
-        "perm_ev": user.perm_ev,
-        "perm_euro": user.perm_euro,
+        "perm_ev": user.perm_ev, 
+        "perm_euro": user.perm_euro, 
         "dark_mode": dm, 
         "vehicles": [{"name": v.name, "plate": v.license_plate} for v in user.vehicles]
     }
@@ -452,7 +451,9 @@ def rep(r: RaportRequest, request: Request, db: Session = Depends(get_db)):
     return {} 
 
 @app.post("/api/v1/debug/symulacja_sensora")
-async def debug(d: dict, db: Session = Depends(get_db)): await process_parking_update(d, db); return {"status": "ok"}
+async def debug(d: dict, db: Session = Depends(get_db)):
+    await process_parking_update(d, db)
+    return {"status": "ok"}
 
 # === AIRBNB ===
 @app.get("/api/v1/airbnb/offers")
@@ -518,7 +519,7 @@ def update_user_permissions(u: UserPermissionsUpdate, db: Session = Depends(get_
     target.perm_euro = u.perm_euro
     target.perm_ev = u.perm_ev
     target.perm_disabled = u.perm_disabled
-    target.is_disabled = u.perm_disabled # Sync z główną flagą
+    target.is_disabled = u.perm_disabled 
     db.commit()
     return {"status": "updated"}
 
@@ -553,7 +554,7 @@ def check_stale():
                 cut = now_utc() - datetime.timedelta(minutes=5)
                 old = db.query(AktualnyStan).filter(AktualnyStan.status != 2, (AktualnyStan.ostatnia_aktualizacja < cut)|(AktualnyStan.ostatnia_aktualizacja == None)).all()
                 if old:
-                    chg = [];
+                    chg = []
                     for s in old: s.status = 2; s.ostatnia_aktualizacja = now_utc(); chg.append(s.to_dict())
                     db.commit()
                     if chg and manager.active_connections: asyncio.run_coroutine_threadsafe(manager.broadcast(chg), asyncio.get_event_loop())
@@ -567,6 +568,9 @@ async def start():
 def stop(): mqtt_c.disconnect()
 @app.websocket("/ws/stan")
 async def ws(ws: WebSocket):
-    await manager.connect(ws); 
-    try: while True: await ws.receive_text()
-    except: manager.disconnect(ws)
+    await manager.connect(ws)
+    try: 
+        while True:
+            await ws.receive_text()
+    except: 
+        manager.disconnect(ws)
