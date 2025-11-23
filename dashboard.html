@@ -27,17 +27,12 @@
                 <h2 class="text-2xl font-bold mt-2 text-gray-800 dark:text-white">Smart Parking</h2>
             </div>
             <div class="text-left text-sm text-gray-500 mb-4">
-                <p>Dostępne konta:</p>
-                <ul class="list-disc pl-5">
-                    <li>admin / admin123</li>
-                    <li>euro_admin / euro123</li>
-                    <li>bud_admin / bud123</li>
-                </ul>
+                <p>Zaloguj się do panelu administratora.</p>
             </div>
             <input type="text" id="login-user" placeholder="Login" class="w-full p-3 border rounded mb-3 bg-gray-50 dark:bg-gray-700 dark:border-gray-600 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500">
             <input type="password" id="login-pass" placeholder="Hasło" class="w-full p-3 border rounded mb-4 bg-gray-50 dark:bg-gray-700 dark:border-gray-600 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500">
-            <button onclick="login()" class="w-full bg-blue-600 text-white py-3 rounded font-bold hover:bg-blue-700 transition">Zaloguj się</button>
-            <p id="login-error" class="text-red-500 mt-3 hidden text-sm font-bold">Błędny login lub hasło!</p>
+            <button onclick="login()" id="login-btn" class="w-full bg-blue-600 text-white py-3 rounded font-bold hover:bg-blue-700 transition">Zaloguj się</button>
+            <p id="login-error" class="text-red-500 mt-3 hidden text-sm font-bold"></p>
         </div>
     </div>
 
@@ -49,6 +44,7 @@
             </div>
             <nav class="flex-1 p-4 space-y-2">
                 <button onclick="switchView('dashboard')" id="nav-dashboard" class="w-full text-left block p-3 rounded bg-blue-50 dark:bg-blue-900 text-blue-600 dark:text-blue-200 font-semibold transition"><i class="fas fa-chart-area mr-3 w-5"></i> Raporty</button>
+                <button onclick="switchView('users')" id="nav-users" class="w-full text-left hidden p-3 rounded hover:bg-gray-50 dark:hover:bg-gray-700 text-gray-600 dark:text-gray-400 transition"><i class="fas fa-users mr-3 w-5"></i> Użytkownicy</button>
                 <button onclick="switchView('settings')" id="nav-settings" class="w-full text-left block p-3 rounded hover:bg-gray-50 dark:hover:bg-gray-700 text-gray-600 dark:text-gray-400 transition"><i class="fas fa-cogs mr-3 w-5"></i> Ustawienia</button>
             </nav>
             <div class="p-4 border-t dark:border-gray-700 text-sm text-gray-500 dark:text-gray-400">Zalogowano jako:<br><b id="user-display" class="text-gray-800 dark:text-gray-200">User</b></div>
@@ -64,6 +60,8 @@
             </header>
 
             <div class="flex-1 overflow-auto p-6 scrollbar-thin relative">
+                
+                <!-- DASHBOARD -->
                 <div id="view-dashboard" class="space-y-6">
                     <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
                         <div class="bg-white dark:bg-gray-800 p-6 rounded-lg shadow border-l-4 border-green-500 flex justify-between items-center">
@@ -116,6 +114,28 @@
                         </div>
                     </div>
                 </div>
+
+                <!-- USERS -->
+                <div id="view-users" class="hidden space-y-6">
+                    <div class="bg-white dark:bg-gray-800 p-6 rounded-lg shadow">
+                        <h2 class="text-2xl font-bold mb-6 text-gray-800 dark:text-white border-b dark:border-gray-700 pb-4">Zarządzanie Użytkownikami</h2>
+                        <div class="overflow-x-auto">
+                            <table class="min-w-full text-left">
+                                <thead class="bg-gray-100 dark:bg-gray-700 text-gray-600 dark:text-gray-300 uppercase text-xs">
+                                    <tr>
+                                        <th class="p-4">Email</th>
+                                        <th class="p-4">Pojazdy</th>
+                                        <th class="p-4">Status</th>
+                                        <th class="p-4 text-right">Akcja</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="table-users-body" class="divide-y dark:divide-gray-700 text-sm text-gray-700 dark:text-gray-300"></tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- SETTINGS -->
                 <div id="view-settings" class="hidden space-y-6 max-w-2xl mx-auto">
                     <div class="bg-white dark:bg-gray-800 p-8 rounded-lg shadow"><h2 class="text-2xl font-bold mb-6 text-gray-800 dark:text-white border-b dark:border-gray-700 pb-4">Personalizacja</h2><div class="flex items-center justify-between mb-6"><div><h3 class="text-lg font-semibold dark:text-gray-200">Tryb Ciemny</h3></div><label class="relative inline-flex items-center cursor-pointer"><input type="checkbox" id="dark-mode-toggle" class="sr-only peer" onchange="toggleDarkMode()"><div class="w-11 h-6 bg-gray-200 rounded-full peer dark:bg-gray-700 peer-checked:bg-blue-600 peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all"></div></label></div></div>
                     <div class="bg-white dark:bg-gray-800 p-8 rounded-lg shadow"><h2 class="text-2xl font-bold mb-6 text-gray-800 dark:text-white border-b dark:border-gray-700 pb-4">Konto</h2><div class="grid grid-cols-2 gap-4 mb-4"><div><label class="block text-sm font-medium text-gray-500 dark:text-gray-400">Użytkownik</label><div class="mt-1 text-lg font-semibold dark:text-white" id="settings-username">--</div></div><div><label class="block text-sm font-medium text-gray-500 dark:text-gray-400">Strefa dostępu</label><div class="mt-1 text-lg font-semibold dark:text-white" id="settings-role">--</div></div></div><button onclick="logout()" class="text-red-600 hover:text-red-800 font-medium text-sm">Wyloguj</button></div>
@@ -125,16 +145,61 @@
     </div>
 
     <script>
-        // FIX: Powrót do prostej konfiguracji adresu
         const API_URL = window.location.origin + "/api/v1/aktualny_stan";
+        const API_BASE = window.location.origin;
         
-        const USERS = { 'admin': { pass: 'admin123', role: 'ALL', badge: 'Super Admin' }, 'euro_admin': { pass: 'euro123', role: 'EURO', badge: 'Admin EURO' }, 'bud_admin': { pass: 'bud123', role: 'BUD', badge: 'Admin BUD' } };
         let CURRENT_USER = null; let reportChart; let GROUP_COUNTS = {}; let ALL_GROUPS = [];
 
         function stringToColor(str) { let hash = 0; for (let i = 0; i < str.length; i++) hash = str.charCodeAt(i) + ((hash << 5) - hash); const c = (hash & 0x00FFFFFF).toString(16).toUpperCase(); return '#' + "00000".substring(0, 6 - c.length) + c; }
-        function login() { const user = document.getElementById('login-user').value.trim(); const pass = document.getElementById('login-pass').value.trim(); if (USERS[user] && USERS[user].pass === pass) { CURRENT_USER = { login: user, ...USERS[user] }; document.getElementById('login-overlay').style.display = 'none'; document.getElementById('app-content').classList.remove('hidden'); document.getElementById('user-display').innerText = user; document.getElementById('role-badge').innerText = CURRENT_USER.badge; document.getElementById('settings-username').innerText = user; document.getElementById('settings-role').innerText = CURRENT_USER.role === 'ALL' ? 'Pełny' : `Strefa ${CURRENT_USER.role}`; initDashboard(); } else { document.getElementById('login-error').classList.remove('hidden'); } }
+        
+        // === NEW LOGIN LOGIC ===
+        async function login() {
+            const user = document.getElementById('login-user').value.trim();
+            const pass = document.getElementById('login-pass').value.trim();
+            const errorMsg = document.getElementById('login-error');
+            const btn = document.getElementById('login-btn');
+
+            if(!user || !pass) { errorMsg.innerText = "Wypełnij wszystkie pola."; errorMsg.classList.remove('hidden'); return; }
+            
+            btn.disabled = true; btn.innerText = "Logowanie...";
+            errorMsg.classList.add('hidden');
+
+            try {
+                const res = await fetch(API_BASE + "/api/v1/admin/auth", {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ username: user, password: pass })
+                });
+                
+                if(res.ok) {
+                    const data = await res.json();
+                    CURRENT_USER = { login: data.username, role: data.role, badge: data.badge };
+                    
+                    document.getElementById('login-overlay').style.display = 'none';
+                    document.getElementById('app-content').classList.remove('hidden');
+                    document.getElementById('user-display').innerText = data.username;
+                    document.getElementById('role-badge').innerText = data.badge;
+                    document.getElementById('settings-username').innerText = data.username;
+                    document.getElementById('settings-role').innerText = data.role === 'ALL' ? 'Pełny' : `Strefa ${data.role}`;
+                    
+                    if(data.role === 'ALL') {
+                        document.getElementById('nav-users').classList.remove('hidden');
+                    }
+                    initDashboard();
+                } else {
+                    const err = await res.json();
+                    throw new Error(err.detail || "Błąd logowania");
+                }
+            } catch(e) {
+                errorMsg.innerText = e.message;
+                errorMsg.classList.remove('hidden');
+            } finally {
+                btn.disabled = false; btn.innerText = "Zaloguj się";
+            }
+        }
+        
         function logout() { location.reload(); }
-        function switchView(v) { ['dashboard','settings'].forEach(x => { document.getElementById('view-'+x).classList.add('hidden'); document.getElementById('nav-'+x).className = "w-full text-left block p-3 rounded hover:bg-gray-50 dark:hover:bg-gray-700 text-gray-600 dark:text-gray-400 transition"; }); document.getElementById('view-'+v).classList.remove('hidden'); document.getElementById('nav-'+v).className = "w-full text-left block p-3 rounded bg-blue-50 dark:bg-blue-900 text-blue-600 dark:text-blue-200 font-semibold transition"; }
+        function switchView(v) { ['dashboard','settings','users'].forEach(x => { document.getElementById('view-'+x).classList.add('hidden'); if(document.getElementById('nav-'+x)) document.getElementById('nav-'+x).className = "w-full text-left block p-3 rounded hover:bg-gray-50 dark:hover:bg-gray-700 text-gray-600 dark:text-gray-400 transition"; }); document.getElementById('view-'+v).classList.remove('hidden'); if(document.getElementById('nav-'+v)) document.getElementById('nav-'+v).className = "w-full text-left block p-3 rounded bg-blue-50 dark:bg-blue-900 text-blue-600 dark:text-blue-200 font-semibold transition"; if(v==='users') fetchUsers(); }
         function toggleDarkMode() { document.documentElement.classList.toggle('dark'); updateChartTheme(); }
         function initDashboard() { const today = new Date(); document.getElementById('date-end').valueAsDate = today; const lastWeek = new Date(); lastWeek.setDate(today.getDate() - 7); document.getElementById('date-start').valueAsDate = lastWeek; const ctx = document.getElementById('reportChart').getContext('2d'); reportChart = new Chart(ctx, { type: 'line', data: { labels: Array.from({length: 24}, (_, i) => `${i}:00`), datasets: [] }, options: { responsive: true, maintainAspectRatio: false, scales: { y: { beginAtZero: true, max: 100, title: { display: true, text: '% Zajętości' }, grid: { color: '#e5e7eb' } }, x: { grid: { display: false } } }, plugins: { tooltip: { mode: 'index', intersect: false }, legend: { labels: { color: '#6b7280' } } } } }); refreshData(); }
         function updateChartTheme() { if(!reportChart) return; const isDark = document.documentElement.classList.contains('dark'); const color = isDark ? '#9ca3af' : '#4b5563'; const grid = isDark ? '#374151' : '#e5e7eb'; reportChart.options.scales.x.ticks.color = color; reportChart.options.scales.y.ticks.color = color; reportChart.options.scales.y.grid.color = grid; reportChart.options.plugins.legend.labels.color = color; reportChart.update(); }
@@ -157,8 +222,7 @@
             if (selectedGroups.length === 0) { alert("Wybierz przynajmniej jedną strefę!"); return; }
             document.body.style.cursor = 'wait';
             try {
-                // FIX: Użycie window.location.origin jak w działającej wersji
-                const response = await fetch(window.location.origin + "/api/v1/dashboard/raport", {
+                const response = await fetch(API_BASE + "/api/v1/dashboard/raport", {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
@@ -179,6 +243,39 @@
                 reportChart.update();
             } catch (e) { console.error("Błąd raportu:", e); alert("Nie udało się wygenerować raportu."); } 
             finally { document.body.style.cursor = 'default'; }
+        }
+
+        async function fetchUsers() {
+            const tbody = document.getElementById('table-users-body');
+            tbody.innerHTML = '<tr><td colspan="4" class="p-4 text-center">Ładowanie...</td></tr>';
+            try {
+                const res = await fetch(API_BASE + "/api/v1/admin/users");
+                if (!res.ok) throw new Error("Brak uprawnień");
+                const users = await res.json();
+                tbody.innerHTML = '';
+                users.forEach(u => {
+                    const status = u.is_disabled ? 
+                        '<span class="text-red-600 font-bold">Zablokowany</span>' : 
+                        '<span class="text-green-600 font-bold">Aktywny</span>';
+                    const btnClass = u.is_disabled ? "bg-green-100 text-green-800 hover:bg-green-200" : "bg-red-100 text-red-800 hover:bg-red-200";
+                    const btnText = u.is_disabled ? "Odblokuj" : "Zablokuj";
+                    const tr = document.createElement('tr');
+                    tr.className = "hover:bg-gray-50 dark:hover:bg-gray-750 border-b dark:border-gray-700";
+                    tr.innerHTML = `<td class="p-4">${u.email}</td><td class="p-4">${u.vehicle_count}</td><td class="p-4">${status}</td><td class="p-4 text-right"><button onclick="toggleUserStatus('${u.email}', ${!u.is_disabled})" class="${btnClass} px-3 py-1 rounded text-xs font-bold transition">${btnText}</button></td>`;
+                    tbody.appendChild(tr);
+                });
+            } catch (e) { tbody.innerHTML = `<tr><td colspan="4" class="p-4 text-center text-red-500">Błąd pobierania: ${e.message}</td></tr>`; }
+        }
+
+        async function toggleUserStatus(email, newStatus) {
+            if(!confirm(`Czy na pewno chcesz ${newStatus ? 'zablokować' : 'odblokować'} użytkownika ${email}?`)) return;
+            try {
+                const res = await fetch(API_BASE + "/api/v1/admin/toggle_user", {
+                    method: 'POST', headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ target_email: email, is_disabled: newStatus })
+                });
+                if(res.ok) fetchUsers(); else alert("Błąd aktualizacji");
+            } catch(e) { console.error(e); }
         }
     </script>
 </body>
