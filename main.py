@@ -51,8 +51,10 @@ Base = declarative_base()
 
 def get_db():
     db = SessionLocal()
-    try: yield db
-    finally: db.close()
+    try: 
+        yield db
+    finally: 
+        db.close()
 
 REDIS_URL = os.environ.get('REDIS_URL')
 redis_client = None
@@ -66,7 +68,6 @@ GRUPY_SENSOROW = ["EURO", "BUD"]
 MANUALNA_MAPA_SWIAT = { date(2025, 1, 1): "Nowy Rok", date(2025, 4, 20): "Wielkanoc" }
 
 # --- DB MODELS ---
-
 class Admin(Base):
     __tablename__ = "admins"
     id = Column(Integer, primary_key=True, autoincrement=True)
@@ -80,7 +81,12 @@ class AktualnyStan(Base):
     sensor_id = Column(String, primary_key=True, index=True)
     status = Column(Integer, default=0)
     ostatnia_aktualizacja = Column(DateTime(timezone=True), default=now_utc)
-    def to_dict(self): return {"sensor_id": self.sensor_id, "status": self.status, "ostatnia_aktualizacja": self.ostatnia_aktualizacja.isoformat() if self.ostatnia_aktualizacja else None}
+    def to_dict(self): 
+        return {
+            "sensor_id": self.sensor_id, 
+            "status": self.status, 
+            "ostatnia_aktualizacja": self.ostatnia_aktualizacja.isoformat() if self.ostatnia_aktualizacja else None
+        }
 
 class DaneHistoryczne(Base):
     __tablename__ = "dane_historyczne"
@@ -112,10 +118,10 @@ class User(Base):
     is_disabled = Column(Boolean, default=False)
     dark_mode = Column(Boolean, default=False)
     
-    # NOWE UPRAWNIENIA (RBAC)
-    perm_euro = Column(Boolean, default=False)     # Dostęp do strefy EURO
-    perm_ev = Column(Boolean, default=False)       # Dostęp do ładowarek
-    perm_disabled = Column(Boolean, default=False) # Dostęp do miejsc niepełnosprawnych
+    # UPRAWNIENIA (RBAC)
+    perm_euro = Column(Boolean, default=False)
+    perm_ev = Column(Boolean, default=False)
+    perm_disabled = Column(Boolean, default=False)
 
     vehicles = relationship("Vehicle", back_populates="owner")
     tickets = relationship("Ticket", back_populates="owner")
@@ -173,7 +179,6 @@ class StatusUpdate(BaseModel):
 class AdminStatusUpdate(BaseModel):
     target_email: str
     is_disabled: bool
-# NOWY MODEL AKTUALIZACJI UPRAWNIEŃ
 class UserPermissionsUpdate(BaseModel):
     target_email: str
     perm_euro: bool
@@ -236,7 +241,6 @@ class AirbnbDelete(BaseModel):
     token: str
     offer_id: str
 
-# ZAKTUALIZOWANY MODEL LISTY USERÓW
 class UserList(BaseModel):
     email: str
     is_disabled: bool
@@ -250,27 +254,159 @@ def get_time_with_offset(base_hour, offset_minutes):
     base_dt = datetime.datetime(2000, 1, 1, base_hour, 0)
     offset_dt = base_dt + datetime.timedelta(minutes=offset_minutes)
     return offset_dt.time()
+
 def get_password_hash(password: str) -> str:
-    pwd_bytes = password.encode('utf-8'); salt = bcrypt.gensalt(); hashed = bcrypt.hashpw(pwd_bytes, salt); return hashed.decode('utf-8')
+    pwd_bytes = password.encode('utf-8')
+    salt = bcrypt.gensalt()
+    hashed = bcrypt.hashpw(pwd_bytes, salt)
+    return hashed.decode('utf-8')
+
 def verify_password(plain_password: str, hashed_password: str) -> bool:
-    try: return bcrypt.checkpw(plain_password.encode('utf-8'), hashed_password.encode('utf-8'))
-    except: return False
-def calculate_occupancy_stats(sensor_prefix, selected_date_obj, selected_hour, db):
-    return {"procent_zajetosci": 0, "liczba_pomiarow": 0, "kategoria": "Brak"} 
+    try:
+        return bcrypt.checkpw(plain_password.encode('utf-8'), hashed_password.encode('utf-8'))
+    except:
+        return False
+
+def calculate_occupancy_stats(sensor_prefix: str, selected_date_obj: date, selected_hour: int, db: Session) -> dict:
+    if not sensor_prefix: 
+        sensor_prefix = "EURO"
+    nazwa_swieta = MANUALNA_MAPA_SWIAT.get(selected_date_obj)
+    query = None
+    kategoria_str = ""
+    
+    if nazwa_swieta:
+        kategoria_str = f"Święto: {nazwa_swieta}"
+        query = db.query(DaneSwieta).filter(DaneSwieta.sensor_id.startswith(sensor_prefix), DaneSwieta.nazwa_swieta == nazwa_swieta)
+    else:
+        wd = selected_date_obj.weekday()
+        if wd <= 3: kategoria_str = "Dni robocze"
+        elif wd == 4: kategoria_str = "Piątek"
+        else: kategoria_str = "Weekend"
+        query = db.query(DaneHistoryczne).filter(DaneHistoryczne.sensor_id.startswith(sensor_prefix))
+
+    OFFSET = 60
+    try:
+        pocz = get_time_with_offset(selected_hour, -OFFSET)
+        kon = get_time_with_offset(selected_hour, OFFSET)
+    except: 
+        return {"procent_zajetosci": 0, "liczba_pomiarow": 0, "kategoria": "Błąd czasu"}
+
+    rows = query.limit(5000).all()
+    pasujace = []
+    for r in rows:
+        if not r.czas_pomiaru: continue
+        if isinstance(r.czas_pomiaru, str):
+             try: czas_db = datetime.datetime.fromisoformat(r.czas_pomiaru)
+             except: continue
+        else: czas_db = r.czas_pomiaru
+        
+        if czas_db.tzinfo is None: czas_pl = czas_db.replace(tzinfo=PL_TZ)
+        else: czas_pl = czas_db.astimezone(PL_TZ)
+        
+        if not nazwa_swieta:
+            if wd <= 3 and czas_pl.weekday() > 3: continue
+            if wd == 4 and czas_pl.weekday() != 4: continue
+            if wd >= 5 and czas_pl.weekday() < 5: continue
+
+        t = czas_pl.time()
+        match = False
+        if pocz > kon: 
+            if t >= pocz or t < kon: match = True
+        else:
+            if pocz <= t < kon: match = True
+        if match: pasujace.append(r.status)
+
+    if not pasujace: return {"procent_zajetosci": 0, "liczba_pomiarow": 0, "kategoria": kategoria_str}
+    zajete = pasujace.count(1)
+    return {"procent_zajetosci": round((zajete / len(pasujace)) * 100, 1), "liczba_pomiarow": len(pasujace), "kategoria": kategoria_str, "przedzial_czasu": f"{pocz} - {kon}"}
 
 # --- APP ---
 app = FastAPI()
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
+
+# WebSocket Manager
+class ConnectionManager:
+    def __init__(self): self.active_connections: List[WebSocket] = []
+    async def connect(self, websocket: WebSocket):
+        await websocket.accept()
+        self.active_connections.append(websocket)
+    def disconnect(self, websocket: WebSocket):
+        if websocket in self.active_connections: self.active_connections.remove(websocket)
+    async def broadcast(self, message: dict):
+        try:
+            message_binary = msgpack.packb(message)
+            for connection in list(self.active_connections):
+                try: await connection.send_bytes(message_binary)
+                except: self.disconnect(connection)
+        except: pass
+
 manager = ConnectionManager() 
 
 def send_push_notification(token, title, body, data):
     try: 
-        payload = {"to": token, "title": title, "body": body, "data": data, "sound": "default", "priority": "high", "channelId": "parking_alerts_v2", "_displayInForeground": True}
+        payload = {
+            "to": token, 
+            "title": title, 
+            "body": body, 
+            "data": data, 
+            "sound": "default", 
+            "priority": "high", 
+            "channelId": "parking_alerts_v2", 
+            "_displayInForeground": True
+        }
         requests.post("https://exp.host/--/api/v2/push/send", json=payload, timeout=3)
     except Exception as e: logger.error(f"PUSH ERROR: {e}")
 
-async def process_parking_update(dane, db):
-    pass
+async def process_parking_update(dane: dict, db: Session):
+    if "sensor_id" not in dane: return
+    sid = dane["sensor_id"]
+    status = dane["status"]
+    teraz = now_utc()
+    
+    m = db.query(AktualnyStan).filter(AktualnyStan.sensor_id == sid).first()
+    prev_status = -1
+    
+    if m:
+        prev_status = m.status
+        m.ostatnia_aktualizacja = teraz
+        m.status = status
+    else:
+        db.add(AktualnyStan(sensor_id=sid, status=status, ostatnia_aktualizacja=teraz))
+    
+    if prev_status != status:
+        db.add(DaneHistoryczne(czas_pomiaru=teraz, sensor_id=sid, status=status))
+        chg = {"sensor_id": sid, "status": status}
+        
+        if status == 1:
+             limit = datetime.timedelta(hours=12)
+             obs = db.query(ObserwowaneMiejsca).filter(
+                 ObserwowaneMiejsca.sensor_id == sid, 
+                 (teraz - ObserwowaneMiejsca.czas_dodania) < limit
+             ).all()
+             
+             if obs:
+                 grp = sid.split('_')[0]
+                 wolny = db.query(AktualnyStan).filter(AktualnyStan.sensor_id.startswith(grp), AktualnyStan.sensor_id != sid, AktualnyStan.status == 0).first()
+                 
+                 tytul = "❌ Zajęte!"
+                 tresc = f"Miejsce {sid} zostało zajęte."
+                 akcja = "reroute"
+                 target = None
+                 
+                 if wolny:
+                     tytul = "⚠️ Zmiana"
+                     tresc = f"{sid} zajęte. Wolne: {wolny.sensor_id}"
+                     akcja = "info"
+                     target = wolny.sensor_id
+                 
+                 for o in obs:
+                     send_push_notification(o.device_token, tytul, tresc, {"action": akcja, "new_target": target})
+                     db.delete(o)
+        
+        db.commit()
+        if manager.active_connections: await manager.broadcast([chg])
+    else:
+        db.commit()
 
 # === ENDPOINTS ===
 @app.get("/")
@@ -291,7 +427,6 @@ def admin_login(data: AdminLogin, db: Session = Depends(get_db)):
 @app.post("/api/v1/auth/register")
 def register(u: UserAuth, db: Session = Depends(get_db)):
     if db.query(User).filter(User.email == u.email).first(): raise HTTPException(400, "Email zajęty")
-    # Domyślne uprawnienia: tylko EURO, bez EV, bez Disabled
     db.add(User(email=u.email, hashed_password=get_password_hash(u.password), perm_euro=True, perm_ev=False, perm_disabled=False))
     db.commit()
     return {"status": "ok"}
@@ -300,7 +435,9 @@ def register(u: UserAuth, db: Session = Depends(get_db)):
 def login(u: UserAuth, db: Session = Depends(get_db)):
     user = db.query(User).filter(User.email == u.email).first()
     if not user or not verify_password(u.password, user.hashed_password): raise HTTPException(401, "Błędne dane")
-    token = secrets.token_hex(16); user.token = token; db.commit()
+    token = secrets.token_hex(16)
+    user.token = token
+    db.commit()
     dm = getattr(user, 'dark_mode', False)
     return {"token": token, "email": user.email, "is_disabled": user.is_disabled, "dark_mode": dm}
 
@@ -309,7 +446,6 @@ def me(token: str, db: Session = Depends(get_db)):
     user = db.query(User).filter(User.token == token).first()
     if not user: raise HTTPException(401, "Auth error")
     dm = getattr(user, 'dark_mode', False)
-    
     return {
         "email": user.email, 
         "is_disabled": user.is_disabled, 
@@ -324,8 +460,8 @@ def me(token: str, db: Session = Depends(get_db)):
 def status(s: StatusUpdate, db: Session = Depends(get_db)):
     user = db.query(User).filter(User.token == s.token).first()
     if not user: raise HTTPException(401, "Auth error")
-    user.is_disabled = s.is_disabled # To zmienia tylko status w profilu (self-toggle)
-    user.perm_disabled = s.is_disabled # Synchronizacja
+    user.is_disabled = s.is_disabled 
+    user.perm_disabled = s.is_disabled 
     db.commit()
     return {"status": "updated"}
 
@@ -333,30 +469,40 @@ def status(s: StatusUpdate, db: Session = Depends(get_db)):
 def update_darkmode(s: DarkModeUpdate, db: Session = Depends(get_db)):
     user = db.query(User).filter(User.token == s.token).first()
     if not user: raise HTTPException(401, "Auth error")
-    if hasattr(user, 'dark_mode'): user.dark_mode = s.dark_mode; db.commit()
+    if hasattr(user, 'dark_mode'):
+        user.dark_mode = s.dark_mode
+        db.commit()
     return {"status": "updated"}
 
 @app.post("/api/v1/user/vehicle")
 def add_veh(v: VehicleAdd, db: Session = Depends(get_db)):
     user = db.query(User).filter(User.token == v.token).first()
     if not user: raise HTTPException(401, "Auth error")
-    db.add(Vehicle(name=v.name, license_plate=v.license_plate, user_id=user.id)); db.commit(); return {"status": "added"}
+    db.add(Vehicle(name=v.name, license_plate=v.license_plate, user_id=user.id))
+    db.commit()
+    return {"status": "added"}
 
 @app.post("/api/v1/user/ticket")
 def buy_ticket(t: TicketAdd, db: Session = Depends(get_db)):
     user = db.query(User).filter(User.token == t.token).first()
     if not user: raise HTTPException(401, "Auth error")
-    try: end_dt = datetime.datetime.fromisoformat(t.end_time.replace('Z', '+00:00'))
+    try:
+        end_time_str = t.end_time.replace('Z', '+00:00')
+        end_dt = datetime.datetime.fromisoformat(end_time_str)
     except: end_dt = now_utc() + datetime.timedelta(hours=1)
     new_ticket = Ticket(user_id=user.id, sensor_id=t.sensor_id, place_name=t.place_name, plate=t.plate, start_time=now_utc(), end_time=end_dt, price=t.price)
-    db.add(new_ticket); db.commit(); return {"status": "ticket_created", "id": new_ticket.id}
+    db.add(new_ticket)
+    db.commit()
+    return {"status": "ticket_created", "id": new_ticket.id}
 
 @app.get("/api/v1/user/ticket/active")
 def get_active_ticket(token: str, db: Session = Depends(get_db)):
     user = db.query(User).filter(User.token == token).first()
     if not user: raise HTTPException(401, "Auth error")
-    ticket = db.query(Ticket).filter(Ticket.user_id == user.id, Ticket.end_time > now_utc()).order_by(Ticket.end_time.desc()).first()
-    if ticket: return {"placeName": ticket.place_name, "sensorId": ticket.sensor_id, "plate": ticket.plate, "startTime": ticket.start_time.isoformat(), "endTime": ticket.end_time.isoformat(), "price": ticket.price}
+    teraz = now_utc()
+    ticket = db.query(Ticket).filter(Ticket.user_id == user.id, Ticket.end_time > teraz).order_by(Ticket.end_time.desc()).first()
+    if ticket:
+        return {"placeName": ticket.place_name, "sensorId": ticket.sensor_id, "plate": ticket.plate, "startTime": ticket.start_time.isoformat(), "endTime": ticket.end_time.isoformat(), "price": ticket.price}
     return None
 
 @app.get("/api/v1/aktualny_stan")
@@ -374,17 +520,26 @@ def stats(z: StatystykiZapytanie, db: Session = Depends(get_db)):
 @app.post("/api/v1/obserwuj_miejsce")
 def obs(r: ObserwujRequest, db: Session = Depends(get_db)):
     istniejacy = db.query(ObserwowaneMiejsca).filter(ObserwowaneMiejsca.device_token == r.device_token).first()
-    if istniejacy: istniejacy.sensor_id = r.sensor_id; istniejacy.czas_dodania = now_utc()
-    else: db.add(ObserwowaneMiejsca(device_token=r.device_token, sensor_id=r.sensor_id))
-    try: db.commit(); return {"status": "ok"}
-    except: db.rollback(); raise HTTPException(500, "Error")
+    if istniejacy:
+        istniejacy.sensor_id = r.sensor_id
+        istniejacy.czas_dodania = now_utc()
+    else:
+        db.add(ObserwowaneMiejsca(device_token=r.device_token, sensor_id=r.sensor_id))
+    try:
+        db.commit()
+        return {"status": "ok"}
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(500, f"Błąd bazy: {e}")
 
 @app.post("/api/v1/dashboard/raport")
 def rep(r: RaportRequest, request: Request, db: Session = Depends(get_db)):
     return {} 
 
 @app.post("/api/v1/debug/symulacja_sensora")
-async def debug(d: dict, db: Session = Depends(get_db)): await process_parking_update(d, db); return {"status": "ok"}
+async def debug(d: dict, db: Session = Depends(get_db)):
+    await process_parking_update(d, db)
+    return {"status": "ok"}
 
 # === AIRBNB ENDPOINTS ===
 @app.get("/api/v1/airbnb/offers")
@@ -404,7 +559,9 @@ def add_airbnb_offer(a: AirbnbAdd, db: Session = Depends(get_db)):
     user = db.query(User).filter(User.token == a.token).first()
     if not user: raise HTTPException(401, "Auth error")
     new_offer = AirbnbOffer(title=a.title, description=a.description, price=a.price, availability=a.availability, period="", owner_name=user.email.split('@')[0], contact=user.email, latitude=a.latitude, longitude=a.longitude, district=a.district, start_date=a.start_date, end_date=a.end_date)
-    db.add(new_offer); db.commit(); return {"status": "added"}
+    db.add(new_offer)
+    db.commit()
+    return {"status": "added"}
 
 @app.post("/api/v1/airbnb/location")
 def update_offer_location(u: AirbnbLocationUpdate, db: Session = Depends(get_db)):
@@ -424,7 +581,9 @@ def delete_offer(d: AirbnbDelete, db: Session = Depends(get_db)):
     offer = db.query(AirbnbOffer).filter(AirbnbOffer.id == oid).first()
     if not offer: raise HTTPException(404, "Oferta nie znaleziona")
     if offer.owner_name != user.email.split('@')[0]: raise HTTPException(403, "Brak uprawnień do usunięcia tej oferty")
-    db.delete(offer); db.commit(); return {"status": "deleted"}
+    db.delete(offer)
+    db.commit()
+    return {"status": "deleted"}
 
 @app.post("/api/v1/airbnb/update")
 def update_offer_details(u: AirbnbUpdate, db: Session = Depends(get_db)):
@@ -435,12 +594,14 @@ def update_offer_details(u: AirbnbUpdate, db: Session = Depends(get_db)):
     offer = db.query(AirbnbOffer).filter(AirbnbOffer.id == oid).first()
     if not offer: raise HTTPException(404, "Oferta nie znaleziona")
     if offer.owner_name != user.email.split('@')[0]: raise HTTPException(403, "Brak uprawnień do edycji tej oferty")
-    offer.title = u.title; offer.description = u.description; offer.price = u.price; offer.availability = u.availability; 
+    offer.title = u.title
+    offer.description = u.description
+    offer.price = u.price
+    offer.availability = u.availability
     if u.district: offer.district = u.district
     db.commit()
     return {"status": "updated"}
 
-# === ADMIN USER MANAGEMENT ===
 @app.get("/api/v1/admin/users")
 def get_all_users(db: Session = Depends(get_db)):
     users = db.query(User).all()
@@ -474,7 +635,6 @@ def update_user_permissions(u: UserPermissionsUpdate, db: Session = Depends(get_
     db.commit()
     return {"status": "updated"}
 
-# === SYSTEM STARTUP - CREATE DEFAULT ADMINS ===
 def create_default_admins(db: Session):
     if db.query(Admin).first(): return
     logger.info("Creating default admins...")
@@ -494,12 +654,15 @@ def mqtt_loop():
         try:
             sid_str = SENSOR_MAP.get((m.payload[0]<<8)|m.payload[1])
             if sid_str:
-                loop = asyncio.new_event_loop(); asyncio.set_event_loop(loop);
-                with SessionLocal() as db: loop.run_until_complete(process_parking_update({"sensor_id": sid_str, "status": int(m.payload[2])}, db))
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+                with SessionLocal() as db:
+                    loop.run_until_complete(process_parking_update({"sensor_id": sid_str, "status": int(m.payload[2])}, db))
         except: pass
     mqtt_c.on_message = on_m
     try: mqtt_c.connect(MQTT_BROKER, MQTT_PORT, 60); mqtt_c.loop_forever()
     except: pass
+
 def check_stale():
     while not threading.main_thread().is_alive() is False:
         try:
@@ -507,20 +670,32 @@ def check_stale():
                 cut = now_utc() - datetime.timedelta(minutes=5)
                 old = db.query(AktualnyStan).filter(AktualnyStan.status != 2, (AktualnyStan.ostatnia_aktualizacja < cut)|(AktualnyStan.ostatnia_aktualizacja == None)).all()
                 if old:
-                    chg = [];
-                    for s in old: s.status = 2; s.ostatnia_aktualizacja = now_utc(); chg.append(s.to_dict())
+                    chg = []
+                    for s in old:
+                        s.status = 2
+                        s.ostatnia_aktualizacja = now_utc()
+                        chg.append(s.to_dict())
                     db.commit()
-                    if chg and manager.active_connections: asyncio.run_coroutine_threadsafe(manager.broadcast(chg), asyncio.get_event_loop())
+                    if chg and manager.active_connections:
+                        asyncio.run_coroutine_threadsafe(manager.broadcast(chg), asyncio.get_event_loop())
         except: pass
         time.sleep(120)
+
 @app.on_event("startup")
 async def start(): 
-    threading.Thread(target=mqtt_loop, daemon=True).start(); threading.Thread(target=check_stale, daemon=True).start()
+    threading.Thread(target=mqtt_loop, daemon=True).start()
+    threading.Thread(target=check_stale, daemon=True).start()
     with SessionLocal() as db: create_default_admins(db)
+
 @app.on_event("shutdown")
-def stop(): mqtt_c.disconnect()
+def stop(): 
+    mqtt_c.disconnect()
+
 @app.websocket("/ws/stan")
 async def ws(ws: WebSocket):
-    await manager.connect(ws); 
-    try: while True: await ws.receive_text()
-    except: manager.disconnect(ws)
+    await manager.connect(ws)
+    try: 
+        while True:
+            await ws.receive_text()
+    except: 
+        manager.disconnect(ws)
