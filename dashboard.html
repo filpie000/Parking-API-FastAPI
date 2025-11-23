@@ -156,8 +156,13 @@
         async function login() {
             const user = document.getElementById('login-user').value.trim();
             const pass = document.getElementById('login-pass').value.trim();
+            const errorMsg = document.getElementById('login-error');
+            const btn = document.getElementById('login-btn');
+
             if(!user || !pass) return;
-            
+            btn.disabled = true; btn.innerText = "Logowanie...";
+            errorMsg.classList.add('hidden');
+
             try {
                 const res = await fetch(API_BASE + "/api/v1/admin/auth", {
                     method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -180,8 +185,11 @@
                         if (p.includes('MANAGE_USERS')) document.getElementById('nav-users').classList.remove('hidden');
                     }
                     initDashboard();
-                } else alert("Błąd logowania");
-            } catch(e) { alert("Błąd sieci"); }
+                } else {
+                    errorMsg.innerText = "Błąd logowania"; errorMsg.classList.remove('hidden');
+                }
+            } catch(e) { errorMsg.innerText = "Błąd sieci"; errorMsg.classList.remove('hidden'); } 
+            finally { btn.disabled = false; btn.innerText = "Zaloguj się"; }
         }
 
         async function fetchAdmins() {
