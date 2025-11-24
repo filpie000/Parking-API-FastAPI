@@ -13,7 +13,7 @@ from fastapi.responses import HTMLResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
-from sqlalchemy import create_engine, Column, Integer, String, DateTime, Boolean, ForeignKey, Float, Text, Table, func
+from sqlalchemy import create_engine, Column, Integer, String, DateTime, Boolean, ForeignKey, Float, Text, Table, func, text
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, Session, relationship
 
@@ -51,7 +51,6 @@ engine = create_engine(
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 
-# --- POPRAWIONA FUNKCJA GET_DB ---
 def get_db():
     db = SessionLocal()
     try:
@@ -163,8 +162,9 @@ class AirbnbOffer(Base):
 
 class ObserwowaneMiejsca(Base):
     __tablename__ = "obserwowane_miejsca"
-    # device_token jako PRIMARY KEY
-    device_token = Column(String, primary_key=True)
+    # Zmieniamy definicję - device_token nie jest już Primary Key, bo jeden token może obserwować wiele miejsc
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    device_token = Column(String, index=True)
     sensor_id = Column(String, index=True)
     czas_dodania = Column(DateTime(timezone=True), default=now_utc)
 
@@ -241,11 +241,11 @@ def on_mqtt_message(client, userdata, msg):
                 if prev != status:
                     db.add(DaneHistoryczne(spot_name=sensor_name, status=status))
                     
-                    if status == 0:
+                    if status == 0: # Zwolniono miejsce
                         observers = db.query(ObserwowaneMiejsca).filter(ObserwowaneMiejsca.sensor_id == sensor_name).all()
                         for obs in observers:
                             send_push(obs.device_token, "Wolne Miejsce!", f"{sensor_name} jest teraz wolne!")
-                            db.delete(obs)
+                            db.delete(obs) # Jednorazowe powiadomienie
                 db.commit()
     except Exception as e:
         logger.error(f"MQTT Error: {e}")
@@ -268,16 +268,12 @@ app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, 
 @app.on_event("startup")
 async def startup_event():
     start_mqtt()
+    # Auto-fix dla tabeli obserwowanych (dodanie kolumny ID jeśli brakuje)
     with SessionLocal() as db:
         try:
-            if not db.query(Admin).first():
-                logger.info("Inicjalizacja Admina")
-                sa = Admin(username="admin", password_hash=get_password_hash("admin123"), badge_name="Super Admin")
-                db.add(sa); db.flush()
-                db.add(AdminPermissions(admin_id=sa.id, city="ALL"))
-                db.commit()
-        except Exception as e:
-            logger.error(f"Startup DB Error: {e}")
+            db.execute(text("ALTER TABLE obserwowowane_miejsca ADD COLUMN IF NOT EXISTS id SERIAL PRIMARY KEY"))
+            db.commit()
+        except: pass
 
 @app.get("/")
 def root(): return {"status": "System Online", "mqtt": "Active"}
@@ -335,23 +331,27 @@ def get_spots(limit: int=100, db: Session = Depends(get_db)):
         })
     return res
 
+# --- POPRAWIONY ENDPOINT OBSERWACJI ---
 @app.post("/api/v1/obserwuj_miejsce")
 def obs(r: ObserwujRequest, db: Session=Depends(get_db)):
-    # Logika "jeden token = jedno miejsce" dla uproszczenia
-    # Usuń stare wpisy dla tego tokena
-    old = db.query(ObserwowaneMiejsca).filter(ObserwowaneMiejsca.device_token == r.device_token).first()
-    if old: db.delete(old)
+    # Sprawdź czy już obserwuje to miejsce, żeby nie dublować
+    exists = db.query(ObserwowaneMiejsca).filter(
+        ObserwowaneMiejsca.device_token == r.device_token,
+        ObserwowaneMiejsca.sensor_id == r.sensor_id
+    ).first()
     
-    new_obs = ObserwowaneMiejsca(device_token=r.device_token, sensor_id=r.sensor_id)
-    db.add(new_obs)
-    try:
-        db.commit()
-        logger.info(f"Zarejestrowano obserwacje dla: {r.sensor_id}")
-        return {"status": "registered"}
-    except Exception as e:
-        db.rollback()
-        logger.error(f"Blad obserwacji: {e}")
-        raise HTTPException(500, "Błąd zapisu")
+    if not exists:
+        new_obs = ObserwowaneMiejsca(device_token=r.device_token, sensor_id=r.sensor_id)
+        db.add(new_obs)
+        try:
+            db.commit()
+            logger.info(f"Zarejestrowano obserwacje: {r.sensor_id} dla {r.device_token}")
+        except Exception as e:
+            db.rollback()
+            logger.error(f"Błąd zapisu obserwacji: {e}")
+            raise HTTPException(500, "Błąd zapisu")
+            
+    return {"status": "registered"}
 
 @app.post("/api/v1/statystyki/zajetosc")
 def stats_mobile(z: StatystykiZapytanie, db: Session = Depends(get_db)):
@@ -361,12 +361,11 @@ def stats_mobile(z: StatystykiZapytanie, db: Session = Depends(get_db)):
     start = datetime.datetime.combine(target, datetime.time(z.selected_hour, 0))
     end = start + datetime.timedelta(hours=1)
     
-    # Używamy spot_name zamiast sensor_id, bo tak jest w modelu DaneHistoryczne
     total = db.query(DaneHistoryczne).filter(DaneHistoryczne.spot_name == z.sensor_id, DaneHistoryczne.czas_pomiaru >= start, DaneHistoryczne.czas_pomiaru < end).count()
     occ = db.query(DaneHistoryczne).filter(DaneHistoryczne.spot_name == z.sensor_id, DaneHistoryczne.czas_pomiaru >= start, DaneHistoryczne.czas_pomiaru < end, DaneHistoryczne.status == 1).count()
     
     pct = int((occ/total)*100) if total > 0 else 0
-    return {"procent_zajetosci": pct, "liczba_pomiarow": total}
+    return {"wynik": {"procent_zajetosci": pct, "liczba_pomiarow": total}}
 
 @app.post("/api/v1/iot/update")
 async def iot(d: dict, db: Session=Depends(get_db)):
@@ -400,7 +399,6 @@ def get_report(r: RaportRequest, db: Session = Depends(get_db)):
     
     if not target_spots: return {}
 
-    # Używamy spot_name
     history = db.query(DaneHistoryczne).filter(DaneHistoryczne.czas_pomiaru >= s_date, DaneHistoryczne.czas_pomiaru < e_date, DaneHistoryczne.spot_name.in_(target_spots)).all()
     result = {g: [0]*24 for g in r.groups}
     
