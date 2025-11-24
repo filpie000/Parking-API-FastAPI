@@ -34,7 +34,7 @@ def now_utc() -> datetime.datetime:
 # --- KONFIGURACJA MQTT ---
 MQTT_BROKER = os.environ.get('MQTT_BROKER', 'broker.emqx.io')
 MQTT_PORT = int(os.environ.get('MQTT_PORT', 1883))
-MQTT_TOPIC = "parking/+/status"  # Wildcard do nasłuchiwania wszystkich czujników
+MQTT_TOPIC = "parking/+/status" 
 
 # --- BAZA DANYCH ---
 DATABASE_URL = os.environ.get('DATABASE_URL', "postgresql://postgres:postgres@localhost:5432/postgres")
@@ -107,7 +107,7 @@ class DaneHistoryczne(Base):
     __tablename__ = "dane_historyczne"
     id = Column(Integer, primary_key=True, autoincrement=True)
     czas_pomiaru = Column(DateTime(timezone=True), default=now_utc, index=True)
-    spot_name = Column(String, index=True) # Zmieniono na spot_name zgodnie z fixem
+    spot_name = Column(String, index=True)
     status = Column(Integer)
 
 class User(Base):
@@ -220,7 +220,7 @@ class ConnectionManager:
 
 manager = ConnectionManager()
 
-# --- MQTT CLIENT (Nowa funkcja) ---
+# --- MQTT CLIENT ---
 def on_mqtt_message(client, userdata, msg):
     try:
         payload = json.loads(msg.payload.decode())
@@ -229,7 +229,6 @@ def on_mqtt_message(client, userdata, msg):
         
         if not sensor_name: return
 
-        # Używamy nowej sesji dla każdego komunikatu MQTT
         with SessionLocal() as db:
             spot = db.query(ParkingSpot).filter(ParkingSpot.name == sensor_name).first()
             if spot:
@@ -238,22 +237,15 @@ def on_mqtt_message(client, userdata, msg):
                 spot.last_seen = now_utc()
                 
                 if prev != status:
-                    # Zapis historii
                     db.add(DaneHistoryczne(spot_name=sensor_name, status=status))
                     
-                    # Powiadomienia dla obserwujących (tylko przy zwolnieniu miejsca)
                     if status == 0:
                         observers = db.query(ObserwowaneMiejsca).filter(ObserwowaneMiejsca.sensor_id == sensor_name).all()
                         for obs in observers:
                             send_push(obs.device_token, "Wolne Miejsce!", f"{sensor_name} jest teraz wolne!")
-                            db.delete(obs) # Usuwamy po powiadomieniu (jednorazowe)
-                    
-                    # Broadcast WebSocket (trzeba uruchomić w pętli zdarzeń asynchronicznych)
-                    # Tutaj uproszczenie: MQTT działa w wątku, więc broadcast WS może wymagać kolejki,
-                    # ale dla prostoty pomijamy to w tym wątku.
-                    
+                            db.delete(obs)
                 db.commit()
-                logger.info(f"MQTT Update: {sensor_name} -> {status}")
+                # Broadcast WS (simplified)
     except Exception as e:
         logger.error(f"MQTT Error: {e}")
 
@@ -274,10 +266,7 @@ app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, 
 
 @app.on_event("startup")
 async def startup_event():
-    # 1. Start MQTT
     start_mqtt()
-    
-    # 2. Inicjalizacja bazy
     with SessionLocal() as db:
         try:
             if not db.query(Admin).first():
@@ -347,7 +336,6 @@ def get_spots(limit: int=100, db: Session = Depends(get_db)):
 
 @app.post("/api/v1/obserwuj_miejsce")
 def obs(r: ObserwujRequest, db: Session=Depends(get_db)):
-    # Usuń stare
     old = db.query(ObserwowaneMiejsca).filter(ObserwowaneMiejsca.device_token == r.device_token).first()
     if old: db.delete(old)
     
@@ -376,7 +364,6 @@ def stats_mobile(z: StatystykiZapytanie, db: Session = Depends(get_db)):
     pct = int((occ/total)*100) if total > 0 else 0
     return {"procent_zajetosci": pct, "liczba_pomiarow": total}
 
-# Endpoint symulacji (dla Postmana)
 @app.post("/api/v1/iot/update")
 async def iot(d: dict, db: Session=Depends(get_db)):
     name = d.get("name"); 
@@ -388,13 +375,11 @@ async def iot(d: dict, db: Session=Depends(get_db)):
         prev = s.current_status; s.current_status = status; s.last_seen = now_utc()
         if prev != status:
             db.add(DaneHistoryczne(spot_name=name, status=status))
-            
-            if status == 0: # Wolne -> Powiadomienia
+            if status == 0: 
                 obs = db.query(ObserwowaneMiejsca).filter(ObserwowaneMiejsca.sensor_id == name).all()
                 for o in obs:
                     send_push(o.device_token, "Wolne Miejsce!", f"{name} jest wolne.")
                     db.delete(o)
-            
             await manager.broadcast({"sensor_id": name, "status": status})
         db.commit()
     return {"status": "ok"}
@@ -429,7 +414,6 @@ def get_report(r: RaportRequest, db: Session = Depends(get_db)):
         result[g] = [round((x/mx)*100, 1) if mx>0 else 0 for x in result[g]]
     return result
 
-# --- AIRBNB ---
 @app.get("/api/v1/airbnb/offers")
 def get_airbnb(db: Session = Depends(get_db)):
     offers = db.query(AirbnbOffer).all()
@@ -452,7 +436,6 @@ def del_airbnb(d: AirbnbDelete, db: Session = Depends(get_db)):
         db.delete(offer); db.commit()
     return {"status": "ok"}
 
-# --- ADMIN/USER ---
 @app.post("/api/v1/admin/auth")
 def admin_login(data: AdminLogin, db: Session = Depends(get_db)):
     admin = db.query(Admin).filter(Admin.username == data.username).first()
