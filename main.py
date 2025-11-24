@@ -436,6 +436,7 @@ def del_airbnb(d: AirbnbDelete, db: Session = Depends(get_db)):
         db.delete(offer); db.commit()
     return {"status": "ok"}
 
+# --- ADMIN/USER ---
 @app.post("/api/v1/admin/auth")
 def admin_login(data: AdminLogin, db: Session = Depends(get_db)):
     admin = db.query(Admin).filter(Admin.username == data.username).first()
