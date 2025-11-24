@@ -11,14 +11,13 @@ from fastapi.responses import HTMLResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
-from sqlalchemy import create_engine, Column, Integer, String, DateTime, Boolean, ForeignKey, Float, Text, Table
+from sqlalchemy import create_engine, Column, Integer, String, DateTime, Boolean, ForeignKey, Float, Text, Table, func
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, Session, relationship
 
 import bcrypt
 import msgpack
 
-# --- KONFIGURACJA LOGOWANIA ---
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
@@ -28,30 +27,18 @@ PL_TZ = ZoneInfo("Europe/Warsaw")
 def now_utc() -> datetime.datetime:
     return datetime.datetime.now(UTC)
 
-# --- BAZA DANYCH ---
 DATABASE_URL = os.environ.get('DATABASE_URL', "postgresql://postgres:postgres@localhost:5432/postgres")
 if DATABASE_URL.startswith("postgres://"):
     DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
 
-engine = create_engine(
-    DATABASE_URL, 
-    pool_pre_ping=True,  # Zapobiega rozłączaniu po nocy
-    pool_recycle=3600,
-    connect_args={"check_same_thread": False} if "sqlite" in DATABASE_URL else {}
-)
+engine = create_engine(DATABASE_URL, pool_pre_ping=True, pool_recycle=3600)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 
 def get_db():
-    db = SessionLocal()
-    try:
-        yield db
-    finally:
-        db.close()
+    db = SessionLocal(); try: yield db; finally: db.close()
 
-# --- MODELE BAZY DANYCH (DOSTOSOWANE DO ZRZUTU) ---
-
-# Tabela łącząca: MIEJSCA <-> GRUPY
+# --- MODELE ---
 spot_group_members = Table('spot_group_members', Base.metadata,
     Column('spot_name', String, ForeignKey('parking_spots.name', ondelete="CASCADE"), primary_key=True),
     Column('group_id', Integer, ForeignKey('groups.id', ondelete="CASCADE"), primary_key=True)
@@ -65,110 +52,62 @@ class Group(Base):
 
 class ParkingSpot(Base):
     __tablename__ = "parking_spots"
-    # Zgodnie z Twoim zrzutem ekranu:
     name = Column(String, primary_key=True) 
-    current_status = Column(Integer, default=0) # int4
-    last_seen = Column(DateTime(timezone=True), default=now_utc) # timestamp (ZMIANA NAZWY)
-    city = Column(String, nullable=True)
-    state = Column(String, nullable=True)
-    category = Column(String, default='public_spot')
-    coordinates = Column(String, nullable=True)
-    
-    # Flagi (bool)
-    is_disabled_friendly = Column(Boolean, default=False)
-    is_ev = Column(Boolean, default=False)
-    is_paid = Column(Boolean, default=True)
-    
-    # Relacje
+    current_status = Column(Integer, default=0) 
+    last_seen = Column(DateTime(timezone=True), default=now_utc)
+    city = Column(String, nullable=True); state = Column(String, nullable=True)
+    category = Column(String, default='public_spot'); coordinates = Column(String, nullable=True)
+    is_disabled_friendly = Column(Boolean, default=False); is_ev = Column(Boolean, default=False); is_paid = Column(Boolean, default=True)
     groups = relationship("Group", secondary=spot_group_members, back_populates="spots")
 
 class Admin(Base):
     __tablename__ = "admins"
     id = Column(Integer, primary_key=True, autoincrement=True)
-    username = Column(String, unique=True, index=True)
-    password_hash = Column(String)
-    badge_name = Column(String, default="Admin")
+    username = Column(String, unique=True, index=True); password_hash = Column(String); badge_name = Column(String, default="Admin")
     permissions = relationship("AdminPermissions", back_populates="admin", uselist=False, cascade="all, delete-orphan")
 
 class AdminPermissions(Base):
     __tablename__ = "admin_permissions"
     admin_id = Column(Integer, ForeignKey("admins.id"), primary_key=True)
-    city = Column(String, default='ALL')
-    view_disabled_only = Column(Boolean, default=False)
-    view_ev_only = Column(Boolean, default=False)
-    view_paid_only = Column(Boolean, default=False)
-    allowed_states = Column(Text, nullable=True)
+    city = Column(String, default='ALL'); view_disabled_only = Column(Boolean, default=False); view_ev_only = Column(Boolean, default=False); view_paid_only = Column(Boolean, default=False); allowed_states = Column(Text, nullable=True)
     admin = relationship("Admin", back_populates="permissions")
 
 class DaneHistoryczne(Base):
     __tablename__ = "dane_historyczne"
     id = Column(Integer, primary_key=True, autoincrement=True)
     czas_pomiaru = Column(DateTime(timezone=True), default=now_utc, index=True)
-    spot_name = Column(String, index=True) 
-    status = Column(Integer)
+    spot_name = Column(String, index=True); status = Column(Integer)
+
+class ObserwowaneMiejsca(Base):
+    __tablename__ = "obserwowane_miejsca"
+    device_token = Column(String, primary_key=True); sensor_id = Column(String, index=True); czas_dodania = Column(DateTime(timezone=True), default=now_utc)
 
 class User(Base):
     __tablename__ = "users"
-    id = Column(Integer, primary_key=True, autoincrement=True)
-    email = Column(String, unique=True, index=True)
-    password_hash = Column(String)
-    token = Column(String, index=True, nullable=True)
-    
-    is_disabled = Column(Boolean, default=False)        
-    is_disabled_person = Column(Boolean, default=False) 
-    dark_mode = Column(Boolean, default=False)
-    
-    active_ticket_id = Column(Integer, ForeignKey("tickets.id"), nullable=True)
-    
+    id = Column(Integer, primary_key=True, autoincrement=True); email = Column(String, unique=True, index=True); password_hash = Column(String); token = Column(String, index=True, nullable=True)
+    is_disabled = Column(Boolean, default=False); is_disabled_person = Column(Boolean, default=False); dark_mode = Column(Boolean, default=False); active_ticket_id = Column(Integer, ForeignKey("tickets.id"), nullable=True)
     vehicles = relationship("Vehicle", back_populates="owner", cascade="all, delete-orphan")
     tickets = relationship("Ticket", back_populates="owner", foreign_keys="[Ticket.user_id]")
 
 class Vehicle(Base):
     __tablename__ = "vehicles"
-    id = Column(Integer, primary_key=True, autoincrement=True)
-    name = Column(String, nullable=True)
-    plate_number = Column(String)
-    user_id = Column(Integer, ForeignKey("users.id"))
-    owner = relationship("User", back_populates="vehicles")
+    id = Column(Integer, primary_key=True, autoincrement=True); name = Column(String, nullable=True); plate_number = Column(String); user_id = Column(Integer, ForeignKey("users.id")); owner = relationship("User", back_populates="vehicles")
 
 class Ticket(Base):
     __tablename__ = "tickets"
-    id = Column(Integer, primary_key=True, autoincrement=True)
-    user_id = Column(Integer, ForeignKey("users.id"))
-    vehicle_id = Column(Integer, ForeignKey("vehicles.id"))
-    spot_name = Column(String, ForeignKey("parking_spots.name"))
-    
-    start_time = Column(DateTime(timezone=True), default=now_utc)
-    end_time = Column(DateTime(timezone=True), nullable=True)
-    status = Column(String, default='ACTIVE')
-    price = Column(Float, default=0.0)
-
-    owner = relationship("User", back_populates="tickets", foreign_keys=[user_id])
-    vehicle = relationship("Vehicle")
+    id = Column(Integer, primary_key=True, autoincrement=True); user_id = Column(Integer, ForeignKey("users.id")); vehicle_id = Column(Integer, ForeignKey("vehicles.id")); spot_name = Column(String, ForeignKey("parking_spots.name"))
+    start_time = Column(DateTime(timezone=True), default=now_utc); end_time = Column(DateTime(timezone=True), nullable=True); status = Column(String, default='ACTIVE'); price = Column(Float, default=0.0)
+    owner = relationship("User", back_populates="tickets", foreign_keys=[user_id]); vehicle = relationship("Vehicle")
 
 class AirbnbOffer(Base):
     __tablename__ = "airbnb_offers"
-    id = Column(Integer, primary_key=True, autoincrement=True)
-    title = Column(String)
-    description = Column(String)
-    price = Column(String)
-    availability = Column(String)
-    owner_name = Column(String)
-    contact = Column(String)
-    latitude = Column(Float, nullable=True)
-    longitude = Column(Float, nullable=True)
-    district = Column(String, nullable=True)
-    start_date = Column(String, nullable=True)
-    end_date = Column(String, nullable=True)
-    created_at = Column(DateTime(timezone=True), default=now_utc)
+    id = Column(Integer, primary_key=True, autoincrement=True); title = Column(String); description = Column(String); price = Column(String); availability = Column(String); owner_name = Column(String); contact = Column(String); latitude = Column(Float, nullable=True); longitude = Column(Float, nullable=True); district = Column(String, nullable=True); start_date = Column(String, nullable=True); end_date = Column(String, nullable=True); created_at = Column(DateTime(timezone=True), default=now_utc)
 
 Base.metadata.create_all(bind=engine)
 
-# --- PYDANTIC SCHEMAS ---
+# --- PYDANTIC ---
 class AdminLogin(BaseModel): username: str; password: str
-class AdminPayload(BaseModel):
-    id: Optional[int]=None; username: str; password: Optional[str]=None; city: str="ALL"; allowed_states: str=""
-    view_disabled_only: bool=False; view_ev_only: bool=False; view_paid_only: bool=False
+class AdminPayload(BaseModel): id: Optional[int]=None; username: str; password: Optional[str]=None; city: str="ALL"; allowed_states: str=""; view_disabled_only: bool=False; view_ev_only: bool=False; view_paid_only: bool=False
 class AdminDelete(BaseModel): target_id: int
 class UserAuth(BaseModel): email: str; password: str
 class UserToggle(BaseModel): target_email: str; is_disabled: bool
@@ -178,278 +117,197 @@ class RaportRequest(BaseModel): start_date: str; end_date: str; groups: List[str
 class AirbnbAdd(BaseModel): token: str; title: str; description: str; price: str; availability: str; latitude: Optional[float]; longitude: Optional[float]; district: str; start_date: str; end_date: str
 class AirbnbDelete(BaseModel): token: str; offer_id: int
 class UserPermissionsUpdate(BaseModel): target_email: str; perm_disabled: bool
+class ObserwujRequest(BaseModel): sensor_id: str; device_token: str
+class StatystykiZapytanie(BaseModel): sensor_id: str; selected_date: str; selected_hour: int
 
-# --- UTILS ---
-def get_password_hash(p: str) -> str:
-    return bcrypt.hashpw(p.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
+def get_password_hash(p: str): return bcrypt.hashpw(p.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
+def verify_password(p: str, h: str): return bcrypt.checkpw(p.encode('utf-8'), h.encode('utf-8')) if h else False
 
-def verify_password(plain: str, hashed: str) -> bool:
-    if not hashed: return False
-    try:
-        return bcrypt.checkpw(plain.encode('utf-8'), hashed.encode('utf-8'))
-    except:
-        return False
-
-# --- WEBSOCKET MANAGER ---
 class ConnectionManager:
-    def __init__(self): self.active_connections: List[WebSocket] = []
-    async def connect(self, websocket: WebSocket): await websocket.accept(); self.active_connections.append(websocket)
-    def disconnect(self, websocket: WebSocket): 
-        if websocket in self.active_connections: self.active_connections.remove(websocket)
-    async def broadcast(self, message: dict):
+    def __init__(self): self.active_connections = []
+    async def connect(self, ws: WebSocket): await ws.accept(); self.active_connections.append(ws)
+    def disconnect(self, ws: WebSocket): 
+        if ws in self.active_connections: self.active_connections.remove(ws)
+    async def broadcast(self, msg: dict):
         try:
-            msg_bin = msgpack.packb(message)
-            for conn in list(self.active_connections):
-                try: await conn.send_bytes(msg_bin)
-                except: self.disconnect(conn)
+            bin_msg = msgpack.packb(msg)
+            for c in list(self.active_connections):
+                try: await c.send_bytes(bin_msg)
+                except: self.disconnect(c)
         except: pass
-
 manager = ConnectionManager()
 
-# --- APP ---
+def send_push(token, title, body):
+    try:
+        import requests
+        requests.post("https://exp.host/--/api/v2/push/send", json={"to": token, "title": title, "body": body}, timeout=2)
+    except: pass
+
 app = FastAPI()
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 
 @app.on_event("startup")
-async def startup_event():
+async def startup():
     with SessionLocal() as db:
-        try:
-            if not db.query(Admin).first():
-                logger.info("Inicjalizacja Admina")
-                sa = Admin(username="admin", password_hash=get_password_hash("admin123"), badge_name="Super Admin")
-                db.add(sa); db.flush()
-                db.add(AdminPermissions(admin_id=sa.id, city="ALL"))
-                db.commit()
-        except Exception as e:
-            logger.error(f"Błąd startupu: {e}")
-
-@app.get("/")
-def root(): return {"status": "System Online", "db_schema": "Verified"}
+        if not db.query(Admin).first():
+            db.add(Admin(username="admin", password_hash=get_password_hash("admin123"), badge_name="Super Admin"))
+            db.commit()
 
 @app.get("/dashboard", response_class=HTMLResponse)
 def dash():
     try: return open("dashboard.html", "r", encoding="utf-8").read()
-    except: return "Brak pliku dashboard.html"
+    except: return "Missing HTML"
 
 @app.websocket("/ws/stan")
 async def ws(ws: WebSocket):
     await manager.connect(ws)
-    try:
+    try: 
         while True: await ws.receive_text()
     except: manager.disconnect(ws)
 
-# --- ENDPOINTY DANYCH (DOSTOSOWANE) ---
+# --- ENDPOINTY DLA APP ---
 
 @app.get("/api/v1/options/filters")
-def get_filter_options(db: Session = Depends(get_db)):
-    cities = db.query(ParkingSpot.city).distinct().all()
-    groups = db.query(Group.name).all()
-    return {
-        "cities": [c[0] for c in cities if c[0]],
-        "states": [g.name for g in groups]
-    }
+def opts(db: Session=Depends(get_db)):
+    return {"cities": [c[0] for c in db.query(ParkingSpot.city).distinct().all() if c[0]], "states": [g.name for g in db.query(Group.name).all()]}
 
 @app.get("/api/v1/aktualny_stan")
-def get_spots(limit: int=100, db: Session = Depends(get_db)):
-    spots = db.query(ParkingSpot).limit(limit).all()
+def status(limit: int=100, db: Session=Depends(get_db)):
     res = []
-    for s in spots:
-        # Pobieranie grup (bezpieczne)
-        grp_names = []
-        try: grp_names = [g.name for g in s.groups]
-        except: pass
-        
-        # Parsowanie współrzędnych
-        coords_obj = None
+    for s in db.query(ParkingSpot).limit(limit).all():
+        co = None
         if s.coordinates and ',' in s.coordinates:
-            try:
-                parts = s.coordinates.split(',')
-                coords_obj = {"latitude": float(parts[0]), "longitude": float(parts[1])}
+            try: p=s.coordinates.split(','); co={"latitude":float(p[0]),"longitude":float(p[1])}
             except: pass
-
-        res.append({
-            "sensor_id": s.name,
-            "name": s.name,
-            "status": s.current_status, # INT
-            "groups": grp_names,
-            "city": s.city,
-            "state": s.state,
-            "wspolrzedne": coords_obj,
-            "is_disabled_friendly": s.is_disabled_friendly,
-            "is_ev": s.is_ev,
-            "is_paid": s.is_paid,
-            "adres": f"{s.state or ''}, {s.city or ''}".strip(', '),
-            "typ": 'niepelnosprawni' if s.is_disabled_friendly else ('ev' if s.is_ev else 'zwykle'),
-            "cennik": "3.00 PLN/h" if s.is_paid else "Bezpłatny"
-        })
+        res.append({"sensor_id": s.name, "name": s.name, "status": s.current_status, "groups": [g.name for g in s.groups], "city": s.city, "state": s.state, "wspolrzedne": co, "is_disabled_friendly": s.is_disabled_friendly, "is_ev": s.is_ev, "is_paid": s.is_paid, "adres": f"{s.state or ''}, {s.city or ''}".strip(', '), "typ": 'niepelnosprawni' if s.is_disabled_friendly else ('ev' if s.is_ev else 'zwykle'), "cennik": "Płatny" if s.is_paid else "Bezpłatny"})
     return res
 
-@app.post("/api/v1/dashboard/raport")
-def get_report(r: RaportRequest, db: Session = Depends(get_db)):
-    try:
-        s_date = datetime.datetime.strptime(r.start_date, "%Y-%m-%d")
-        e_date = datetime.datetime.strptime(r.end_date, "%Y-%m-%d") + datetime.timedelta(days=1)
-    except: raise HTTPException(400, "Zła data")
+@app.post("/api/v1/obserwuj_miejsce")
+def obs(r: ObserwujRequest, db: Session=Depends(get_db)):
+    # Usunięcie starej obserwacji dla tego tokena
+    old = db.query(ObserwowaneMiejsca).filter(ObserwowaneMiejsca.device_token == r.device_token).first()
+    if old: db.delete(old)
+    db.add(ObserwowaneMiejsca(device_token=r.device_token, sensor_id=r.sensor_id))
+    db.commit()
+    return {"status": "registered"}
 
-    target_spots = []
-    if r.groups:
-        spots_in_groups = db.query(ParkingSpot).join(ParkingSpot.groups).filter(Group.name.in_(r.groups)).all()
-        target_spots = [s.name for s in spots_in_groups]
+@app.post("/api/v1/statystyki/zajetosc")
+def stats_mobile(z: StatystykiZapytanie, db: Session = Depends(get_db)):
+    try: target = datetime.datetime.strptime(z.selected_date, "%Y-%m-%d").date()
+    except: raise HTTPException(400, "Data format error")
     
-    if not target_spots: return {}
-
-    history = db.query(DaneHistoryczne).filter(
-        DaneHistoryczne.czas_pomiaru >= s_date,
-        DaneHistoryczne.czas_pomiaru < e_date,
-        DaneHistoryczne.spot_name.in_(target_spots)
-    ).all()
-
-    result = {g: [0]*24 for g in r.groups}
+    start = datetime.datetime.combine(target, datetime.time(z.selected_hour, 0))
+    end = start + datetime.timedelta(hours=1)
     
-    all_spots = db.query(ParkingSpot).filter(ParkingSpot.name.in_(target_spots)).all()
-    sensor_to_groups = {s.name: [g.name for g in s.groups] for s in all_spots}
+    total = db.query(DaneHistoryczne).filter(DaneHistoryczne.spot_name == z.sensor_id, DaneHistoryczne.czas_pomiaru >= start, DaneHistoryczne.czas_pomiaru < end).count()
+    occ = db.query(DaneHistoryczne).filter(DaneHistoryczne.spot_name == z.sensor_id, DaneHistoryczne.czas_pomiaru >= start, DaneHistoryczne.czas_pomiaru < end, DaneHistoryczne.status == 1).count()
+    
+    pct = int((occ/total)*100) if total > 0 else 0
+    return {"wynik": {"procent_zajetosci": pct, "liczba_pomiarow": total}}
 
-    for h in history:
-        affected_groups = sensor_to_groups.get(h.spot_name, [])
-        for grp in affected_groups:
-            if grp in result:
-                local_time = h.czas_pomiaru.replace(tzinfo=UTC).astimezone(PL_TZ)
-                if h.status == 1:
-                    result[grp][local_time.hour] += 1
-
-    for g in result:
-        mx = max(result[g]) if result[g] else 1
-        result[g] = [round((x/mx)*100, 1) if mx>0 else 0 for x in result[g]]
-
-    return result
-
-# --- IOT UPDATE ---
 @app.post("/api/v1/iot/update")
-async def iot(d: dict, db: Session = Depends(get_db)):
-    name = d.get("name")
-    try: new_status = int(d.get("status"))
-    except: return {"error": "Status int required"}
-
-    s = db.query(ParkingSpot).filter(ParkingSpot.name == name).first()
+async def iot(d: dict, db: Session=Depends(get_db)):
+    name = d.get("name"); status = int(d.get("status"))
+    s = db.query(ParkingSpot).filter(ParkingSpot.name==name).first()
     if s:
-        prev = s.current_status
-        s.current_status = new_status
-        s.last_seen = now_utc() # ZMIANA NA LAST_SEEN
-        if prev != new_status:
-            db.add(DaneHistoryczne(spot_name=s.name, status=new_status))
-            await manager.broadcast({"sensor_id": s.name, "status": new_status})
+        prev = s.current_status; s.current_status = status; s.last_seen = now_utc()
+        if prev != status:
+            db.add(DaneHistoryczne(spot_name=name, status=status))
+            if status == 0: # Zwolniono miejsce -> powiadomienie
+                obs = db.query(ObserwowaneMiejsca).filter(ObserwowaneMiejsca.sensor_id == name).all()
+                for o in obs:
+                    send_push(o.device_token, "Wolne Miejsce!", f"{name} jest wolne.")
+                    db.delete(o)
+            await manager.broadcast({"sensor_id": name, "status": status})
         db.commit()
     return {"status": "ok"}
 
-# --- AUTH / USER / ADMIN (BEZ ZMIAN LOGIKI) ---
+# --- RAPORT ---
+@app.post("/api/v1/dashboard/raport")
+def report(r: RaportRequest, db: Session=Depends(get_db)):
+    try: s = datetime.datetime.strptime(r.start_date, "%Y-%m-%d"); e = datetime.datetime.strptime(r.end_date, "%Y-%m-%d") + datetime.timedelta(days=1)
+    except: return {}
+    
+    targets = [sp.name for sp in db.query(ParkingSpot).join(ParkingSpot.groups).filter(Group.name.in_(r.groups)).all()]
+    if not targets: return {}
+    
+    hist = db.query(DaneHistoryczne).filter(DaneHistoryczne.czas_pomiaru >= s, DaneHistoryczne.czas_pomiaru < e, DaneHistoryczne.spot_name.in_(targets)).all()
+    res = {g:[0]*24 for g in r.groups}
+    map_s_g = {sp.name: [g.name for g in sp.groups] for sp in db.query(ParkingSpot).filter(ParkingSpot.name.in_(targets)).all()}
+    
+    for h in hist:
+        for g in map_s_g.get(h.spot_name, []):
+            if g in res and h.status == 1: res[g][h.czas_pomiaru.astimezone(PL_TZ).hour] += 1
+            
+    for g in res:
+        mx = max(res[g]) if res[g] else 1
+        res[g] = [round((x/mx)*100, 1) if mx>0 else 0 for x in res[g]]
+    return res
+
+# --- AUTH/USER ---
 @app.post("/api/v1/auth/login")
-def ulogin(u: UserAuth, db: Session = Depends(get_db)):
-    try:
-        usr = db.query(User).filter(User.email == u.email).first()
-        if not usr or not usr.password_hash: raise HTTPException(401, "Błędne dane")
-        if not verify_password(u.password, usr.password_hash): raise HTTPException(401, "Błędne dane")
-        tok = secrets.token_hex(16); usr.token = tok; db.commit()
-        return {"token": tok, "email": usr.email, "is_disabled": usr.is_disabled, "is_disabled_person": usr.is_disabled_person, "dark_mode": usr.dark_mode}
-    except HTTPException as he: raise he
-    except Exception as e: logger.error(f"LOGIN: {e}"); raise HTTPException(500, "Błąd serwera")
+def login(u: UserAuth, db: Session=Depends(get_db)):
+    usr = db.query(User).filter(User.email==u.email).first()
+    if not usr or not usr.password_hash or not verify_password(u.password, usr.password_hash): raise HTTPException(401)
+    tok = secrets.token_hex(16); usr.token = tok; db.commit()
+    return {"token": tok, "email": usr.email, "is_disabled": usr.is_disabled, "is_disabled_person": usr.is_disabled_person}
 
 @app.post("/api/v1/auth/register")
-def ureg(u: UserAuth, db: Session = Depends(get_db)):
-    if db.query(User).filter(User.email == u.email).first(): raise HTTPException(400, "Zajęty")
-    db.add(User(email=u.email, password_hash=get_password_hash(u.password)))
-    db.commit()
-    return {"status": "ok"}
+def reg(u: UserAuth, db: Session=Depends(get_db)):
+    if db.query(User).filter(User.email==u.email).first(): raise HTTPException(400)
+    db.add(User(email=u.email, password_hash=get_password_hash(u.password))); db.commit(); return {"status":"ok"}
 
 @app.get("/api/v1/user/me")
-def ume(token: str, db: Session = Depends(get_db)):
-    u = db.query(User).filter(User.token == token).first()
-    if not u: raise HTTPException(401)
-    return {"email": u.email, "is_disabled": u.is_disabled, "is_disabled_person": u.is_disabled_person, 
-            "active_ticket_id": u.active_ticket_id, "vehicles": [{"id":v.id, "plate":v.plate_number} for v in u.vehicles]}
+def me(token: str, db: Session=Depends(get_db)):
+    u = db.query(User).filter(User.token==token).first()
+    return {"email":u.email, "is_disabled":u.is_disabled, "vehicles": [{"id":v.id, "plate":v.plate_number} for v in u.vehicles]} if u else {}
 
 @app.post("/api/v1/user/vehicle")
-def uaddveh(v: VehicleAdd, db: Session = Depends(get_db)):
-    u = db.query(User).filter(User.token == v.token).first()
-    if not u: raise HTTPException(401)
-    db.add(Vehicle(name=v.name, plate_number=v.license_plate, user_id=u.id))
-    db.commit()
-    return {"status": "ok"}
+def veh(v: VehicleAdd, db: Session=Depends(get_db)):
+    u = db.query(User).filter(User.token==v.token).first()
+    if u: db.add(Vehicle(name=v.name, plate_number=v.license_plate, user_id=u.id)); db.commit()
+    return {"status":"ok"}
 
 @app.post("/api/v1/user/ticket")
-def ubuyticket(t: TicketAdd, db: Session = Depends(get_db)):
-    u = db.query(User).filter(User.token == t.token).first()
-    if not u: raise HTTPException(401)
-    spot = db.query(ParkingSpot).filter(ParkingSpot.name == t.spot_name).first()
-    if not spot: raise HTTPException(404, "Brak miejsca")
-    nt = Ticket(user_id=u.id, vehicle_id=t.vehicle_id, spot_name=t.spot_name, price=t.price)
-    db.add(nt); db.flush()
-    u.active_ticket_id = nt.id
-    spot.current_status = 1
-    spot.last_seen = now_utc()
-    db.add(DaneHistoryczne(spot_name=spot.name, status=1))
-    db.commit()
-    return {"status": "ok", "id": nt.id}
+def tic(t: TicketAdd, db: Session=Depends(get_db)):
+    u = db.query(User).filter(User.token==t.token).first()
+    s = db.query(ParkingSpot).filter(ParkingSpot.name==t.spot_name).first()
+    if u and s:
+        nt = Ticket(user_id=u.id, vehicle_id=t.vehicle_id, spot_name=t.spot_name, price=t.price)
+        db.add(nt); db.flush()
+        u.active_ticket_id = nt.id; s.current_status = 1; s.last_seen = now_utc()
+        db.add(DaneHistoryczne(spot_name=s.name, status=1)); db.commit()
+    return {"status":"ok"}
 
 @app.get("/api/v1/user/ticket/active")
-def uactive(token: str, db: Session = Depends(get_db)):
-    u = db.query(User).filter(User.token == token).first()
-    if not u or not u.active_ticket_id: return None
-    t = db.query(Ticket).filter(Ticket.id == u.active_ticket_id).first()
-    return {"id": t.id, "spot_name": t.spot_name, "start_time": t.start_time.isoformat()} if t else None
+def actic(token: str, db: Session=Depends(get_db)):
+    u = db.query(User).filter(User.token==token).first()
+    if u and u.active_ticket_id:
+        t = db.query(Ticket).filter(Ticket.id==u.active_ticket_id).first()
+        return {"id": t.id, "spot_name": t.spot_name, "start_time": t.start_time.isoformat()}
+    return None
 
-# --- ADMIN ENDPOINTS ---
+# --- AIRBNB ---
+@app.get("/api/v1/airbnb/offers")
+def airbnb_ls(db: Session=Depends(get_db)):
+    return [{"id": o.id, "title": o.title, "price": o.price, "district": o.district} for o in db.query(AirbnbOffer).all()]
+
+@app.post("/api/v1/airbnb/add")
+def airbnb_mk(a: AirbnbAdd, db: Session=Depends(get_db)):
+    u = db.query(User).filter(User.token==a.token).first()
+    if u: db.add(AirbnbOffer(title=a.title, description=a.description, price=a.price, owner_name=u.email)); db.commit()
+    return {"status":"ok"}
+
+# --- ADMIN ---
 @app.post("/api/v1/admin/auth")
 def alogin(d: AdminLogin, db: Session=Depends(get_db)):
     a = db.query(Admin).filter(Admin.username==d.username).first()
     if not a or not verify_password(d.password, a.password_hash): raise HTTPException(401)
-    perms = {"city": a.permissions.city, "allowed_states": a.permissions.allowed_states} if a.permissions else {}
-    return {"username": a.username, "is_superadmin": (a.username=='admin'), "permissions": perms}
+    perms = {"city": a.permissions.city} if a.permissions else {}
+    return {"username": a.username, "is_superadmin": a.username=='admin', "permissions": perms}
 
 @app.get("/api/v1/admin/list")
-def alist(db: Session=Depends(get_db)):
-    return [{"id": a.id, "username": a.username, "permissions": {"city": a.permissions.city if a.permissions else "ALL", "allowed_states": a.permissions.allowed_states if a.permissions else ""}} for a in db.query(Admin).all()]
-
-@app.post("/api/v1/admin/create")
-def acreate(d: AdminPayload, db: Session=Depends(get_db)):
-    if db.query(Admin).filter(Admin.username==d.username).first(): raise HTTPException(400)
-    na = Admin(username=d.username, password_hash=get_password_hash(d.password or "123"))
-    db.add(na); db.flush()
-    db.add(AdminPermissions(admin_id=na.id, city=d.city, allowed_states=d.allowed_states))
-    db.commit(); return {"status":"ok"}
-
-@app.post("/api/v1/admin/update")
-def aupdate(d: AdminPayload, db: Session=Depends(get_db)):
-    a = db.query(Admin).filter(Admin.id==d.id).first()
-    if d.password: a.password_hash = get_password_hash(d.password)
-    if not a.permissions: a.permissions = AdminPermissions(admin_id=a.id)
-    a.permissions.city = d.city; a.permissions.allowed_states = d.allowed_states
-    db.commit(); return {"status":"ok"}
-
-@app.post("/api/v1/admin/delete")
-def adel(d: AdminDelete, db: Session=Depends(get_db)):
-    if d.target_id != 1: db.delete(db.query(Admin).filter(Admin.id==d.target_id).first()); db.commit()
-    return {"status":"ok"}
-
-@app.get("/api/v1/admin/users")
-def aulist(db: Session=Depends(get_db)):
-    return [{"email": u.email, "is_disabled": u.is_disabled, "vehicle_count": len(u.vehicles)} for u in db.query(User).all()]
-
-@app.post("/api/v1/admin/toggle_user")
-def autoggle(d: UserToggle, db: Session=Depends(get_db)):
-    u = db.query(User).filter(User.email==d.target_email).first()
-    if u: u.is_disabled = d.is_disabled; db.commit()
-    return {"status":"ok"}
-
-@app.get("/api/v1/airbnb/offers")
-def airbnb_get(db: Session = Depends(get_db)):
-    return [{"id": o.id, "title": o.title, "price": o.price} for o in db.query(AirbnbOffer).all()]
-
-@app.post("/api/v1/airbnb/add")
-def airbnb_add(a: AirbnbAdd, db: Session = Depends(get_db)):
-    u = db.query(User).filter(User.token == a.token).first()
-    if not u: raise HTTPException(401)
-    db.add(AirbnbOffer(title=a.title, description=a.description, price=a.price, owner_name=u.email)); db.commit()
-    return {"status": "ok"}
+def alist(db: Session=Depends(get_db)): return [{"username": a.username} for a in db.query(Admin).all()]
 
 if __name__ == "__main__":
     import uvicorn
