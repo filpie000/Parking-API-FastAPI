@@ -22,7 +22,7 @@ import msgpack
 import paho.mqtt.client as mqtt
 import requests
 
-# --- LOGGING CONFIG ---
+# --- KONFIGURACJA LOGOWANIA ---
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
@@ -32,12 +32,12 @@ PL_TZ = ZoneInfo("Europe/Warsaw")
 def now_utc() -> datetime.datetime:
     return datetime.datetime.now(UTC)
 
-# --- MQTT CONFIG ---
+# --- KONFIGURACJA MQTT ---
 MQTT_BROKER = os.environ.get('MQTT_BROKER', 'broker.emqx.io')
 MQTT_PORT = int(os.environ.get('MQTT_PORT', 1883))
 MQTT_TOPIC = "parking/+/status" 
 
-# --- DATABASE CONFIG ---
+# --- BAZA DANYCH ---
 DATABASE_URL = os.environ.get('DATABASE_URL', "postgresql://postgres:postgres@localhost:5432/postgres")
 if DATABASE_URL.startswith("postgres://"):
     DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
@@ -51,7 +51,7 @@ engine = create_engine(
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 
-# --- FIXED GET_DB FUNCTION ---
+# --- POPRAWIONA FUNKCJA GET_DB (TO NAPRAWIA BŁĄD SKŁADNI!) ---
 def get_db():
     db = SessionLocal()
     try:
@@ -59,7 +59,7 @@ def get_db():
     finally:
         db.close()
 
-# --- DB MODELS ---
+# --- MODELE BAZY DANYCH ---
 
 spot_group_members = Table('spot_group_members', Base.metadata,
     Column('spot_name', String, ForeignKey('parking_spots.name', ondelete="CASCADE"), primary_key=True),
@@ -76,6 +76,7 @@ class ParkingSpot(Base):
     __tablename__ = "parking_spots"
     name = Column(String, primary_key=True) 
     current_status = Column(Integer, default=0) 
+    # Zgodnie z Twoim zrzutem ekranu: last_seen
     last_seen = Column(DateTime(timezone=True), default=now_utc)
     city = Column(String, nullable=True)
     state = Column(String, nullable=True)
@@ -108,7 +109,8 @@ class DaneHistoryczne(Base):
     __tablename__ = "dane_historyczne"
     id = Column(Integer, primary_key=True, autoincrement=True)
     czas_pomiaru = Column(DateTime(timezone=True), default=now_utc, index=True)
-    spot_name = Column(String, index=True)
+    # Zgodnie ze zrzutem danych: sensor_id
+    sensor_id = Column(String, index=True) 
     status = Column(Integer)
 
 class User(Base):
@@ -239,9 +241,10 @@ def on_mqtt_message(client, userdata, msg):
                 spot.last_seen = now_utc()
                 
                 if prev != status:
-                    db.add(DaneHistoryczne(spot_name=sensor_name, status=status))
+                    # Zapis do historii (używamy sensor_id)
+                    db.add(DaneHistoryczne(sensor_id=sensor_name, status=status))
                     
-                    if status == 0:
+                    if status == 0: # Miejsce zwolnione
                         observers = db.query(ObserwowaneMiejsca).filter(ObserwowaneMiejsca.sensor_id == sensor_name).all()
                         for obs in observers:
                             send_push(obs.device_token, "Wolne Miejsce!", f"{sensor_name} jest teraz wolne!")
@@ -339,7 +342,6 @@ def get_spots(limit: int=100, db: Session = Depends(get_db)):
 def obs(r: ObserwujRequest, db: Session=Depends(get_db)):
     logger.info(f"OBSERWACJA REQUEST: {r.sensor_id} dla {r.device_token}")
     
-    # Sprawdź czy już istnieje
     exists = db.query(ObserwowaneMiejsca).filter(
         ObserwowaneMiejsca.device_token == r.device_token,
         ObserwowaneMiejsca.sensor_id == r.sensor_id
@@ -366,10 +368,12 @@ def stats_mobile(z: StatystykiZapytanie, db: Session = Depends(get_db)):
     start = datetime.datetime.combine(target, datetime.time(z.selected_hour, 0))
     end = start + datetime.timedelta(hours=1)
     
-    total = db.query(DaneHistoryczne).filter(DaneHistoryczne.spot_name == z.sensor_id, DaneHistoryczne.czas_pomiaru >= start, DaneHistoryczne.czas_pomiaru < end).count()
-    occ = db.query(DaneHistoryczne).filter(DaneHistoryczne.spot_name == z.sensor_id, DaneHistoryczne.czas_pomiaru >= start, DaneHistoryczne.czas_pomiaru < end, DaneHistoryczne.status == 1).count()
+    # Używamy sensor_id zgodnie z Twoją bazą
+    total = db.query(DaneHistoryczne).filter(DaneHistoryczne.sensor_id == z.sensor_id, DaneHistoryczne.czas_pomiaru >= start, DaneHistoryczne.czas_pomiaru < end).count()
+    occ = db.query(DaneHistoryczne).filter(DaneHistoryczne.sensor_id == z.sensor_id, DaneHistoryczne.czas_pomiaru >= start, DaneHistoryczne.czas_pomiaru < end, DaneHistoryczne.status == 1).count()
     
     pct = int((occ/total)*100) if total > 0 else 0
+    logger.info(f"STATS: {z.sensor_id} {pct}%")
     return {"procent_zajetosci": pct, "liczba_pomiarow": total}
 
 @app.post("/api/v1/iot/update")
@@ -382,7 +386,7 @@ async def iot(d: dict, db: Session=Depends(get_db)):
     if s:
         prev = s.current_status; s.current_status = status; s.last_seen = now_utc()
         if prev != status:
-            db.add(DaneHistoryczne(spot_name=name, status=status))
+            db.add(DaneHistoryczne(sensor_id=name, status=status))
             if status == 0: 
                 obs = db.query(ObserwowaneMiejsca).filter(ObserwowaneMiejsca.sensor_id == name).all()
                 for o in obs:
@@ -404,14 +408,15 @@ def get_report(r: RaportRequest, db: Session = Depends(get_db)):
     
     if not target_spots: return {}
 
-    history = db.query(DaneHistoryczne).filter(DaneHistoryczne.czas_pomiaru >= s_date, DaneHistoryczne.czas_pomiaru < e_date, DaneHistoryczne.spot_name.in_(target_spots)).all()
+    # Używamy sensor_id
+    history = db.query(DaneHistoryczne).filter(DaneHistoryczne.czas_pomiaru >= s_date, DaneHistoryczne.czas_pomiaru < e_date, DaneHistoryczne.sensor_id.in_(target_spots)).all()
     result = {g: [0]*24 for g in r.groups}
     
     all_spots = db.query(ParkingSpot).filter(ParkingSpot.name.in_(target_spots)).all()
     sensor_to_groups = {s.name: [g.name for g in s.groups] for s in all_spots}
 
     for h in history:
-        affected_groups = sensor_to_groups.get(h.spot_name, [])
+        affected_groups = sensor_to_groups.get(h.sensor_id, [])
         for grp in affected_groups:
             if grp in result:
                 local_time = h.czas_pomiaru.replace(tzinfo=UTC).astimezone(PL_TZ)
@@ -545,7 +550,7 @@ def ubuyticket(t: TicketAdd, db: Session = Depends(get_db)):
     db.add(nt); db.flush()
     u.active_ticket_id = nt.id
     spot.current_status = 1; spot.last_seen = now_utc()
-    db.add(DaneHistoryczne(spot_name=spot.name, status=1))
+    db.add(DaneHistoryczne(sensor_id=spot.name, status=1))
     db.commit()
     return {"status": "ok", "id": nt.id}
 
