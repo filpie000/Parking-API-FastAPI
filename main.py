@@ -11,10 +11,9 @@ from fastapi.responses import HTMLResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
-from sqlalchemy import create_engine, Column, Integer, String, DateTime, Boolean, ForeignKey, Float, Text, Table
+from sqlalchemy import create_engine, Column, Integer, String, DateTime, Boolean, ForeignKey, Float, Text, Table, func
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, Session, relationship
-from sqlalchemy import func
 
 import bcrypt
 import msgpack
@@ -50,7 +49,7 @@ engine = create_engine(
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 
-# --- POPRAWIONA FUNKCJA GET_DB ---
+# --- POPRAWIONA SKŁADNIA GET_DB ---
 def get_db():
     db = SessionLocal()
     try:
@@ -58,7 +57,7 @@ def get_db():
     finally:
         db.close()
 
-# --- MODELE BAZY DANYCH ---
+# --- MODELE ---
 
 spot_group_members = Table('spot_group_members', Base.metadata,
     Column('spot_name', String, ForeignKey('parking_spots.name', ondelete="CASCADE"), primary_key=True),
@@ -162,6 +161,7 @@ class AirbnbOffer(Base):
 
 class ObserwowaneMiejsca(Base):
     __tablename__ = "obserwowane_miejsca"
+    # Teraz mamy poprawne ID
     id = Column(Integer, primary_key=True, autoincrement=True)
     device_token = Column(String, index=True)
     sensor_id = Column(String, index=True)
@@ -334,11 +334,12 @@ def get_spots(limit: int=100, db: Session = Depends(get_db)):
         })
     return res
 
+# --- POPRAWIONY ENDPOINT OBSERWACJI (DEBUG) ---
 @app.post("/api/v1/obserwuj_miejsce")
 def obs(r: ObserwujRequest, db: Session=Depends(get_db)):
-    logger.info(f"OBSERWACJA REQUEST: {r.sensor_id} dla {r.device_token}")
+    logger.info(f"OBSERWACJA: Otrzymano token {r.device_token} dla {r.sensor_id}")
     
-    # Sprawdź czy już nie obserwuje
+    # Sprawdź czy już istnieje
     exists = db.query(ObserwowaneMiejsca).filter(
         ObserwowaneMiejsca.device_token == r.device_token,
         ObserwowaneMiejsca.sensor_id == r.sensor_id
@@ -349,28 +350,31 @@ def obs(r: ObserwujRequest, db: Session=Depends(get_db)):
         db.add(new_obs)
         try:
             db.commit()
-            logger.info("Zapisano obserwację w bazie!")
+            logger.info("OBSERWACJA: Zapisano pomyślnie!")
         except Exception as e:
             db.rollback()
-            logger.error(f"Błąd zapisu obserwacji: {e}")
+            logger.error(f"OBSERWACJA BŁĄD: {e}")
             raise HTTPException(500, f"DB Error: {str(e)}")
             
     return {"status": "registered"}
 
+# --- POPRAWIONY ENDPOINT STATYSTYK (Dla historii) ---
 @app.post("/api/v1/statystyki/zajetosc")
 def stats_mobile(z: StatystykiZapytanie, db: Session = Depends(get_db)):
+    logger.info(f"HISTORIA: Zapytanie o {z.sensor_id} na {z.selected_date}")
     try: target = datetime.datetime.strptime(z.selected_date, "%Y-%m-%d").date()
     except: raise HTTPException(400, "Format daty")
     
     start = datetime.datetime.combine(target, datetime.time(z.selected_hour, 0))
     end = start + datetime.timedelta(hours=1)
     
-    # Używamy spot_name zamiast sensor_id, bo tak jest w modelu DaneHistoryczne
+    # Szukamy po spot_name
     total = db.query(DaneHistoryczne).filter(DaneHistoryczne.spot_name == z.sensor_id, DaneHistoryczne.czas_pomiaru >= start, DaneHistoryczne.czas_pomiaru < end).count()
     occ = db.query(DaneHistoryczne).filter(DaneHistoryczne.spot_name == z.sensor_id, DaneHistoryczne.czas_pomiaru >= start, DaneHistoryczne.czas_pomiaru < end, DaneHistoryczne.status == 1).count()
     
     pct = int((occ/total)*100) if total > 0 else 0
-    return {"procent_zajetosci": pct, "liczba_pomiarow": total}
+    # Zwracamy pełną strukturę dla frontendu
+    return {"wynik": {"procent_zajetosci": pct, "liczba_pomiarow": total}}
 
 @app.post("/api/v1/iot/update")
 async def iot(d: dict, db: Session=Depends(get_db)):
