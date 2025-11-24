@@ -13,7 +13,6 @@ from fastapi.responses import HTMLResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
-# --- POPRAWKA IMPORTÓW (DODANO Float) ---
 from sqlalchemy import create_engine, Column, Integer, String, DateTime, Boolean, ForeignKey, Float, Text, Table, func
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, Session, relationship
@@ -23,7 +22,7 @@ import msgpack
 import paho.mqtt.client as mqtt
 import requests
 
-# --- KONFIGURACJA LOGOWANIA ---
+# --- LOGGING CONFIG ---
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
@@ -33,12 +32,12 @@ PL_TZ = ZoneInfo("Europe/Warsaw")
 def now_utc() -> datetime.datetime:
     return datetime.datetime.now(UTC)
 
-# --- KONFIGURACJA MQTT ---
+# --- MQTT CONFIG ---
 MQTT_BROKER = os.environ.get('MQTT_BROKER', 'broker.emqx.io')
 MQTT_PORT = int(os.environ.get('MQTT_PORT', 1883))
 MQTT_TOPIC = "parking/+/status" 
 
-# --- BAZA DANYCH ---
+# --- DATABASE CONFIG ---
 DATABASE_URL = os.environ.get('DATABASE_URL', "postgresql://postgres:postgres@localhost:5432/postgres")
 if DATABASE_URL.startswith("postgres://"):
     DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
@@ -52,7 +51,7 @@ engine = create_engine(
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 
-# --- FUNKCJA GET_DB ---
+# --- FIXED GET_DB FUNCTION ---
 def get_db():
     db = SessionLocal()
     try:
@@ -60,7 +59,7 @@ def get_db():
     finally:
         db.close()
 
-# --- MODELE BAZY DANYCH ---
+# --- DB MODELS ---
 
 spot_group_members = Table('spot_group_members', Base.metadata,
     Column('spot_name', String, ForeignKey('parking_spots.name', ondelete="CASCADE"), primary_key=True),
@@ -142,7 +141,6 @@ class Ticket(Base):
     start_time = Column(DateTime(timezone=True), default=now_utc)
     end_time = Column(DateTime(timezone=True), nullable=True)
     status = Column(String, default='ACTIVE')
-    # Teraz Float zadziała, bo jest zaimportowany
     price = Column(Float, default=0.0)
     owner = relationship("User", back_populates="tickets", foreign_keys=[user_id])
     vehicle = relationship("Vehicle")
@@ -341,6 +339,7 @@ def get_spots(limit: int=100, db: Session = Depends(get_db)):
 def obs(r: ObserwujRequest, db: Session=Depends(get_db)):
     logger.info(f"OBSERWACJA REQUEST: {r.sensor_id} dla {r.device_token}")
     
+    # Sprawdź czy już istnieje
     exists = db.query(ObserwowaneMiejsca).filter(
         ObserwowaneMiejsca.device_token == r.device_token,
         ObserwowaneMiejsca.sensor_id == r.sensor_id
