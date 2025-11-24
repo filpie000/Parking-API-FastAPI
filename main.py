@@ -3,8 +3,6 @@ import datetime
 import logging
 import secrets
 import json
-import threading
-import time
 from typing import Optional, List, Dict
 from zoneinfo import ZoneInfo
 
@@ -13,9 +11,10 @@ from fastapi.responses import HTMLResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
-from sqlalchemy import create_engine, Column, Integer, String, DateTime, Boolean, ForeignKey, Float, Text, Table, func
+from sqlalchemy import create_engine, Column, Integer, String, DateTime, Boolean, ForeignKey, Float, Text, Table
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, Session, relationship
+from sqlalchemy import func
 
 import bcrypt
 import msgpack
@@ -51,6 +50,7 @@ engine = create_engine(
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 
+# --- POPRAWIONA FUNKCJA GET_DB (BEZ BŁĘDU SKŁADNI) ---
 def get_db():
     db = SessionLocal()
     try:
@@ -240,12 +240,14 @@ def on_mqtt_message(client, userdata, msg):
                 if prev != status:
                     db.add(DaneHistoryczne(spot_name=sensor_name, status=status))
                     
-                    if status == 0: # Zwolniono miejsce
+                    if status == 0:
                         observers = db.query(ObserwowaneMiejsca).filter(ObserwowaneMiejsca.sensor_id == sensor_name).all()
                         for obs in observers:
                             send_push(obs.device_token, "Wolne Miejsce!", f"{sensor_name} jest teraz wolne!")
-                            db.delete(obs) # Jednorazowe powiadomienie
+                            db.delete(obs)
                 db.commit()
+                # Broadcast WS
+                # ... (kod asynchroniczny pominięty dla uproszczenia w wątku MQTT)
     except Exception as e:
         logger.error(f"MQTT Error: {e}")
 
@@ -267,12 +269,16 @@ app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, 
 @app.on_event("startup")
 async def startup_event():
     start_mqtt()
-    # Auto-fix dla tabeli obserwowanych (dodanie kolumny ID jeśli brakuje)
     with SessionLocal() as db:
         try:
-            db.execute(text("CREATE TABLE IF NOT EXISTS obserwowowane_miejsca (id SERIAL PRIMARY KEY, device_token VARCHAR, sensor_id VARCHAR, czas_dodania TIMESTAMP)"))
-            db.commit()
-        except: pass
+            if not db.query(Admin).first():
+                logger.info("Inicjalizacja Admina")
+                sa = Admin(username="admin", password_hash=get_password_hash("admin123"), badge_name="Super Admin")
+                db.add(sa); db.flush()
+                db.add(AdminPermissions(admin_id=sa.id, city="ALL"))
+                db.commit()
+        except Exception as e:
+            logger.error(f"Startup DB Error: {e}")
 
 @app.get("/")
 def root(): return {"status": "System Online", "mqtt": "Active"}
@@ -330,39 +336,39 @@ def get_spots(limit: int=100, db: Session = Depends(get_db)):
         })
     return res
 
-# --- POPRAWIONY ENDPOINT OBSERWACJI ---
 @app.post("/api/v1/obserwuj_miejsce")
 def obs(r: ObserwujRequest, db: Session=Depends(get_db)):
-    logger.info(f"REQUEST OBSERWACJA: Token={r.device_token}, Sensor={r.sensor_id}") # LOGOWANIE!
+    logger.info(f"OBSERWACJA REQUEST: {r.sensor_id} dla {r.device_token}")
     
-    try:
-        # Usuń stare (dla porządku)
-        old = db.query(ObserwowaneMiejsca).filter(ObserwowaneMiejsca.device_token == r.device_token, ObserwowaneMiejsca.sensor_id == r.sensor_id).first()
-        if old: 
-            logger.info("Usuwanie starej obserwacji")
-            db.delete(old)
-        
+    # Sprawdź czy już obserwuje
+    exists = db.query(ObserwowaneMiejsca).filter(
+        ObserwowaneMiejsca.device_token == r.device_token,
+        ObserwowaneMiejsca.sensor_id == r.sensor_id
+    ).first()
+    
+    if not exists:
         new_obs = ObserwowaneMiejsca(device_token=r.device_token, sensor_id=r.sensor_id)
         db.add(new_obs)
-        db.commit()
-        logger.info(f"SUKCES: Zapisano obserwacje w bazie ID={new_obs.id}")
-        return {"status": "registered"}
-    except Exception as e:
-        db.rollback()
-        logger.error(f"BŁĄD ZAPISU DO BAZY: {e}")
-        raise HTTPException(500, f"Błąd bazy: {str(e)}")
+        try:
+            db.commit()
+            logger.info("Zapisano obserwację w bazie!")
+        except Exception as e:
+            db.rollback()
+            logger.error(f"Błąd zapisu obserwacji: {e}")
+            raise HTTPException(500, f"DB Error: {str(e)}")
+            
+    return {"status": "registered"}
 
 @app.post("/api/v1/statystyki/zajetosc")
 def stats_mobile(z: StatystykiZapytanie, db: Session = Depends(get_db)):
-    logger.info(f"STATS REQUEST: {z.sensor_id} @ {z.selected_date} {z.selected_hour}:00")
     try: target = datetime.datetime.strptime(z.selected_date, "%Y-%m-%d").date()
     except: raise HTTPException(400, "Format daty")
     
     start = datetime.datetime.combine(target, datetime.time(z.selected_hour, 0))
     end = start + datetime.timedelta(hours=1)
     
-    # Używamy spot_name zamiast sensor_id, bo tak jest w modelu DaneHistoryczne
-    # Używamy func.lower() dla case-insensitive search (BUD_1 vs bud_1)
+    # Używamy spot_name zamiast sensor_id
+    # Używamy func.lower() dla bezpieczeństwa (case-insensitive)
     total = db.query(DaneHistoryczne).filter(func.lower(DaneHistoryczne.spot_name) == z.sensor_id.lower(), DaneHistoryczne.czas_pomiaru >= start, DaneHistoryczne.czas_pomiaru < end).count()
     occ = db.query(DaneHistoryczne).filter(func.lower(DaneHistoryczne.spot_name) == z.sensor_id.lower(), DaneHistoryczne.czas_pomiaru >= start, DaneHistoryczne.czas_pomiaru < end, DaneHistoryczne.status == 1).count()
     
