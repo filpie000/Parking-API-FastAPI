@@ -307,10 +307,7 @@ async def ws(ws: WebSocket):
 def get_filter_options(db: Session = Depends(get_db)):
     cities = db.query(ParkingSpot.city).distinct().all()
     groups = db.query(Group.name).all()
-    return {
-        "cities": [c[0] for c in cities if c[0]],
-        "states": [g.name for g in groups]
-    }
+    return {"cities": [c[0] for c in cities if c[0]], "states": [g.name for g in groups]}
 
 @app.get("/api/v1/aktualny_stan")
 def get_spots(limit: int=100, db: Session = Depends(get_db)):
@@ -329,17 +326,9 @@ def get_spots(limit: int=100, db: Session = Depends(get_db)):
             except: pass
 
         res.append({
-            "sensor_id": s.name,
-            "name": s.name,
-            "status": s.current_status,
-            "groups": grp_names,
-            "city": s.city,
-            "state": s.state,
-            "wspolrzedne": coords_obj,
-            "is_disabled_friendly": s.is_disabled_friendly,
-            "is_ev": s.is_ev,
-            "is_paid": s.is_paid,
-            "adres": f"{s.state or ''}, {s.city or ''}".strip(', '),
+            "sensor_id": s.name, "name": s.name, "status": s.current_status, "groups": grp_names,
+            "city": s.city, "state": s.state, "wspolrzedne": coords_obj, "is_disabled_friendly": s.is_disabled_friendly,
+            "is_ev": s.is_ev, "is_paid": s.is_paid, "adres": f"{s.state or ''}, {s.city or ''}".strip(', '),
             "typ": 'niepelnosprawni' if s.is_disabled_friendly else ('ev' if s.is_ev else 'zwykle'),
             "cennik": "3.00 PLN/h" if s.is_paid else "Bezpłatny"
         })
@@ -365,7 +354,7 @@ def stats_mobile(z: StatystykiZapytanie, db: Session = Depends(get_db)):
     occ = db.query(DaneHistoryczne).filter(DaneHistoryczne.spot_name == z.sensor_id, DaneHistoryczne.czas_pomiaru >= start, DaneHistoryczne.czas_pomiaru < end, DaneHistoryczne.status == 1).count()
     
     pct = int((occ/total)*100) if total > 0 else 0
-    return {"wynik": {"procent_zajetosci": pct, "liczba_pomiarow": total}}
+    return {"procent_zajetosci": pct, "liczba_pomiarow": total}
 
 @app.post("/api/v1/iot/update")
 async def iot(d: dict, db: Session=Depends(get_db)):
@@ -389,9 +378,7 @@ async def iot(d: dict, db: Session=Depends(get_db)):
 
 @app.post("/api/v1/dashboard/raport")
 def get_report(r: RaportRequest, db: Session = Depends(get_db)):
-    try:
-        s_date = datetime.datetime.strptime(r.start_date, "%Y-%m-%d")
-        e_date = datetime.datetime.strptime(r.end_date, "%Y-%m-%d") + datetime.timedelta(days=1)
+    try: s_date = datetime.datetime.strptime(r.start_date, "%Y-%m-%d"); e_date = datetime.datetime.strptime(r.end_date, "%Y-%m-%d") + datetime.timedelta(days=1)
     except: raise HTTPException(400, "Zła data")
 
     target_spots = []
@@ -401,13 +388,9 @@ def get_report(r: RaportRequest, db: Session = Depends(get_db)):
     
     if not target_spots: return {}
 
-    history = db.query(DaneHistoryczne).filter(
-        DaneHistoryczne.czas_pomiaru >= s_date,
-        DaneHistoryczne.czas_pomiaru < e_date,
-        DaneHistoryczne.spot_name.in_(target_spots)
-    ).all()
-
+    history = db.query(DaneHistoryczne).filter(DaneHistoryczne.czas_pomiaru >= s_date, DaneHistoryczne.czas_pomiaru < e_date, DaneHistoryczne.spot_name.in_(target_spots)).all()
     result = {g: [0]*24 for g in r.groups}
+    
     all_spots = db.query(ParkingSpot).filter(ParkingSpot.name.in_(target_spots)).all()
     sensor_to_groups = {s.name: [g.name for g in s.groups] for s in all_spots}
 
@@ -416,31 +399,47 @@ def get_report(r: RaportRequest, db: Session = Depends(get_db)):
         for grp in affected_groups:
             if grp in result:
                 local_time = h.czas_pomiaru.replace(tzinfo=UTC).astimezone(PL_TZ)
-                if h.status == 1:
-                    result[grp][local_time.hour] += 1
+                if h.status == 1: result[grp][local_time.hour] += 1
 
     for g in result:
         mx = max(result[g]) if result[g] else 1
         result[g] = [round((x/mx)*100, 1) if mx>0 else 0 for x in result[g]]
-
     return result
 
-# --- ADMIN ---
+# --- AIRBNB ---
+@app.get("/api/v1/airbnb/offers")
+def get_airbnb(db: Session = Depends(get_db)):
+    offers = db.query(AirbnbOffer).all()
+    return [{"id": o.id, "title": o.title, "price": o.price, "district": o.district, "description": o.description, "availability": o.availability} for o in offers]
+
+@app.post("/api/v1/airbnb/add")
+def add_airbnb(a: AirbnbAdd, db: Session = Depends(get_db)):
+    u = db.query(User).filter(User.token == a.token).first()
+    if not u: raise HTTPException(401)
+    db.add(AirbnbOffer(title=a.title, description=a.description, price=a.price, availability=a.availability, latitude=a.latitude, longitude=a.longitude, district=a.district, owner_name=u.email))
+    db.commit()
+    return {"status": "ok"}
+
+@app.post("/api/v1/airbnb/delete")
+def del_airbnb(d: AirbnbDelete, db: Session = Depends(get_db)):
+    u = db.query(User).filter(User.token == d.token).first()
+    if not u: raise HTTPException(401)
+    offer = db.query(AirbnbOffer).filter(AirbnbOffer.id == d.offer_id).first()
+    if offer and offer.owner_name == u.email:
+        db.delete(offer); db.commit()
+    return {"status": "ok"}
+
+# --- ADMIN/USER ---
 @app.post("/api/v1/admin/auth")
 def admin_login(data: AdminLogin, db: Session = Depends(get_db)):
     admin = db.query(Admin).filter(Admin.username == data.username).first()
     if not admin or not verify_password(data.password, admin.password_hash): raise HTTPException(401)
-    perms = {}
-    if admin.permissions:
-        perms = {"city": admin.permissions.city, "allowed_states": admin.permissions.allowed_states, "view_disabled_only": admin.permissions.view_disabled_only}
+    perms = {"city": admin.permissions.city, "allowed_states": admin.permissions.allowed_states, "view_disabled_only": admin.permissions.view_disabled_only} if admin.permissions else {}
     return {"username": admin.username, "is_superadmin": (admin.username == 'admin'), "permissions": perms}
 
 @app.get("/api/v1/admin/list")
 def list_admins(db: Session = Depends(get_db)):
-    return [{"id": a.id, "username": a.username, "permissions": {
-        "city": a.permissions.city if a.permissions else "ALL",
-        "allowed_states": a.permissions.allowed_states if a.permissions else ""
-    }} for a in db.query(Admin).all()]
+    return [{"id": a.id, "username": a.username, "permissions": {"city": a.permissions.city if a.permissions else "ALL", "allowed_states": a.permissions.allowed_states if a.permissions else ""}} for a in db.query(Admin).all()]
 
 @app.post("/api/v1/admin/create")
 def create_admin(d: AdminPayload, db: Session = Depends(get_db)):
@@ -457,9 +456,7 @@ def update_admin(d: AdminPayload, db: Session = Depends(get_db)):
     if not a: raise HTTPException(404)
     if d.password: a.password_hash = get_password_hash(d.password)
     if not a.permissions: a.permissions = AdminPermissions(admin_id=a.id)
-    a.permissions.city = d.city
-    a.permissions.allowed_states = d.allowed_states
-    a.permissions.view_disabled_only = d.view_disabled_only
+    a.permissions.city = d.city; a.permissions.allowed_states = d.allowed_states; a.permissions.view_disabled_only = d.view_disabled_only
     db.commit()
     return {"status": "ok"}
 
@@ -489,7 +486,6 @@ def update_user_permissions(u: UserPermissionsUpdate, db: Session = Depends(get_
     db.commit()
     return {"status": "updated"}
 
-# --- USER AUTH ---
 @app.post("/api/v1/auth/login")
 def ulogin(u: UserAuth, db: Session = Depends(get_db)):
     try:
@@ -544,29 +540,6 @@ def uactive(token: str, db: Session = Depends(get_db)):
     if not u or not u.active_ticket_id: return None
     t = db.query(Ticket).filter(Ticket.id == u.active_ticket_id).first()
     return {"id": t.id, "spot_name": t.spot_name, "start_time": t.start_time.isoformat()} if t else None
-
-# --- AIRBNB ---
-@app.get("/api/v1/airbnb/offers")
-def get_airbnb(db: Session = Depends(get_db)):
-    return [{"id": o.id, "title": o.title, "price": o.price, "district": o.district} for o in db.query(AirbnbOffer).all()]
-
-@app.post("/api/v1/airbnb/add")
-def add_airbnb(a: AirbnbAdd, db: Session = Depends(get_db)):
-    u = db.query(User).filter(User.token == a.token).first()
-    if not u: raise HTTPException(401)
-    db.add(AirbnbOffer(title=a.title, description=a.description, price=a.price, availability=a.availability,
-                       latitude=a.latitude, longitude=a.longitude, district=a.district, owner_name=u.email))
-    db.commit()
-    return {"status": "ok"}
-
-@app.post("/api/v1/airbnb/delete")
-def del_airbnb(d: AirbnbDelete, db: Session = Depends(get_db)):
-    u = db.query(User).filter(User.token == d.token).first()
-    if not u: raise HTTPException(401)
-    offer = db.query(AirbnbOffer).filter(AirbnbOffer.id == d.offer_id).first()
-    if offer and offer.owner_name == u.email:
-        db.delete(offer); db.commit()
-    return {"status": "ok"}
 
 if __name__ == "__main__":
     import uvicorn
