@@ -20,6 +20,7 @@ from sqlalchemy.orm import sessionmaker, Session, relationship
 import bcrypt
 import msgpack
 import paho.mqtt.client as mqtt
+import requests
 
 # --- KONFIGURACJA LOGOWANIA ---
 logging.basicConfig(level=logging.INFO)
@@ -162,6 +163,7 @@ class AirbnbOffer(Base):
 
 class ObserwowaneMiejsca(Base):
     __tablename__ = "obserwowane_miejsca"
+    # device_token jako PRIMARY KEY
     device_token = Column(String, primary_key=True)
     sensor_id = Column(String, index=True)
     czas_dodania = Column(DateTime(timezone=True), default=now_utc)
@@ -245,7 +247,6 @@ def on_mqtt_message(client, userdata, msg):
                             send_push(obs.device_token, "Wolne Miejsce!", f"{sensor_name} jest teraz wolne!")
                             db.delete(obs)
                 db.commit()
-                # Broadcast WS (simplified)
     except Exception as e:
         logger.error(f"MQTT Error: {e}")
 
@@ -336,6 +337,8 @@ def get_spots(limit: int=100, db: Session = Depends(get_db)):
 
 @app.post("/api/v1/obserwuj_miejsce")
 def obs(r: ObserwujRequest, db: Session=Depends(get_db)):
+    # Logika "jeden token = jedno miejsce" dla uproszczenia
+    # Usuń stare wpisy dla tego tokena
     old = db.query(ObserwowaneMiejsca).filter(ObserwowaneMiejsca.device_token == r.device_token).first()
     if old: db.delete(old)
     
@@ -358,6 +361,7 @@ def stats_mobile(z: StatystykiZapytanie, db: Session = Depends(get_db)):
     start = datetime.datetime.combine(target, datetime.time(z.selected_hour, 0))
     end = start + datetime.timedelta(hours=1)
     
+    # Używamy spot_name zamiast sensor_id, bo tak jest w modelu DaneHistoryczne
     total = db.query(DaneHistoryczne).filter(DaneHistoryczne.spot_name == z.sensor_id, DaneHistoryczne.czas_pomiaru >= start, DaneHistoryczne.czas_pomiaru < end).count()
     occ = db.query(DaneHistoryczne).filter(DaneHistoryczne.spot_name == z.sensor_id, DaneHistoryczne.czas_pomiaru >= start, DaneHistoryczne.czas_pomiaru < end, DaneHistoryczne.status == 1).count()
     
@@ -396,6 +400,7 @@ def get_report(r: RaportRequest, db: Session = Depends(get_db)):
     
     if not target_spots: return {}
 
+    # Używamy spot_name
     history = db.query(DaneHistoryczne).filter(DaneHistoryczne.czas_pomiaru >= s_date, DaneHistoryczne.czas_pomiaru < e_date, DaneHistoryczne.spot_name.in_(target_spots)).all()
     result = {g: [0]*24 for g in r.groups}
     
