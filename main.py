@@ -50,7 +50,7 @@ engine = create_engine(
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 
-# --- POPRAWIONA FUNKCJA GET_DB (BEZ BŁĘDU SKŁADNI) ---
+# --- POPRAWIONA SKŁADNIA GET_DB ---
 def get_db():
     db = SessionLocal()
     try:
@@ -246,8 +246,6 @@ def on_mqtt_message(client, userdata, msg):
                             send_push(obs.device_token, "Wolne Miejsce!", f"{sensor_name} jest teraz wolne!")
                             db.delete(obs)
                 db.commit()
-                # Broadcast WS
-                # ... (kod asynchroniczny pominięty dla uproszczenia w wątku MQTT)
     except Exception as e:
         logger.error(f"MQTT Error: {e}")
 
@@ -340,7 +338,6 @@ def get_spots(limit: int=100, db: Session = Depends(get_db)):
 def obs(r: ObserwujRequest, db: Session=Depends(get_db)):
     logger.info(f"OBSERWACJA REQUEST: {r.sensor_id} dla {r.device_token}")
     
-    # Sprawdź czy już obserwuje
     exists = db.query(ObserwowaneMiejsca).filter(
         ObserwowaneMiejsca.device_token == r.device_token,
         ObserwowaneMiejsca.sensor_id == r.sensor_id
@@ -367,10 +364,8 @@ def stats_mobile(z: StatystykiZapytanie, db: Session = Depends(get_db)):
     start = datetime.datetime.combine(target, datetime.time(z.selected_hour, 0))
     end = start + datetime.timedelta(hours=1)
     
-    # Używamy spot_name zamiast sensor_id
-    # Używamy func.lower() dla bezpieczeństwa (case-insensitive)
-    total = db.query(DaneHistoryczne).filter(func.lower(DaneHistoryczne.spot_name) == z.sensor_id.lower(), DaneHistoryczne.czas_pomiaru >= start, DaneHistoryczne.czas_pomiaru < end).count()
-    occ = db.query(DaneHistoryczne).filter(func.lower(DaneHistoryczne.spot_name) == z.sensor_id.lower(), DaneHistoryczne.czas_pomiaru >= start, DaneHistoryczne.czas_pomiaru < end, DaneHistoryczne.status == 1).count()
+    total = db.query(DaneHistoryczne).filter(DaneHistoryczne.spot_name == z.sensor_id, DaneHistoryczne.czas_pomiaru >= start, DaneHistoryczne.czas_pomiaru < end).count()
+    occ = db.query(DaneHistoryczne).filter(DaneHistoryczne.spot_name == z.sensor_id, DaneHistoryczne.czas_pomiaru >= start, DaneHistoryczne.czas_pomiaru < end, DaneHistoryczne.status == 1).count()
     
     pct = int((occ/total)*100) if total > 0 else 0
     logger.info(f"STATS RESULT: {pct}% ({total} pomiarow)")
