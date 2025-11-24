@@ -50,7 +50,7 @@ engine = create_engine(
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 
-# --- POPRAWIONA SKŁADNIA GET_DB ---
+# --- POPRAWIONA FUNKCJA GET_DB (BEZ BŁĘDU SKŁADNI) ---
 def get_db():
     db = SessionLocal()
     try:
@@ -364,11 +364,11 @@ def stats_mobile(z: StatystykiZapytanie, db: Session = Depends(get_db)):
     start = datetime.datetime.combine(target, datetime.time(z.selected_hour, 0))
     end = start + datetime.timedelta(hours=1)
     
+    # Używamy spot_name zamiast sensor_id, bo tak jest w modelu DaneHistoryczne
     total = db.query(DaneHistoryczne).filter(DaneHistoryczne.spot_name == z.sensor_id, DaneHistoryczne.czas_pomiaru >= start, DaneHistoryczne.czas_pomiaru < end).count()
     occ = db.query(DaneHistoryczne).filter(DaneHistoryczne.spot_name == z.sensor_id, DaneHistoryczne.czas_pomiaru >= start, DaneHistoryczne.czas_pomiaru < end, DaneHistoryczne.status == 1).count()
     
     pct = int((occ/total)*100) if total > 0 else 0
-    logger.info(f"STATS RESULT: {pct}% ({total} pomiarow)")
     return {"procent_zajetosci": pct, "liczba_pomiarow": total}
 
 @app.post("/api/v1/iot/update")
