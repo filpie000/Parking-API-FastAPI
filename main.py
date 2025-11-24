@@ -295,7 +295,18 @@ async def ws(ws: WebSocket):
     except: manager.disconnect(ws)
 
 # --- API ENDPOINTS ---
-
+@app.get("/api/v1/debug/db-check")
+def db_check():
+    db = next(get_db()) # Pobierz jedną sesję
+    try:
+        # Spróbuj wykonać proste zapytanie SQL
+        db.execute(text("SELECT 1"))
+        return {"status": "SUCCESS", "message": "Połączenie z bazą aktywne i zweryfikowane."}
+    except Exception as e:
+        logger.error(f"KRYTYCZNY BŁĄD DB CHECK: {e}")
+        raise HTTPException(status_code=500, detail=f"Błąd połączenia z bazą: {str(e)}")
+    finally:
+        db.close()
 @app.get("/api/v1/options/filters")
 def get_filter_options(db: Session = Depends(get_db)):
     cities = db.query(ParkingSpot.city).distinct().all()
@@ -561,3 +572,4 @@ def uactive(token: str, db: Session = Depends(get_db)):
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)
+
