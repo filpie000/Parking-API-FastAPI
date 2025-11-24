@@ -13,7 +13,7 @@ from fastapi.responses import HTMLResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
-from sqlalchemy import create_engine, Column, Integer, String, DateTime, Boolean, ForeignKey, Float, Text, Table, func, text
+from sqlalchemy import create_engine, Column, Integer, String, DateTime, Boolean, ForeignKey, Float, Text, Table, func
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, Session, relationship
 
@@ -162,7 +162,6 @@ class AirbnbOffer(Base):
 
 class ObserwowaneMiejsca(Base):
     __tablename__ = "obserwowane_miejsca"
-    # Zmieniamy definicję - device_token nie jest już Primary Key, bo jeden token może obserwować wiele miejsc
     id = Column(Integer, primary_key=True, autoincrement=True)
     device_token = Column(String, index=True)
     sensor_id = Column(String, index=True)
@@ -271,7 +270,7 @@ async def startup_event():
     # Auto-fix dla tabeli obserwowanych (dodanie kolumny ID jeśli brakuje)
     with SessionLocal() as db:
         try:
-            db.execute(text("ALTER TABLE obserwowowane_miejsca ADD COLUMN IF NOT EXISTS id SERIAL PRIMARY KEY"))
+            db.execute(text("CREATE TABLE IF NOT EXISTS obserwowowane_miejsca (id SERIAL PRIMARY KEY, device_token VARCHAR, sensor_id VARCHAR, czas_dodania TIMESTAMP)"))
             db.commit()
         except: pass
 
@@ -334,38 +333,42 @@ def get_spots(limit: int=100, db: Session = Depends(get_db)):
 # --- POPRAWIONY ENDPOINT OBSERWACJI ---
 @app.post("/api/v1/obserwuj_miejsce")
 def obs(r: ObserwujRequest, db: Session=Depends(get_db)):
-    # Sprawdź czy już obserwuje to miejsce, żeby nie dublować
-    exists = db.query(ObserwowaneMiejsca).filter(
-        ObserwowaneMiejsca.device_token == r.device_token,
-        ObserwowaneMiejsca.sensor_id == r.sensor_id
-    ).first()
+    logger.info(f"REQUEST OBSERWACJA: Token={r.device_token}, Sensor={r.sensor_id}") # LOGOWANIE!
     
-    if not exists:
+    try:
+        # Usuń stare (dla porządku)
+        old = db.query(ObserwowaneMiejsca).filter(ObserwowaneMiejsca.device_token == r.device_token, ObserwowaneMiejsca.sensor_id == r.sensor_id).first()
+        if old: 
+            logger.info("Usuwanie starej obserwacji")
+            db.delete(old)
+        
         new_obs = ObserwowaneMiejsca(device_token=r.device_token, sensor_id=r.sensor_id)
         db.add(new_obs)
-        try:
-            db.commit()
-            logger.info(f"Zarejestrowano obserwacje: {r.sensor_id} dla {r.device_token}")
-        except Exception as e:
-            db.rollback()
-            logger.error(f"Błąd zapisu obserwacji: {e}")
-            raise HTTPException(500, "Błąd zapisu")
-            
-    return {"status": "registered"}
+        db.commit()
+        logger.info(f"SUKCES: Zapisano obserwacje w bazie ID={new_obs.id}")
+        return {"status": "registered"}
+    except Exception as e:
+        db.rollback()
+        logger.error(f"BŁĄD ZAPISU DO BAZY: {e}")
+        raise HTTPException(500, f"Błąd bazy: {str(e)}")
 
 @app.post("/api/v1/statystyki/zajetosc")
 def stats_mobile(z: StatystykiZapytanie, db: Session = Depends(get_db)):
+    logger.info(f"STATS REQUEST: {z.sensor_id} @ {z.selected_date} {z.selected_hour}:00")
     try: target = datetime.datetime.strptime(z.selected_date, "%Y-%m-%d").date()
     except: raise HTTPException(400, "Format daty")
     
     start = datetime.datetime.combine(target, datetime.time(z.selected_hour, 0))
     end = start + datetime.timedelta(hours=1)
     
-    total = db.query(DaneHistoryczne).filter(DaneHistoryczne.spot_name == z.sensor_id, DaneHistoryczne.czas_pomiaru >= start, DaneHistoryczne.czas_pomiaru < end).count()
-    occ = db.query(DaneHistoryczne).filter(DaneHistoryczne.spot_name == z.sensor_id, DaneHistoryczne.czas_pomiaru >= start, DaneHistoryczne.czas_pomiaru < end, DaneHistoryczne.status == 1).count()
+    # Używamy spot_name zamiast sensor_id, bo tak jest w modelu DaneHistoryczne
+    # Używamy func.lower() dla case-insensitive search (BUD_1 vs bud_1)
+    total = db.query(DaneHistoryczne).filter(func.lower(DaneHistoryczne.spot_name) == z.sensor_id.lower(), DaneHistoryczne.czas_pomiaru >= start, DaneHistoryczne.czas_pomiaru < end).count()
+    occ = db.query(DaneHistoryczne).filter(func.lower(DaneHistoryczne.spot_name) == z.sensor_id.lower(), DaneHistoryczne.czas_pomiaru >= start, DaneHistoryczne.czas_pomiaru < end, DaneHistoryczne.status == 1).count()
     
     pct = int((occ/total)*100) if total > 0 else 0
-    return {"wynik": {"procent_zajetosci": pct, "liczba_pomiarow": total}}
+    logger.info(f"STATS RESULT: {pct}% ({total} pomiarow)")
+    return {"procent_zajetosci": pct, "liczba_pomiarow": total}
 
 @app.post("/api/v1/iot/update")
 async def iot(d: dict, db: Session=Depends(get_db)):
