@@ -29,14 +29,14 @@ def now_utc() -> datetime.datetime:
     return datetime.datetime.now(UTC)
 
 # --- BAZA DANYCH (STABILNE POŁĄCZENIE) ---
-# Domyślny URL bazy - zmień jeśli używasz innego
+# Domyślny URL bazy - upewnij się, że pasuje do Twojego środowiska
 DATABASE_URL = os.environ.get('DATABASE_URL', "postgresql://postgres:postgres@localhost:5432/postgres")
 if DATABASE_URL.startswith("postgres://"):
     DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
 
 engine = create_engine(
     DATABASE_URL, 
-    pool_pre_ping=True,  # <--- KLUCZOWE: Sprawdza połączenie przed każdym zapytaniem (fix na nocne zwisy)
+    pool_pre_ping=True,  # KLUCZOWE: Sprawdza połączenie przed każdym zapytaniem (fix na nocne zwisy)
     pool_recycle=3600,   # Odświeża połączenie co godzinę
     connect_args={"check_same_thread": False} if "sqlite" in DATABASE_URL else {}
 )
