@@ -50,7 +50,7 @@ engine = create_engine(
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 
-# --- POPRAWIONA FUNKCJA GET_DB (BEZ BŁĘDU SKŁADNI) ---
+# --- POPRAWIONA FUNKCJA GET_DB ---
 def get_db():
     db = SessionLocal()
     try:
@@ -338,6 +338,7 @@ def get_spots(limit: int=100, db: Session = Depends(get_db)):
 def obs(r: ObserwujRequest, db: Session=Depends(get_db)):
     logger.info(f"OBSERWACJA REQUEST: {r.sensor_id} dla {r.device_token}")
     
+    # Sprawdź czy już nie obserwuje
     exists = db.query(ObserwowaneMiejsca).filter(
         ObserwowaneMiejsca.device_token == r.device_token,
         ObserwowaneMiejsca.sensor_id == r.sensor_id
