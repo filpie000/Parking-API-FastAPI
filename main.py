@@ -29,6 +29,7 @@ def now_utc() -> datetime.datetime:
     return datetime.datetime.now(UTC)
 
 # --- BAZA DANYCH (STABILNE POŁĄCZENIE) ---
+# Domyślny URL bazy - zmień jeśli używasz innego
 DATABASE_URL = os.environ.get('DATABASE_URL', "postgresql://postgres:postgres@localhost:5432/postgres")
 if DATABASE_URL.startswith("postgres://"):
     DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
@@ -69,6 +70,7 @@ class ParkingSpot(Base):
     name = Column(String, primary_key=True) # np. EURO_3
     city = Column(String, nullable=True)
     state = Column(String, nullable=True) # Rejon
+    coordinates = Column(String, nullable=True) # Format "LAT,LON"
     
     # Status jako INT (0=Free, 1=Occupied, 2=Blocked)
     current_status = Column(Integer, default=0) 
@@ -150,46 +152,109 @@ class Ticket(Base):
 class AirbnbOffer(Base):
     __tablename__ = "airbnb_offers"
     id = Column(Integer, primary_key=True, autoincrement=True)
-    title = Column(String); description = Column(String); price = Column(String)
-    availability = Column(String); owner_name = Column(String); contact = Column(String)
-    latitude = Column(Float, nullable=True); longitude = Column(Float, nullable=True)
+    title = Column(String)
+    description = Column(String)
+    price = Column(String)
+    availability = Column(String)
+    owner_name = Column(String)
+    contact = Column(String)
+    latitude = Column(Float, nullable=True)
+    longitude = Column(Float, nullable=True)
     district = Column(String, nullable=True)
+    start_date = Column(String, nullable=True)
+    end_date = Column(String, nullable=True)
     created_at = Column(DateTime(timezone=True), default=now_utc)
 
 # Bezpieczne tworzenie tabel
 Base.metadata.create_all(bind=engine)
 
 # --- PYDANTIC SCHEMAS ---
-class AdminLogin(BaseModel): username: str; password: str
+class AdminLogin(BaseModel):
+    username: str
+    password: str
+
 class AdminPayload(BaseModel):
-    id: Optional[int]=None; username: str; password: Optional[str]=None; city: str="ALL"; allowed_states: str=""
-    view_disabled_only: bool=False; view_ev_only: bool=False; view_paid_only: bool=False
-class AdminDelete(BaseModel): target_id: int
-class UserAuth(BaseModel): email: str; password: str
-class UserToggle(BaseModel): target_email: str; is_disabled: bool
-class VehicleAdd(BaseModel): token: str; name: str; license_plate: str
-class TicketAdd(BaseModel): token: str; spot_name: str; vehicle_id: int; price: float = 0.0
-class RaportRequest(BaseModel): start_date: str; end_date: str; groups: List[str]
-class AirbnbAdd(BaseModel): token: str; title: str; description: str; price: str; availability: str; latitude: Optional[float]; longitude: Optional[float]; district: str
-class AirbnbDelete(BaseModel): token: str; offer_id: int
+    id: Optional[int] = None
+    username: str
+    password: Optional[str] = None
+    city: str = "ALL"
+    allowed_states: str = ""
+    view_disabled_only: bool = False
+    view_ev_only: bool = False
+    view_paid_only: bool = False
+
+class AdminDelete(BaseModel):
+    target_id: int
+
+class UserAuth(BaseModel):
+    email: str
+    password: str
+
+class UserToggle(BaseModel):
+    target_email: str
+    is_disabled: bool
+
+class VehicleAdd(BaseModel):
+    token: str
+    name: str
+    license_plate: str
+
+class TicketAdd(BaseModel):
+    token: str
+    spot_name: str
+    vehicle_id: int
+    price: float = 0.0
+
+class RaportRequest(BaseModel):
+    start_date: str
+    end_date: str
+    groups: List[str]
+    include_workdays: bool
+    include_weekends: bool
+    include_holidays: bool
+    requester_permissions: Optional[Dict] = None
+
+class AirbnbAdd(BaseModel):
+    token: str
+    title: str
+    description: str
+    price: str
+    availability: str
+    latitude: Optional[float]
+    longitude: Optional[float]
+    district: str
+    start_date: str
+    end_date: str
+
+class AirbnbDelete(BaseModel):
+    token: str
+    offer_id: int
+
+class UserPermissionsUpdate(BaseModel):
+    target_email: str
+    perm_disabled: bool
 
 # --- UTILS ---
-def get_password_hash(p: str) -> str:
-    return bcrypt.hashpw(p.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
+def get_password_hash(password: str) -> str:
+    return bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
 
 def verify_password(plain: str, hashed: str) -> bool:
     if not hashed: return False
-    try: return bcrypt.checkpw(plain.encode('utf-8'), hashed.encode('utf-8'))
-    except: return False
+    try:
+        return bcrypt.checkpw(plain.encode('utf-8'), hashed.encode('utf-8'))
+    except:
+        return False
 
-# --- WEBSOCKET ---
+# --- WEBSOCKET MANAGER ---
 class ConnectionManager:
-    def __init__(self): self.active_connections: List[WebSocket] = []
+    def __init__(self):
+        self.active_connections: List[WebSocket] = []
     async def connect(self, websocket: WebSocket):
         await websocket.accept()
         self.active_connections.append(websocket)
     def disconnect(self, websocket: WebSocket):
-        if websocket in self.active_connections: self.active_connections.remove(websocket)
+        if websocket in self.active_connections:
+            self.active_connections.remove(websocket)
     async def broadcast(self, message: dict):
         try:
             msg_bin = msgpack.packb(message)
@@ -224,7 +289,7 @@ def root(): return {"status": "Parking System Online", "version": "2.1 Stable"}
 @app.get("/dashboard", response_class=HTMLResponse)
 def dash():
     try: return open("dashboard.html", "r", encoding="utf-8").read()
-    except: return "Brak dashboard.html"
+    except: return "Brak pliku dashboard.html"
 
 @app.websocket("/ws/stan")
 async def ws(ws: WebSocket):
@@ -233,7 +298,7 @@ async def ws(ws: WebSocket):
         while True: await ws.receive_text()
     except: manager.disconnect(ws)
 
-# --- ENDPOINTY DLA DASHBOARDU (NOWE) ---
+# --- ENDPOINTY DLA DASHBOARDU I APLIKACJI (NOWE) ---
 
 @app.get("/api/v1/options/filters")
 def get_filter_options(db: Session = Depends(get_db)):
@@ -254,13 +319,29 @@ def get_spots(limit: int=100, db: Session = Depends(get_db)):
     for s in spots:
         # Pobieramy nazwy grup do których należy to miejsce
         grp_names = [g.name for g in s.groups]
+        
+        # Parsowanie współrzędnych (jeśli są w bazie)
+        coords_obj = None
+        if s.coordinates and ',' in s.coordinates:
+            try:
+                parts = s.coordinates.split(',')
+                coords_obj = {"latitude": float(parts[0]), "longitude": float(parts[1])}
+            except: pass
+
         res.append({
             "sensor_id": s.name,
             "name": s.name,
             "status": s.current_status, # INT (0,1,2)
             "groups": grp_names,        # Lista grup
             "city": s.city,
-            "is_disabled_friendly": s.is_disabled_friendly
+            "state": s.state,
+            "wspolrzedne": coords_obj,
+            "is_disabled_friendly": s.is_disabled_friendly,
+            "is_ev": s.is_ev,
+            "is_paid": s.is_paid,
+            "adres": f"{s.state or ''}, {s.city or ''}".strip(', '),
+            "typ": 'niepelnosprawni' if s.is_disabled_friendly else ('ev' if s.is_ev else 'zwykle'),
+            "cennik": "3.00 PLN/h" if s.is_paid else "Bezpłatny"
         })
     return res
 
@@ -359,13 +440,21 @@ def delete_admin(d: AdminDelete, db: Session = Depends(get_db)):
 
 @app.get("/api/v1/admin/users")
 def get_users(db: Session = Depends(get_db)):
-    return [{"email": u.email, "is_disabled": u.is_disabled, "vehicle_count": len(u.vehicles)} for u in db.query(User).all()]
+    return [{"email": u.email, "is_disabled": u.is_disabled, "vehicle_count": len(u.vehicles), "perm_disabled": u.is_disabled_person} for u in db.query(User).all()]
 
 @app.post("/api/v1/admin/toggle_user")
 def toggle_user(d: UserToggle, db: Session = Depends(get_db)):
     u = db.query(User).filter(User.email == d.target_email).first()
     if u: u.is_disabled = d.is_disabled; db.commit()
     return {"status": "ok"}
+
+@app.post("/api/v1/admin/update_permissions")
+def update_user_permissions(u: UserPermissionsUpdate, db: Session = Depends(get_db)):
+    target = db.query(User).filter(User.email == u.target_email).first()
+    if not target: raise HTTPException(404, "User not found")
+    target.is_disabled_person = u.perm_disabled
+    db.commit()
+    return {"status": "updated"}
 
 # --- USER AUTH API (Z FIXEM NA BŁĄD 500) ---
 @app.post("/api/v1/auth/login")
@@ -385,7 +474,15 @@ def ulogin(u: UserAuth, db: Session = Depends(get_db)):
         tok = secrets.token_hex(16)
         usr.token = tok
         db.commit()
-        return {"token": tok, "email": usr.email}
+        
+        # Zwracamy pełny profil usera
+        return {
+            "token": tok, 
+            "email": usr.email, 
+            "is_disabled": usr.is_disabled, # Flaga blokady konta
+            "is_disabled_person": usr.is_disabled_person, # Flaga niepełnosprawności
+            "dark_mode": usr.dark_mode
+        }
     except HTTPException as he:
         raise he
     except Exception as e:
@@ -403,8 +500,13 @@ def uregister(u: UserAuth, db: Session = Depends(get_db)):
 def ume(token: str, db: Session = Depends(get_db)):
     u = db.query(User).filter(User.token == token).first()
     if not u: raise HTTPException(401)
-    return {"email": u.email, "is_disabled": u.is_disabled, "active_ticket_id": u.active_ticket_id,
-            "vehicles": [{"id":v.id, "plate":v.plate_number} for v in u.vehicles]}
+    return {
+        "email": u.email, 
+        "is_disabled": u.is_disabled, 
+        "is_disabled_person": u.is_disabled_person,
+        "active_ticket_id": u.active_ticket_id,
+        "vehicles": [{"id":v.id, "plate":v.plate_number} for v in u.vehicles]
+    }
 
 @app.post("/api/v1/user/vehicle")
 def uaddveh(v: VehicleAdd, db: Session = Depends(get_db)):
@@ -441,7 +543,7 @@ def uactive(token: str, db: Session = Depends(get_db)):
     if not t: return None
     return {"id": t.id, "spot_name": t.spot_name, "start_time": t.start_time.isoformat()}
 
-# --- IOT ---
+# --- IOT UPDATE (Symulacja czujnika) ---
 @app.post("/api/v1/iot/update")
 async def iot(d: dict, db: Session = Depends(get_db)):
     name = d.get("name")
