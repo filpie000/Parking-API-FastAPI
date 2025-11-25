@@ -71,7 +71,6 @@ class User(Base):
     payment_token = Column(String(255))
     ticket_id = Column(Integer, ForeignKey("tickets.id"), nullable=True, default=None)
     created_at = Column(DateTime, default=now_utc)
-
     vehicles = relationship("Vehicle", back_populates="owner", cascade="all, delete-orphan")
     active_ticket = relationship("Ticket", foreign_keys=[ticket_id])
 
@@ -125,12 +124,19 @@ class DeviceSubscription(Base):
     sensor_name = Column(String(100), nullable=False)
     subscribed_at = Column(DateTime, default=now_utc)
 
-# District przechowuje teraz nazwę parkingu/kompleksu
+# District = Nazwa Parkingu (np. Parking EuroAGD)
 class District(Base):
     __tablename__ = "districts"
     id = Column(Integer, primary_key=True, autoincrement=True)
-    district = Column(String(100), nullable=False) # Nazwa Parkingu
+    district = Column(String(100), nullable=False) 
     city = Column(String(100), nullable=False)
+
+# State = Rejon/Dzielnica (np. Rąbin, Mątwy) - NOWA TABELA
+class State(Base):
+    __tablename__ = "states"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    name = Column(String(100), nullable=False)
+    city = Column(String(100), default='Inowrocław')
 
 class AirbnbOffer(Base):
     __tablename__ = "airbnb_offers"
@@ -150,14 +156,14 @@ class AirbnbOffer(Base):
     end_date = Column(Date)
     created_at = Column(DateTime, default=now_utc)
 
-# ParkingSpot z relacją do District
 class ParkingSpot(Base):
     __tablename__ = "parking_spots"
     name = Column(String, primary_key=True) 
     current_status = Column(Integer, default=0) 
     last_seen = Column(DateTime(timezone=True), default=now_utc)
     city = Column(String, nullable=True)
-    state = Column(String, nullable=True) # Rejon np. Centrum
+    state = Column(String, nullable=True) # Stara kolumna (string) jako fallback
+    state_id = Column(Integer, ForeignKey("states.id"), nullable=True) # NOWA KOLUMNA
     district_id = Column(Integer, ForeignKey("districts.id"), nullable=True)
     coordinates = Column(String, nullable=True)
     is_disabled_friendly = Column(Boolean, default=False)
@@ -165,6 +171,7 @@ class ParkingSpot(Base):
     is_paid = Column(Boolean, default=True)
     
     district_rel = relationship("District")
+    state_rel = relationship("State") # Relacja do nowej tabeli
 
 Base.metadata.create_all(bind=engine)
 
@@ -226,7 +233,6 @@ def on_mqtt_message(client, userdata, msg):
                 prev = spot.current_status; spot.current_status = status; spot.last_seen = now_utc()
                 if prev != status:
                     db.add(HistoricalData(sensor_id=sensor_name, status=status))
-                    # NOWA LOGIKA: Powiadomienie tylko gdy status == 1 (Zajęte)
                     if status == 1:
                         subs = db.query(DeviceSubscription).filter(DeviceSubscription.sensor_name == sensor_name).all()
                         for sub in subs:
@@ -274,7 +280,7 @@ def login(u: UserLogin, db: Session = Depends(get_db)):
     token = secrets.token_hex(16); user.token = token; db.commit()
     return {"token": token, "email": user.email, "user_id": user.user_id, "is_disabled": user.is_disabled}
 
-# --- AKTUALNY STAN (Z danymi o dystrykcie/parkingu) ---
+# --- AKTUALNY STAN ---
 @app.get("/api/v1/aktualny_stan")
 def get_spots(
     city: Optional[str] = None,
@@ -293,8 +299,10 @@ def get_spots(
     for s in spots:
         override_disabled = True if s.name == "euro_4" else s.is_disabled_friendly
         
-        # Pobieranie nazwy parkingu z tabeli districts
         parking_name = s.district_rel.district if s.district_rel else "Parking Ogólny"
+        
+        # Pobieranie rejonu (state) z nowej tabeli lub fallback do starej kolumny
+        rejon_name = s.state_rel.name if s.state_rel else (s.state or "")
 
         coords_obj = None
         if s.coordinates and ',' in s.coordinates:
@@ -305,9 +313,10 @@ def get_spots(
             "sensor_id": s.name,
             "status": s.current_status,
             "city": s.city,
-            "state": s.state,       # Np. "Centrum"
-            "place_name": parking_name, # Np. "Parking EuroAGD"
+            "state": rejon_name,       # Teraz to nazwa z tabeli states (np. Rąbin)
+            "place_name": parking_name, 
             "district_id": s.district_id,
+            "state_id": s.state_id,
             "wspolrzedne": coords_obj,
             "is_disabled_friendly": override_disabled,
             "is_ev": s.is_ev,
@@ -354,12 +363,13 @@ def stats_mobile(z: StatystykiZapytanie, db: Session = Depends(get_db)):
     occ = db.query(HistoricalData).filter(HistoricalData.sensor_id==z.sensor_id, HistoricalData.timestamp>=s, HistoricalData.timestamp<e, HistoricalData.status==1).count()
     return {"wynik": {"procent_zajetosci": int((occ/tot)*100) if tot>0 else 0, "liczba_pomiarow": tot}}
 
-# --- SIMULATION ENDPOINT (Z edycją district_id) ---
+# --- SIMULATION ENDPOINT (Update) ---
 @app.post("/api/v1/iot/update")
 async def iot_update_http(data: dict, db: Session = Depends(get_db)):
     name = data.get("name")
     stat = int(data.get("status", 0))
-    dist_id = data.get("district_id") # Opcjonalna zmiana dzielnicy
+    dist_id = data.get("district_id")
+    state_id = data.get("state_id") # Opcjonalnie zmiana rejonu
 
     if not name: raise HTTPException(400, "Brak nazwy")
     spot = db.query(ParkingSpot).filter(ParkingSpot.name == name).first()
@@ -368,15 +378,13 @@ async def iot_update_http(data: dict, db: Session = Depends(get_db)):
         spot = ParkingSpot(name=name, current_status=stat)
         db.add(spot)
     
-    # Aktualizacja District ID jeśli podano w JSON
-    if dist_id is not None:
-        spot.district_id = int(dist_id)
+    if dist_id is not None: spot.district_id = int(dist_id)
+    if state_id is not None: spot.state_id = int(state_id)
 
     prev = spot.current_status; spot.current_status = stat; spot.last_seen = now_utc()
     
     if prev != stat:
         db.add(HistoricalData(sensor_id=name, status=stat))
-        # Powiadomienie tylko gdy ZAJĘTE (1)
         if stat == 1:
             subs = db.query(DeviceSubscription).filter(DeviceSubscription.sensor_name == name).all()
             for sub in subs:
@@ -389,7 +397,7 @@ async def iot_update_http(data: dict, db: Session = Depends(get_db)):
                 db.delete(sub)
     db.commit()
     await manager.broadcast({"sensor_id": name, "status": stat})
-    return {"status": "updated", "district_id": spot.district_id}
+    return {"status": "updated", "district_id": spot.district_id, "state_id": spot.state_id}
 
 if __name__ == "__main__":
     import uvicorn
