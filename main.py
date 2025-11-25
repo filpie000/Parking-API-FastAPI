@@ -3,6 +3,8 @@ import datetime
 import logging
 import secrets
 import json
+import threading
+import time
 from typing import Optional, List, Dict
 from zoneinfo import ZoneInfo
 
@@ -11,7 +13,6 @@ from fastapi.responses import HTMLResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
-# Added Float to imports here
 from sqlalchemy import create_engine, Column, Integer, String, DateTime, Boolean, ForeignKey, Float, Text, Table, func
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, Session, relationship
@@ -44,7 +45,8 @@ if DATABASE_URL.startswith("postgres://"):
 engine = create_engine(
     DATABASE_URL, 
     pool_pre_ping=True, 
-    pool_recycle=3600
+    pool_recycle=3600,
+    connect_args={"check_same_thread": False} if "sqlite" in DATABASE_URL else {}
 )
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
@@ -57,6 +59,7 @@ def get_db():
         db.close()
 
 # --- MODELE ---
+
 spot_group_members = Table('spot_group_members', Base.metadata,
     Column('spot_name', String, ForeignKey('parking_spots.name', ondelete="CASCADE"), primary_key=True),
     Column('group_id', Integer, ForeignKey('groups.id', ondelete="CASCADE"), primary_key=True)
@@ -104,7 +107,7 @@ class DaneHistoryczne(Base):
     __tablename__ = "dane_historyczne"
     id = Column(Integer, primary_key=True, autoincrement=True)
     czas_pomiaru = Column(DateTime(timezone=True), default=now_utc, index=True)
-    spot_name = Column(String, index=True)
+    spot_name = Column(String, index=True) 
     status = Column(Integer)
 
 class User(Base):
@@ -157,16 +160,17 @@ class AirbnbOffer(Base):
     end_date = Column(String, nullable=True)
     created_at = Column(DateTime(timezone=True), default=now_utc)
 
+# NOWY MODEL SUBSKRYPCJI
 class DeviceSubscription(Base):
     __tablename__ = "device_subscriptions"
     id = Column(Integer, primary_key=True, autoincrement=True)
-    device_token = Column(String, nullable=False)
-    sensor_name = Column(String, nullable=False)
+    device_token = Column(String, index=True)
+    sensor_name = Column(String, index=True)
     subscribed_at = Column(DateTime(timezone=True), default=now_utc)
 
 Base.metadata.create_all(bind=engine)
 
-# --- PYDANTIC ---
+# --- PYDANTIC SCHEMAS ---
 class AdminLogin(BaseModel): username: str; password: str
 class AdminPayload(BaseModel): id: Optional[int]=None; username: str; password: Optional[str]=None; city: str="ALL"; allowed_states: str=""; view_disabled_only: bool=False; view_ev_only: bool=False; view_paid_only: bool=False
 class AdminDelete(BaseModel): target_id: int
@@ -182,11 +186,17 @@ class SubscriptionRequest(BaseModel): sensor_name: str; device_token: str
 class StatystykiZapytanie(BaseModel): sensor_id: str; selected_date: str; selected_hour: int
 
 # --- UTILS ---
-def get_password_hash(p: str) -> str: return bcrypt.hashpw(p.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
-def verify_password(p: str, h: str): return bcrypt.checkpw(p.encode('utf-8'), h.encode('utf-8')) if h else False
+def get_password_hash(p: str) -> str:
+    return bcrypt.hashpw(p.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
+
+def verify_password(plain: str, hashed: str) -> bool:
+    if not hashed: return False
+    try: return bcrypt.checkpw(plain.encode('utf-8'), hashed.encode('utf-8'))
+    except: return False
 
 def send_push(token, title, body):
     try:
+        import requests
         requests.post("https://exp.host/--/api/v2/push/send", json={"to": token, "title": title, "body": body}, timeout=2)
         logger.info(f"PUSH SENT: {token}")
     except Exception as e:
@@ -194,105 +204,149 @@ def send_push(token, title, body):
 
 # --- WEBSOCKET ---
 class ConnectionManager:
-    def __init__(self): self.active_connections = []
-    async def connect(self, ws: WebSocket): await ws.accept(); self.active_connections.append(ws)
-    def disconnect(self, ws: WebSocket): 
-        if ws in self.active_connections: self.active_connections.remove(ws)
-    async def broadcast(self, msg: dict):
+    def __init__(self):
+        self.active_connections: List[WebSocket] = []
+    async def connect(self, websocket: WebSocket):
+        await websocket.accept()
+        self.active_connections.append(websocket)
+    def disconnect(self, websocket: WebSocket):
+        if websocket in self.active_connections:
+            self.active_connections.remove(websocket)
+    async def broadcast(self, message: dict):
         try:
-            bin_msg = msgpack.packb(msg)
-            for c in list(self.active_connections):
-                try: await c.send_bytes(bin_msg)
-                except: self.disconnect(c)
+            msg_bin = msgpack.packb(message)
+            for conn in list(self.active_connections):
+                try: await conn.send_bytes(msg_bin)
+                except: self.disconnect(conn)
         except: pass
+
 manager = ConnectionManager()
 
-# --- MQTT ---
+# --- MQTT CLIENT ---
 def on_mqtt_message(client, userdata, msg):
     try:
         payload = json.loads(msg.payload.decode())
-        name = payload.get("name") or payload.get("sensor_id")
+        sensor_name = payload.get("name") or payload.get("sensor_id")
         status = int(payload.get("status", 0))
-        if not name: return
         
+        if not sensor_name: return
+
         with SessionLocal() as db:
-            spot = db.query(ParkingSpot).filter(ParkingSpot.name == name).first()
+            spot = db.query(ParkingSpot).filter(ParkingSpot.name == sensor_name).first()
             if spot:
                 prev = spot.current_status
                 spot.current_status = status
                 spot.last_seen = now_utc()
+                
                 if prev != status:
-                    db.add(DaneHistoryczne(spot_name=name, status=status))
-                    if status == 0:
-                        # POWIADOMIENIA Z TABELI device_subscriptions
-                        obs_list = db.query(DeviceSubscription).filter(DeviceSubscription.sensor_name == name).all()
-                        for o in obs_list:
-                            send_push(o.device_token, "Wolne Miejsce!", f"{name} jest wolne.")
-                            db.delete(o)
+                    db.add(DaneHistoryczne(spot_name=sensor_name, status=status))
+                    
+                    if status == 0: # Wolne -> szukamy subskrybentów
+                        subs = db.query(DeviceSubscription).filter(DeviceSubscription.sensor_name == sensor_name).all()
+                        for sub in subs:
+                            send_push(sub.device_token, "Wolne Miejsce!", f"{sensor_name} jest teraz wolne!")
+                            db.delete(sub) # Jednorazowe powiadomienie
                 db.commit()
-                # Broadcast
-    except Exception as e: logger.error(f"MQTT Error: {e}")
+    except Exception as e:
+        logger.error(f"MQTT Error: {e}")
 
 def start_mqtt():
     try:
-        c = mqtt.Client()
-        c.on_message = on_mqtt_message
-        c.connect(MQTT_BROKER, MQTT_PORT, 60)
-        c.subscribe(MQTT_TOPIC)
-        c.loop_start()
-    except: pass
+        client = mqtt.Client()
+        client.on_message = on_mqtt_message
+        client.connect(MQTT_BROKER, MQTT_PORT, 60)
+        client.subscribe(MQTT_TOPIC)
+        client.loop_start()
+        logger.info("MQTT Client Started")
+    except Exception as e:
+        logger.warning(f"MQTT Failed to start: {e}")
 
 # --- APP ---
 app = FastAPI()
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 
 @app.on_event("startup")
-async def startup():
+async def startup_event():
     start_mqtt()
     with SessionLocal() as db:
         try:
             if not db.query(Admin).first():
-                db.add(Admin(username="admin", password_hash=get_password_hash("admin123"), badge_name="Super Admin"))
+                logger.info("Inicjalizacja Admina")
+                sa = Admin(username="admin", password_hash=get_password_hash("admin123"), badge_name="Super Admin")
+                db.add(sa); db.flush()
+                db.add(AdminPermissions(admin_id=sa.id, city="ALL"))
                 db.commit()
-        except: pass
+        except Exception as e:
+            logger.error(f"Startup DB Error: {e}")
 
 @app.get("/")
-def root(): return {"status": "OK"}
+def root(): return {"status": "System Online", "mqtt": "Active"}
 
 @app.get("/dashboard", response_class=HTMLResponse)
 def dash():
     try: return open("dashboard.html", "r", encoding="utf-8").read()
-    except: return "Error"
+    except: return "Brak pliku dashboard.html"
 
 @app.websocket("/ws/stan")
 async def ws(ws: WebSocket):
     await manager.connect(ws)
-    try: 
+    try:
         while True: await ws.receive_text()
     except: manager.disconnect(ws)
 
-# --- ENDPOINTS ---
+# --- API ENDPOINTS ---
+
 @app.get("/api/v1/options/filters")
-def opts(db: Session=Depends(get_db)):
-    return {"cities": [c[0] for c in db.query(ParkingSpot.city).distinct().all() if c[0]], "states": [g.name for g in db.query(Group.name).all()]}
+def get_filter_options(db: Session = Depends(get_db)):
+    cities = db.query(ParkingSpot.city).distinct().all()
+    groups = db.query(Group.name).all()
+    return {"cities": [c[0] for c in cities if c[0]], "states": [g.name for g in groups]}
 
 @app.get("/api/v1/aktualny_stan")
-def status(limit: int=100, db: Session=Depends(get_db)):
+def get_spots(limit: int=100, db: Session = Depends(get_db)):
+    spots = db.query(ParkingSpot).limit(limit).all()
     res = []
-    for s in db.query(ParkingSpot).limit(limit).all():
-        co = None
+    for s in spots:
+        grp_names = []
+        try: grp_names = [g.name for g in s.groups]
+        except: pass
+        
+        coords_obj = None
         if s.coordinates and ',' in s.coordinates:
-            try: p=s.coordinates.split(','); co={"latitude":float(p[0]),"longitude":float(p[1])}
+            try:
+                parts = s.coordinates.split(',')
+                coords_obj = {"latitude": float(parts[0]), "longitude": float(parts[1])}
             except: pass
-        res.append({"sensor_id": s.name, "name": s.name, "status": s.current_status, "groups": [g.name for g in s.groups], "city": s.city, "state": s.state, "wspolrzedne": co, "is_disabled_friendly": s.is_disabled_friendly, "is_ev": s.is_ev, "is_paid": s.is_paid, "adres": f"{s.state or ''}, {s.city or ''}".strip(', '), "typ": 'niepelnosprawni' if s.is_disabled_friendly else ('ev' if s.is_ev else 'zwykle'), "cennik": "Płatny" if s.is_paid else "Bezpłatny"})
+
+        res.append({
+            "sensor_id": s.name,
+            "name": s.name,
+            "status": s.current_status,
+            "groups": grp_names,
+            "city": s.city,
+            "state": s.state,
+            "wspolrzedne": coords_obj,
+            "is_disabled_friendly": s.is_disabled_friendly,
+            "is_ev": s.is_ev,
+            "is_paid": s.is_paid,
+            "adres": f"{s.state or ''}, {s.city or ''}".strip(', '),
+            "typ": 'niepelnosprawni' if s.is_disabled_friendly else ('ev' if s.is_ev else 'zwykle'),
+            "cennik": "3.00 PLN/h" if s.is_paid else "Bezpłatny"
+        })
     return res
 
+# --- NOWY ENDPOINT SUBSKRYPCJI (UŻYWA DEVICE_SUBSCRIPTIONS) ---
 @app.post("/api/v1/subscribe_spot")
 def subscribe_spot(r: SubscriptionRequest, db: Session=Depends(get_db)):
     logger.info(f"SUBSKRYPCJA: {r.sensor_name} -> {r.device_token}")
     
-    db.query(DeviceSubscription).filter(DeviceSubscription.device_token == r.device_token, DeviceSubscription.sensor_name == r.sensor_name).delete()
+    # 1. Usuń ewentualne stare wpisy dla tego tokena i miejsca (żeby nie dublować)
+    db.query(DeviceSubscription).filter(
+        DeviceSubscription.device_token == r.device_token, 
+        DeviceSubscription.sensor_name == r.sensor_name
+    ).delete()
     
+    # 2. Dodaj nową subskrypcję
     new_sub = DeviceSubscription(device_token=r.device_token, sensor_name=r.sensor_name)
     db.add(new_sub)
     
@@ -308,47 +362,68 @@ def subscribe_spot(r: SubscriptionRequest, db: Session=Depends(get_db)):
 @app.post("/api/v1/statystyki/zajetosc")
 def stats_mobile(z: StatystykiZapytanie, db: Session = Depends(get_db)):
     try: target = datetime.datetime.strptime(z.selected_date, "%Y-%m-%d").date()
-    except: raise HTTPException(400, "Format")
+    except: raise HTTPException(400, "Format daty")
+    
     start = datetime.datetime.combine(target, datetime.time(z.selected_hour, 0))
     end = start + datetime.timedelta(hours=1)
+    
     total = db.query(DaneHistoryczne).filter(DaneHistoryczne.spot_name == z.sensor_id, DaneHistoryczne.czas_pomiaru >= start, DaneHistoryczne.czas_pomiaru < end).count()
     occ = db.query(DaneHistoryczne).filter(DaneHistoryczne.spot_name == z.sensor_id, DaneHistoryczne.czas_pomiaru >= start, DaneHistoryczne.czas_pomiaru < end, DaneHistoryczne.status == 1).count()
+    
     pct = int((occ/total)*100) if total > 0 else 0
+    logger.info(f"STATS: {z.sensor_id} {pct}%")
     return {"procent_zajetosci": pct, "liczba_pomiarow": total}
 
 @app.post("/api/v1/iot/update")
 async def iot(d: dict, db: Session=Depends(get_db)):
-    name = d.get("name"); status = int(d.get("status"))
+    name = d.get("name"); 
+    try: status = int(d.get("status"))
+    except: return {"error": "Status int required"}
+
     s = db.query(ParkingSpot).filter(ParkingSpot.name==name).first()
     if s:
         prev = s.current_status; s.current_status = status; s.last_seen = now_utc()
         if prev != status:
             db.add(DaneHistoryczne(spot_name=name, status=status))
             if status == 0: 
-                obs = db.query(DeviceSubscription).filter(DeviceSubscription.sensor_name == name).all()
-                for o in obs:
-                    send_push(o.device_token, "Wolne Miejsce!", f"{name} jest wolne.")
-                    db.delete(o)
+                # UŻYWAMY NOWEJ TABELI SUBSKRYPCJI
+                subs = db.query(DeviceSubscription).filter(DeviceSubscription.sensor_name == name).all()
+                for sub in subs:
+                    send_push(sub.device_token, "Wolne Miejsce!", f"{name} jest wolne.")
+                    db.delete(sub)
             await manager.broadcast({"sensor_id": name, "status": status})
         db.commit()
     return {"status": "ok"}
 
 @app.post("/api/v1/dashboard/raport")
-def report(r: RaportRequest, db: Session = Depends(get_db)):
+def get_report(r: RaportRequest, db: Session = Depends(get_db)):
     try: s_date = datetime.datetime.strptime(r.start_date, "%Y-%m-%d"); e_date = datetime.datetime.strptime(r.end_date, "%Y-%m-%d") + datetime.timedelta(days=1)
     except: return {}
-    targets = [sp.name for sp in db.query(ParkingSpot).join(ParkingSpot.groups).filter(Group.name.in_(r.groups)).all()]
-    if not targets: return {}
-    hist = db.query(DaneHistoryczne).filter(DaneHistoryczne.czas_pomiaru >= s, DaneHistoryczne.czas_pomiaru < e, DaneHistoryczne.spot_name.in_(targets)).all()
-    res = {g:[0]*24 for g in r.groups}
-    map_s_g = {sp.name: [g.name for g in sp.groups] for sp in db.query(ParkingSpot).filter(ParkingSpot.name.in_(targets)).all()}
-    for h in hist:
-        for g in map_s_g.get(h.spot_name, []):
-            if g in res and h.status == 1: res[g][h.czas_pomiaru.astimezone(PL_TZ).hour] += 1
-    for g in res:
-        mx = max(res[g]) if res[g] else 1
-        res[g] = [round((x/mx)*100, 1) if mx>0 else 0 for x in res[g]]
-    return res
+
+    target_spots = []
+    if r.groups:
+        spots_in_groups = db.query(ParkingSpot).join(ParkingSpot.groups).filter(Group.name.in_(r.groups)).all()
+        target_spots = [s.name for s in spots_in_groups]
+    
+    if not target_spots: return {}
+
+    history = db.query(DaneHistoryczne).filter(DaneHistoryczne.czas_pomiaru >= s_date, DaneHistoryczne.czas_pomiaru < e_date, DaneHistoryczne.spot_name.in_(target_spots)).all()
+    result = {g: [0]*24 for g in r.groups}
+    
+    all_spots = db.query(ParkingSpot).filter(ParkingSpot.name.in_(target_spots)).all()
+    sensor_to_groups = {s.name: [g.name for g in s.groups] for s in all_spots}
+
+    for h in history:
+        affected_groups = sensor_to_groups.get(h.spot_name, [])
+        for grp in affected_groups:
+            if grp in result:
+                local_time = h.czas_pomiaru.replace(tzinfo=UTC).astimezone(PL_TZ)
+                if h.status == 1: result[grp][local_time.hour] += 1
+
+    for g in result:
+        mx = max(result[g]) if result[g] else 1
+        result[g] = [round((x/mx)*100, 1) if mx>0 else 0 for x in result[g]]
+    return result
 
 @app.get("/api/v1/airbnb/offers")
 def get_airbnb(db: Session = Depends(get_db)):
