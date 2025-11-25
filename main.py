@@ -227,7 +227,7 @@ def send_push(token, title, body, data=None):
         import requests
         payload = {"to": token, "title": title, "body": body}
         if data: payload["data"] = data 
-        requests.post("https://exp.host/--/api/v2/push/send", json=payload, timeout=2)
+        requests.post("[https://exp.host/--/api/v2/push/send](https://exp.host/--/api/v2/push/send)", json=payload, timeout=2)
         logger.info(f"PUSH SENT: {token}")
     except Exception as e: logger.error(f"PUSH ERROR: {e}")
 
@@ -482,64 +482,3 @@ async def iot_update_http(data: dict, db: Session = Depends(get_db)):
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)
-```
-
-### 2. Postman: Gotowe Szablony (JSON)
-
-Oto instrukcja, co wklejać do Postmana (zakładka **Body** -> **raw** -> **JSON**). Ustaw metodę na `POST`.
-
-#### A. Zarządzanie Dzielnicami/Parkingami (Districts)
-**URL:** `.../api/v1/admin/manage/district`
-
-1.  **Dodaj nowy parking:**
-    ```json
-    {
-      "district": "Nowy Parking przy Rynku",
-      "city": "Inowrocław",
-      "description": "Monitorowany, nawierzchnia utwardzona.",
-      "price_info": "2 PLN/h",
-      "capacity": 50
-    }
-    ```
-
-2.  **Edytuj istniejący parking (wymagane ID):**
-    ```json
-    {
-      "id": 1,
-      "district": "Parking EuroAGD (Zmieniony)",
-      "description": "Nowy opis po remoncie.",
-      "capacity": 200
-    }
-    ```
-
-#### B. Zarządzanie Rejonami (States)
-**URL:** `.../api/v1/admin/manage/state`
-
-1.  **Dodaj rejon:**
-    ```json
-    {
-      "name": "Stare Miasto",
-      "city": "Inowrocław"
-    }
-    ```
-
-2.  **Edytuj rejon (wymagane state_id):**
-    ```json
-    {
-      "state_id": 1,
-      "name": "Rąbin I"
-    }
-    ```
-
-#### C. Zarządzanie Miejscami (Spots) - Edycja danych statycznych
-To jest nowy endpoint, który pozwala "naprawić" dane miejsca bez zmiany jego statusu zajętości.
-**URL:** `.../api/v1/admin/manage/spot`
-
-1.  **Ustaw współrzędne i typ dla miejsca:**
-    ```json
-    {
-      "name": "BUD_4",
-      "coordinates": "52.7925,18.2560",
-      "is_disabled_friendly": true,
-      "is_ev": false
-    }
