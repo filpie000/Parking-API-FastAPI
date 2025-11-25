@@ -314,7 +314,49 @@ async def ws(ws: WebSocket):
     try:
         while True: await ws.receive_text()
     except: manager.disconnect(ws)
+# --- SIMULATION ENDPOINT (DLA POSTMANA) ---
+@app.post("/api/v1/iot/update")
+async def iot_update_http(data: dict, db: Session = Depends(get_db)):
+    """
+    Symuluje działanie czujnika przez HTTP POST.
+    Przyjmuje JSON: {"name": "EURO_2", "status": 1}
+    """
+    sensor_name = data.get("name")
+    status = int(data.get("status", 0))
 
+    if not sensor_name:
+        raise HTTPException(400, "Brak nazwy sensora")
+
+    spot = db.query(ParkingSpot).filter(ParkingSpot.name == sensor_name).first()
+    
+    # Jeśli miejsce nie istnieje, tworzymy je (dla testów)
+    if not spot:
+        spot = ParkingSpot(name=sensor_name, current_status=status)
+        db.add(spot)
+    
+    prev_status = spot.current_status
+    spot.current_status = status
+    spot.last_seen = now_utc()
+
+    # Logika zmian (Historia + Powiadomienia)
+    if prev_status != status:
+        # 1. Zapisz historię
+        db.add(HistoricalData(sensor_id=sensor_name, status=status))
+        
+        # 2. Jeśli zwolniło się (status 0) -> Wyślij PUSH
+        if status == 0:
+            subs = db.query(DeviceSubscription).filter(DeviceSubscription.sensor_name == sensor_name).all()
+            for sub in subs:
+                send_push(sub.device_token, "Wolne Miejsce!", f"{sensor_name} jest teraz wolne!")
+                # Usuwamy subskrypcję po wysłaniu (jednorazowe powiadomienie)
+                db.delete(sub)
+
+    db.commit()
+
+    # 3. Odśwież aplikację (WebSocket)
+    await manager.broadcast({"sensor_id": sensor_name, "status": status})
+    
+    return {"status": "updated", "sensor": sensor_name, "new_state": status}
 # --- ENDPOINTY UŻYTKOWNIKA I AUTH ---
 
 @app.post("/api/v1/auth/register")
@@ -486,3 +528,4 @@ def stats_mobile(z: StatystykiZapytanie, db: Session = Depends(get_db)):
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)
+
