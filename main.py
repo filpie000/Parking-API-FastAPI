@@ -38,7 +38,6 @@ MQTT_TOPIC = "parking/+/status"
 
 # --- BAZA DANYCH ---
 DATABASE_URL = os.environ.get('DATABASE_URL', "postgresql://postgres:postgres@localhost:5432/postgres")
-# Fix dla Heroku/starszych bibliotek
 if DATABASE_URL.startswith("postgres://"):
     DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
 
@@ -60,10 +59,9 @@ def get_db():
         db.close()
 
 # ==========================================
-#      MODELE BAZY DANYCH (Nowa Struktura)
+#      MODELE BAZY DANYCH
 # ==========================================
 
-# 1. USERS
 class User(Base):
     __tablename__ = "users"
     user_id = Column(Integer, primary_key=True, autoincrement=True)
@@ -80,7 +78,6 @@ class User(Base):
     vehicles = relationship("Vehicle", back_populates="owner", cascade="all, delete-orphan")
     active_ticket = relationship("Ticket", foreign_keys=[ticket_id])
 
-# 2. TICKETS
 class Ticket(Base):
     __tablename__ = "tickets"
     id = Column(Integer, primary_key=True, autoincrement=True)
@@ -91,27 +88,22 @@ class Ticket(Base):
     price = Column(DECIMAL(10, 2), nullable=False)
     user_id = Column(Integer, ForeignKey("users.user_id"))
 
-# 3. VEHICLES
 class Vehicle(Base):
     __tablename__ = "vehicles"
     id_veh = Column(Integer, primary_key=True, autoincrement=True)
     name = Column(String(100))
     plate_number = Column(String(20), nullable=False)
     user_id = Column(Integer, ForeignKey("users.user_id", ondelete="CASCADE"), nullable=False)
-    
     owner = relationship("User", back_populates="vehicles")
 
-# 4. ADMINS
 class Admin(Base):
     __tablename__ = "admins"
     admin_id = Column(Integer, primary_key=True, autoincrement=True)
     username = Column(String(50), unique=True, nullable=False)
     password_hashed = Column(String(255), nullable=False)
     badge_name = Column(String(100))
-    
     permissions = relationship("AdminPermissions", back_populates="admin", uselist=False)
 
-# 5. ADMIN PERMISSIONS
 class AdminPermissions(Base):
     __tablename__ = "admin_permissions"
     permission_id = Column(Integer, primary_key=True, autoincrement=True)
@@ -120,10 +112,8 @@ class AdminPermissions(Base):
     view_disabled = Column(Boolean, default=False)
     view_ev = Column(Boolean, default=False)
     allowed_state = Column(Text)
-    
     admin = relationship("Admin", back_populates="permissions")
 
-# 6. HISTORICAL DATA
 class HistoricalData(Base):
     __tablename__ = "historical_data"
     id = Column(Integer, primary_key=True, autoincrement=True)
@@ -131,7 +121,6 @@ class HistoricalData(Base):
     sensor_id = Column(String(50), nullable=False)
     status = Column(Integer, nullable=False)
 
-# 7. HOLIDAY DATA
 class HolidayData(Base):
     __tablename__ = "holiday_data"
     id = Column(Integer, primary_key=True, autoincrement=True)
@@ -140,7 +129,6 @@ class HolidayData(Base):
     status = Column(Integer, nullable=False)
     holiday_name = Column(String(100))
 
-# 8. DEVICE SUBSCRIPTIONS
 class DeviceSubscription(Base):
     __tablename__ = "device_subscriptions"
     id = Column(Integer, primary_key=True, autoincrement=True)
@@ -148,14 +136,12 @@ class DeviceSubscription(Base):
     sensor_name = Column(String(100), nullable=False)
     subscribed_at = Column(DateTime, default=now_utc)
 
-# 9. DISTRICTS
 class District(Base):
     __tablename__ = "districts"
     id = Column(Integer, primary_key=True, autoincrement=True)
     district = Column(String(100), nullable=False)
     city = Column(String(100), nullable=False)
 
-# 10. AIRBNB OFFERS
 class AirbnbOffer(Base):
     __tablename__ = "airbnb_offers"
     id = Column(Integer, primary_key=True, autoincrement=True)
@@ -174,7 +160,7 @@ class AirbnbOffer(Base):
     end_date = Column(Date)
     created_at = Column(DateTime, default=now_utc)
 
-# --- MODEL POMOCNICZY (Parking Spot - stan bieżący) ---
+# Model pomocniczy (Parking Spot)
 class ParkingSpot(Base):
     __tablename__ = "parking_spots"
     name = Column(String, primary_key=True) 
@@ -214,6 +200,11 @@ class VehicleAdd(BaseModel):
     token: str
     name: str
     plate_number: str
+
+class StatystykiZapytanie(BaseModel):
+    sensor_id: str
+    selected_date: str
+    selected_hour: int
 
 # ==========================================
 #              POMOCNIKI
@@ -272,13 +263,19 @@ def on_mqtt_message(client, userdata, msg):
                 spot.last_seen = now_utc()
                 
                 if prev != status:
+                    # 1. Zapisz historię
                     db.add(HistoricalData(sensor_id=sensor_name, status=status))
                     
-                    if status == 0:
+                    # 2. LOGIKA OCHRONY MIEJSCA: Jeśli status zmienia się na 1 (Zajęte)
+                    if status == 1:
                         subs = db.query(DeviceSubscription).filter(DeviceSubscription.sensor_name == sensor_name).all()
                         for sub in subs:
-                            send_push(sub.device_token, "Wolne Miejsce!", f"{sensor_name} jest teraz wolne!")
-                            db.delete(sub)
+                            send_push(
+                                sub.device_token, 
+                                "⚠️ Ktoś zajął Twoje miejsce!", 
+                                f"Miejsce {sensor_name} zostało właśnie zajęte. Kliknij, aby znaleźć alternatywę."
+                            )
+                            db.delete(sub) # Powiadomienie jednorazowe
                 
                 db.commit()
     except Exception as e:
@@ -314,50 +311,8 @@ async def ws(ws: WebSocket):
     try:
         while True: await ws.receive_text()
     except: manager.disconnect(ws)
-# --- SIMULATION ENDPOINT (DLA POSTMANA) ---
-@app.post("/api/v1/iot/update")
-async def iot_update_http(data: dict, db: Session = Depends(get_db)):
-    """
-    Symuluje działanie czujnika przez HTTP POST.
-    Przyjmuje JSON: {"name": "EURO_2", "status": 1}
-    """
-    sensor_name = data.get("name")
-    status = int(data.get("status", 0))
 
-    if not sensor_name:
-        raise HTTPException(400, "Brak nazwy sensora")
-
-    spot = db.query(ParkingSpot).filter(ParkingSpot.name == sensor_name).first()
-    
-    # Jeśli miejsce nie istnieje, tworzymy je (dla testów)
-    if not spot:
-        spot = ParkingSpot(name=sensor_name, current_status=status)
-        db.add(spot)
-    
-    prev_status = spot.current_status
-    spot.current_status = status
-    spot.last_seen = now_utc()
-
-    # Logika zmian (Historia + Powiadomienia)
-    if prev_status != status:
-        # 1. Zapisz historię
-        db.add(HistoricalData(sensor_id=sensor_name, status=status))
-        
-        # 2. Jeśli zwolniło się (status 0) -> Wyślij PUSH
-        if status == 0:
-            subs = db.query(DeviceSubscription).filter(DeviceSubscription.sensor_name == sensor_name).all()
-            for sub in subs:
-                send_push(sub.device_token, "Wolne Miejsce!", f"{sensor_name} jest teraz wolne!")
-                # Usuwamy subskrypcję po wysłaniu (jednorazowe powiadomienie)
-                db.delete(sub)
-
-    db.commit()
-
-    # 3. Odśwież aplikację (WebSocket)
-    await manager.broadcast({"sensor_id": sensor_name, "status": status})
-    
-    return {"status": "updated", "sensor": sensor_name, "new_state": status}
-# --- ENDPOINTY UŻYTKOWNIKA I AUTH ---
+# --- ENDPOINTY ---
 
 @app.post("/api/v1/auth/register")
 def register(u: UserRegister, db: Session = Depends(get_db)):
@@ -385,7 +340,6 @@ def login(u: UserLogin, db: Session = Depends(get_db)):
         "is_disabled": user.is_disabled
     }
 
-# --- PUNKT 3: FILTRY ORAZ EURO_4 DISABLE ---
 @app.get("/api/v1/aktualny_stan")
 def get_spots(
     city: Optional[str] = None,
@@ -425,16 +379,13 @@ def get_spots(
         })
     return res
 
-# --- POPRAWIONA SUBSKRYPCJA (ZMIANA NA /api/v1/subscribe_spot) ---
 @app.post("/api/v1/subscribe_spot")
 async def subscribe_device(request: SubscriptionRequest, db: Session = Depends(get_db)):
-    # Usuwamy stare subskrypcje
     db.query(DeviceSubscription).filter(
         DeviceSubscription.device_token == request.device_token,
         DeviceSubscription.sensor_name == request.sensor_name
     ).delete()
     
-    # Dodajemy nowe
     new_sub = DeviceSubscription(
         device_token=request.device_token,
         sensor_name=request.sensor_name
@@ -447,13 +398,11 @@ async def subscribe_device(request: SubscriptionRequest, db: Session = Depends(g
         db.rollback()
         raise HTTPException(500, detail="Błąd bazy")
 
-# --- PUNKT 4: GDZIE ZAPARKOWAŁEM ---
 @app.get("/api/v1/user/where_is_my_car")
 def where_is_my_car(token: str, db: Session = Depends(get_db)):
     user = db.query(User).filter(User.token == token).first()
     if not user:
         raise HTTPException(401, "Nieprawidłowy token")
-    
     if not user.ticket_id:
         return {"status": "no_ticket", "message": "Nie masz aktywnego biletu"}
     
@@ -468,7 +417,6 @@ def where_is_my_car(token: str, db: Session = Depends(get_db)):
         "plate_number": ticket.plate_number
     }
 
-# --- KUPNO BILETU ---
 @app.post("/api/v1/user/buy_ticket")
 def buy_ticket(req: TicketPurchase, db: Session = Depends(get_db)):
     user = db.query(User).filter(User.token == req.token).first()
@@ -498,34 +446,57 @@ def buy_ticket(req: TicketPurchase, db: Session = Depends(get_db)):
     db.commit()
     return {"status": "ok", "ticket_id": new_ticket.id, "ends_at": end}
 
-# --- AIRBNB ---
 @app.get("/api/v1/airbnb/offers")
 def get_airbnb(district_id: Optional[int] = None, db: Session = Depends(get_db)):
     q = db.query(AirbnbOffer)
     if district_id: q = q.filter(AirbnbOffer.district_id == district_id)
     return q.all()
 
-# --- STATYSTYKI (Dla kompatybilności z frontem) ---
-class StatystykiZapytanie(BaseModel):
-    sensor_id: str
-    selected_date: str
-    selected_hour: int
-
 @app.post("/api/v1/statystyki/zajetosc")
 def stats_mobile(z: StatystykiZapytanie, db: Session = Depends(get_db)):
     try: target = datetime.datetime.strptime(z.selected_date, "%Y-%m-%d").date()
     except: raise HTTPException(400, "Format daty")
-    
     start = datetime.datetime.combine(target, datetime.time(z.selected_hour, 0))
     end = start + datetime.timedelta(hours=1)
     
     total = db.query(HistoricalData).filter(HistoricalData.sensor_id == z.sensor_id, HistoricalData.timestamp >= start, HistoricalData.timestamp < end).count()
     occ = db.query(HistoricalData).filter(HistoricalData.sensor_id == z.sensor_id, HistoricalData.timestamp >= start, HistoricalData.timestamp < end, HistoricalData.status == 1).count()
-    
     pct = int((occ/total)*100) if total > 0 else 0
     return {"wynik": {"procent_zajetosci": pct, "liczba_pomiarow": total}}
+
+# --- SIMULATION ENDPOINT (Dla Postmana) ---
+@app.post("/api/v1/iot/update")
+async def iot_update_http(data: dict, db: Session = Depends(get_db)):
+    sensor_name = data.get("name")
+    status = int(data.get("status", 0))
+
+    if not sensor_name: raise HTTPException(400, "Brak nazwy sensora")
+    spot = db.query(ParkingSpot).filter(ParkingSpot.name == sensor_name).first()
+    if not spot:
+        spot = ParkingSpot(name=sensor_name, current_status=status)
+        db.add(spot)
+    
+    prev_status = spot.current_status
+    spot.current_status = status
+    spot.last_seen = now_utc()
+
+    if prev_status != status:
+        db.add(HistoricalData(sensor_id=sensor_name, status=status))
+        # OSTRZEŻENIE O ZAJĘCIU MIEJSCA
+        if status == 1:
+            subs = db.query(DeviceSubscription).filter(DeviceSubscription.sensor_name == sensor_name).all()
+            for sub in subs:
+                send_push(
+                    sub.device_token, 
+                    "⚠️ Ktoś zajął Twoje miejsce!", 
+                    f"Miejsce {sensor_name} zostało właśnie zajęte. Kliknij, aby znaleźć alternatywę."
+                )
+                db.delete(sub)
+
+    db.commit()
+    await manager.broadcast({"sensor_id": sensor_name, "status": status})
+    return {"status": "updated", "sensor": sensor_name, "new_state": status}
 
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)
-
