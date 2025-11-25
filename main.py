@@ -164,8 +164,8 @@ class ParkingSpot(Base):
     current_status = Column(Integer, default=0) 
     last_seen = Column(DateTime(timezone=True), default=now_utc)
     city = Column(String, nullable=True)
-    state = Column(String, nullable=True) # Stara kolumna (string) jako fallback
-    state_id = Column(Integer, ForeignKey("states.id"), nullable=True) # NOWA KOLUMNA
+    # USUNIĘTO: state = Column(String, nullable=True) - powodowało błąd, bo kolumny już nie ma
+    state_id = Column(Integer, ForeignKey("states.id"), nullable=True) 
     district_id = Column(Integer, ForeignKey("districts.id"), nullable=True)
     coordinates = Column(String, nullable=True)
     is_disabled_friendly = Column(Boolean, default=False)
@@ -173,7 +173,7 @@ class ParkingSpot(Base):
     is_paid = Column(Boolean, default=True)
     
     district_rel = relationship("District")
-    state_rel = relationship("State") # Relacja do nowej tabeli
+    state_rel = relationship("State") 
 
 Base.metadata.create_all(bind=engine)
 
@@ -303,8 +303,9 @@ def get_spots(
         
         parking_name = s.district_rel.district if s.district_rel else "Parking Ogólny"
         
-        # Pobieranie rejonu (state) z nowej tabeli lub fallback do starej kolumny
-        rejon_name = s.state_rel.name if s.state_rel else (s.state or "")
+        # Pobieranie rejonu (state) z nowej tabeli
+        # Jeśli s.state_rel jest None, wyświetlamy "Brak danych", bo stara kolumna 'state' już nie istnieje
+        rejon_name = s.state_rel.name if s.state_rel else "Nieznany"
 
         coords_obj = None
         if s.coordinates and ',' in s.coordinates:
@@ -315,7 +316,7 @@ def get_spots(
             "sensor_id": s.name,
             "status": s.current_status,
             "city": s.city,
-            "state": rejon_name,       # Teraz to nazwa z tabeli states (np. Rąbin)
+            "state": rejon_name,       # Nazwa rejonu z tabeli states
             "place_name": parking_name, 
             "district_id": s.district_id,
             "state_id": s.state_id,
@@ -372,7 +373,7 @@ async def iot_update_http(data: dict, db: Session = Depends(get_db)):
         name = data.get("name")
         stat = int(data.get("status", 0))
         dist_id = data.get("district_id")
-        state_id = data.get("state_id") # Opcjonalnie zmiana rejonu
+        state_id = data.get("state_id") 
 
         if not name: raise HTTPException(400, "Brak nazwy")
         spot = db.query(ParkingSpot).filter(ParkingSpot.name == name).first()
@@ -381,7 +382,7 @@ async def iot_update_http(data: dict, db: Session = Depends(get_db)):
             spot = ParkingSpot(name=name, current_status=stat)
             db.add(spot)
         
-        # Walidacja i przypisanie ID (bezpieczne)
+        # Walidacja i przypisanie ID
         if dist_id is not None:
             if not db.query(District).filter(District.id == int(dist_id)).first():
                 raise HTTPException(400, f"Błąd: District ID {dist_id} nie istnieje w bazie")
@@ -416,7 +417,6 @@ async def iot_update_http(data: dict, db: Session = Depends(get_db)):
     except Exception as e:
         logger.error(f"Critical Error in iot_update: {e}")
         traceback.print_exc()
-        # Jeśli to błąd bazy, spróbujmy rollback
         try: db.rollback()
         except: pass
         raise HTTPException(500, detail=f"Internal Server Error: {str(e)}")
