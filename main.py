@@ -63,25 +63,24 @@ def get_db():
 #      MODELE BAZY DANYCH (Nowa Struktura)
 # ==========================================
 
-# 1. USERS (Zgodnie z Twoim SQL)
+# 1. USERS
 class User(Base):
     __tablename__ = "users"
-    user_id = Column(Integer, primary_key=True, autoincrement=True) # Zmieniono z id na user_id
+    user_id = Column(Integer, primary_key=True, autoincrement=True)
     email = Column(String(255), unique=True, nullable=False)
     password_hashed = Column(String(255), nullable=False)
     phone_number = Column(String(20))
-    token = Column(String(255)) # Token sesji/telefonu
+    token = Column(String(255))
     is_disabled = Column(Boolean, default=False)
     is_blocked = Column(Boolean, default=False)
     payment_token = Column(String(255))
     ticket_id = Column(Integer, ForeignKey("tickets.id"), nullable=True, default=None)
     created_at = Column(DateTime, default=now_utc)
 
-    # Relacje
     vehicles = relationship("Vehicle", back_populates="owner", cascade="all, delete-orphan")
     active_ticket = relationship("Ticket", foreign_keys=[ticket_id])
 
-# 2. TICKETS (Zgodnie z SQL)
+# 2. TICKETS
 class Ticket(Base):
     __tablename__ = "tickets"
     id = Column(Integer, primary_key=True, autoincrement=True)
@@ -92,7 +91,7 @@ class Ticket(Base):
     price = Column(DECIMAL(10, 2), nullable=False)
     user_id = Column(Integer, ForeignKey("users.user_id"))
 
-# 3. VEHICLES (Zgodnie z SQL - user_id nie jest unique per plate)
+# 3. VEHICLES
 class Vehicle(Base):
     __tablename__ = "vehicles"
     id_veh = Column(Integer, primary_key=True, autoincrement=True)
@@ -120,17 +119,17 @@ class AdminPermissions(Base):
     city = Column(String(100))
     view_disabled = Column(Boolean, default=False)
     view_ev = Column(Boolean, default=False)
-    allowed_state = Column(Text) # CSV string
+    allowed_state = Column(Text)
     
     admin = relationship("Admin", back_populates="permissions")
 
-# 6. HISTORICAL DATA (Nowa nazwa kolumn)
+# 6. HISTORICAL DATA
 class HistoricalData(Base):
     __tablename__ = "historical_data"
     id = Column(Integer, primary_key=True, autoincrement=True)
     timestamp = Column(DateTime, default=now_utc)
     sensor_id = Column(String(50), nullable=False)
-    status = Column(Integer, nullable=False) # 0 lub 1
+    status = Column(Integer, nullable=False)
 
 # 7. HOLIDAY DATA
 class HolidayData(Base):
@@ -141,7 +140,7 @@ class HolidayData(Base):
     status = Column(Integer, nullable=False)
     holiday_name = Column(String(100))
 
-# 8. DEVICE SUBSCRIPTIONS (Tylko to, bez obserwowane_miejsca)
+# 8. DEVICE SUBSCRIPTIONS
 class DeviceSubscription(Base):
     __tablename__ = "device_subscriptions"
     id = Column(Integer, primary_key=True, autoincrement=True)
@@ -175,12 +174,9 @@ class AirbnbOffer(Base):
     end_date = Column(Date)
     created_at = Column(DateTime, default=now_utc)
 
-# --- MODELE POMOCNICZE (NIE BAZODANOWE, ALE POTRZEBNE DLA LOGIKI SENSORÓW) ---
-# Ponieważ w Twoim SQL nie było tabeli 'parking_spots' jako takiej (tylko w kodzie pythona),
-# a dashboard musi skądś brać listę miejsc, utrzymujemy ten model. 
-# W przyszłości można go zmigrować do tabeli 'sensors'.
+# --- MODEL POMOCNICZY (Parking Spot - stan bieżący) ---
 class ParkingSpot(Base):
-    __tablename__ = "parking_spots" # Jeśli ta tabela nie istnieje w SQL, kod ją stworzy.
+    __tablename__ = "parking_spots"
     name = Column(String, primary_key=True) 
     current_status = Column(Integer, default=0) 
     last_seen = Column(DateTime(timezone=True), default=now_utc)
@@ -190,9 +186,7 @@ class ParkingSpot(Base):
     is_ev = Column(Boolean, default=False)
     is_paid = Column(Boolean, default=True)
 
-# Tworzenie tabel
 Base.metadata.create_all(bind=engine)
-
 
 # ==========================================
 #            SCHEMATY PYDANTIC
@@ -271,7 +265,6 @@ def on_mqtt_message(client, userdata, msg):
         if not sensor_name: return
 
         with SessionLocal() as db:
-            # Aktualizacja stanu w tabeli pomocniczej
             spot = db.query(ParkingSpot).filter(ParkingSpot.name == sensor_name).first()
             if spot:
                 prev = spot.current_status
@@ -279,15 +272,12 @@ def on_mqtt_message(client, userdata, msg):
                 spot.last_seen = now_utc()
                 
                 if prev != status:
-                    # Zapis do historical_data (nowa tabela)
                     db.add(HistoricalData(sensor_id=sensor_name, status=status))
                     
-                    # Powiadomienia (DeviceSubscription)
                     if status == 0:
                         subs = db.query(DeviceSubscription).filter(DeviceSubscription.sensor_name == sensor_name).all()
                         for sub in subs:
                             send_push(sub.device_token, "Wolne Miejsce!", f"{sensor_name} jest teraz wolne!")
-                            # Opcjonalnie usuwamy subskrypcję po powiadomieniu
                             db.delete(sub)
                 
                 db.commit()
@@ -362,25 +352,16 @@ def get_spots(
     db: Session = Depends(get_db)
 ):
     query = db.query(ParkingSpot)
-    
-    # Filtry
-    if city:
-        query = query.filter(ParkingSpot.city == city)
-    if is_disabled_friendly:
-        query = query.filter(ParkingSpot.is_disabled_friendly == True)
-    if is_ev:
-        query = query.filter(ParkingSpot.is_ev == True)
+    if city: query = query.filter(ParkingSpot.city == city)
+    if is_disabled_friendly: query = query.filter(ParkingSpot.is_disabled_friendly == True)
+    if is_ev: query = query.filter(ParkingSpot.is_ev == True)
 
     spots = query.all()
     res = []
     
     for s in spots:
-        # LOGIKA PUNKT 3: EURO_4 jako "niepełnosprawne" (lub wyłączone)
         override_disabled = s.is_disabled_friendly
-        
         if s.name == "euro_4":
-            # Tymczasowo nadpisujemy flagę na True (miejsce dla niepełnosprawnych)
-            # Zgodnie z życzeniem "temporarily set euro_4 as a disabled parking spot"
             override_disabled = True 
         
         coords_obj = None
@@ -395,17 +376,17 @@ def get_spots(
             "status": s.current_status,
             "city": s.city,
             "wspolrzedne": coords_obj,
-            "is_disabled_friendly": override_disabled, # Używamy nadpisanej wartości
+            "is_disabled_friendly": override_disabled,
             "is_ev": s.is_ev,
             "is_paid": s.is_paid,
             "type_label": "Dla niepełnosprawnych" if override_disabled else ("EV" if s.is_ev else "Ogólne")
         })
     return res
 
-# --- SUBSKRYPCJE (Nowa tabela) ---
-@app.post("/subscribe")
+# --- POPRAWIONA SUBSKRYPCJA (ZMIANA NA /api/v1/subscribe_spot) ---
+@app.post("/api/v1/subscribe_spot")
 async def subscribe_device(request: SubscriptionRequest, db: Session = Depends(get_db)):
-    # Usuwamy stare subskrypcje tego tokena dla tego sensora (żeby nie dublować)
+    # Usuwamy stare subskrypcje
     db.query(DeviceSubscription).filter(
         DeviceSubscription.device_token == request.device_token,
         DeviceSubscription.sensor_name == request.sensor_name
@@ -434,10 +415,8 @@ def where_is_my_car(token: str, db: Session = Depends(get_db)):
     if not user.ticket_id:
         return {"status": "no_ticket", "message": "Nie masz aktywnego biletu"}
     
-    # Pobieramy bilet po ID zapisanym w userze
     ticket = db.query(Ticket).filter(Ticket.id == user.ticket_id).first()
     if not ticket:
-         # Sytuacja błędu spójności danych
          return {"status": "error", "message": "Bilet nie istnieje"}
          
     return {
@@ -447,16 +426,14 @@ def where_is_my_car(token: str, db: Session = Depends(get_db)):
         "plate_number": ticket.plate_number
     }
 
-# --- KUPNO BILETU (Wymagane do pkt 4) ---
+# --- KUPNO BILETU ---
 @app.post("/api/v1/user/buy_ticket")
 def buy_ticket(req: TicketPurchase, db: Session = Depends(get_db)):
     user = db.query(User).filter(User.token == req.token).first()
-    if not user:
-        raise HTTPException(401)
+    if not user: raise HTTPException(401)
         
     start = now_utc()
     end = start + datetime.timedelta(hours=req.duration_hours)
-    # Prosta kalkulacja ceny
     price = 5.0 * req.duration_hours
     
     new_ticket = Ticket(
@@ -468,12 +445,9 @@ def buy_ticket(req: TicketPurchase, db: Session = Depends(get_db)):
         user_id=user.user_id
     )
     db.add(new_ticket)
-    db.flush() # Żeby dostać ID biletu
+    db.flush()
     
-    # Przypisujemy bilet do użytkownika (kluczowe dla "Gdzie zaparkowałem")
     user.ticket_id = new_ticket.id
-    
-    # Opcjonalnie: ustawiamy status miejsca na zajęte
     spot = db.query(ParkingSpot).filter(ParkingSpot.name == req.place_name).first()
     if spot:
         spot.current_status = 1
@@ -482,13 +456,32 @@ def buy_ticket(req: TicketPurchase, db: Session = Depends(get_db)):
     db.commit()
     return {"status": "ok", "ticket_id": new_ticket.id, "ends_at": end}
 
-# --- AIRBNB / DISTRICTS ---
+# --- AIRBNB ---
 @app.get("/api/v1/airbnb/offers")
 def get_airbnb(district_id: Optional[int] = None, db: Session = Depends(get_db)):
     q = db.query(AirbnbOffer)
-    if district_id:
-        q = q.filter(AirbnbOffer.district_id == district_id)
+    if district_id: q = q.filter(AirbnbOffer.district_id == district_id)
     return q.all()
+
+# --- STATYSTYKI (Dla kompatybilności z frontem) ---
+class StatystykiZapytanie(BaseModel):
+    sensor_id: str
+    selected_date: str
+    selected_hour: int
+
+@app.post("/api/v1/statystyki/zajetosc")
+def stats_mobile(z: StatystykiZapytanie, db: Session = Depends(get_db)):
+    try: target = datetime.datetime.strptime(z.selected_date, "%Y-%m-%d").date()
+    except: raise HTTPException(400, "Format daty")
+    
+    start = datetime.datetime.combine(target, datetime.time(z.selected_hour, 0))
+    end = start + datetime.timedelta(hours=1)
+    
+    total = db.query(HistoricalData).filter(HistoricalData.sensor_id == z.sensor_id, HistoricalData.timestamp >= start, HistoricalData.timestamp < end).count()
+    occ = db.query(HistoricalData).filter(HistoricalData.sensor_id == z.sensor_id, HistoricalData.timestamp >= start, HistoricalData.timestamp < end, HistoricalData.status == 1).count()
+    
+    pct = int((occ/total)*100) if total > 0 else 0
+    return {"wynik": {"procent_zajetosci": pct, "liczba_pomiarow": total}}
 
 if __name__ == "__main__":
     import uvicorn
