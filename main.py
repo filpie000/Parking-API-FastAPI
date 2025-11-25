@@ -5,6 +5,7 @@ import secrets
 import json
 import threading
 import time
+import traceback # Dodano do debugowania
 from typing import Optional, List, Dict
 from zoneinfo import ZoneInfo
 
@@ -16,7 +17,7 @@ from pydantic import BaseModel
 from sqlalchemy import create_engine, Column, Integer, String, DateTime, Boolean, ForeignKey, Float, Text, Table, func, Date, DECIMAL
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, Session, relationship
-from sqlalchemy.exc import IntegrityError # Import do obsługi błędów bazy
+from sqlalchemy.exc import IntegrityError 
 
 import bcrypt
 import msgpack
@@ -367,57 +368,58 @@ def stats_mobile(z: StatystykiZapytanie, db: Session = Depends(get_db)):
 # --- SIMULATION ENDPOINT (Update) ---
 @app.post("/api/v1/iot/update")
 async def iot_update_http(data: dict, db: Session = Depends(get_db)):
-    name = data.get("name")
-    stat = int(data.get("status", 0))
-    dist_id = data.get("district_id")
-    state_id = data.get("state_id") # Opcjonalnie zmiana rejonu
-
-    if not name: raise HTTPException(400, "Brak nazwy")
-    spot = db.query(ParkingSpot).filter(ParkingSpot.name == name).first()
-    
-    if not spot:
-        spot = ParkingSpot(name=name, current_status=stat)
-        db.add(spot)
-    
-    # Walidacja i przypisanie ID (bezpieczne)
-    if dist_id is not None:
-        if not db.query(District).filter(District.id == int(dist_id)).first():
-            raise HTTPException(400, f"Błąd: District ID {dist_id} nie istnieje")
-        spot.district_id = int(dist_id)
-
-    if state_id is not None: 
-        if not db.query(State).filter(State.id == int(state_id)).first():
-            raise HTTPException(400, f"Błąd: State ID {state_id} nie istnieje")
-        spot.state_id = int(state_id)
-
-    prev = spot.current_status; spot.current_status = stat; spot.last_seen = now_utc()
-    
-    if prev != stat:
-        db.add(HistoricalData(sensor_id=name, status=stat))
-        if stat == 1:
-            subs = db.query(DeviceSubscription).filter(DeviceSubscription.sensor_name == name).all()
-            for sub in subs:
-                send_push(
-                    sub.device_token, 
-                    "⚠️ Ktoś zajął Twoje miejsce!", 
-                    f"Miejsce {name} zajęte. Kliknij, aby znaleźć alternatywę.", 
-                    data={"action": "find_alt"}
-                )
-                db.delete(sub)
-    
     try:
-        db.commit()
-    except IntegrityError as e:
-        db.rollback()
-        logger.error(f"DB Error: {e}")
-        raise HTTPException(400, "Błąd spójności danych (np. niepoprawne ID)")
-    except Exception as e:
-        db.rollback()
-        logger.error(f"DB Error: {e}")
-        raise HTTPException(500, "Błąd serwera")
+        name = data.get("name")
+        stat = int(data.get("status", 0))
+        dist_id = data.get("district_id")
+        state_id = data.get("state_id") # Opcjonalnie zmiana rejonu
 
-    await manager.broadcast({"sensor_id": name, "status": stat})
-    return {"status": "updated", "district_id": spot.district_id, "state_id": spot.state_id}
+        if not name: raise HTTPException(400, "Brak nazwy")
+        spot = db.query(ParkingSpot).filter(ParkingSpot.name == name).first()
+        
+        if not spot:
+            spot = ParkingSpot(name=name, current_status=stat)
+            db.add(spot)
+        
+        # Walidacja i przypisanie ID (bezpieczne)
+        if dist_id is not None:
+            if not db.query(District).filter(District.id == int(dist_id)).first():
+                raise HTTPException(400, f"Błąd: District ID {dist_id} nie istnieje w bazie")
+            spot.district_id = int(dist_id)
+
+        if state_id is not None: 
+            if not db.query(State).filter(State.id == int(state_id)).first():
+                raise HTTPException(400, f"Błąd: State ID {state_id} nie istnieje w bazie")
+            spot.state_id = int(state_id)
+
+        prev = spot.current_status; spot.current_status = stat; spot.last_seen = now_utc()
+        
+        if prev != stat:
+            db.add(HistoricalData(sensor_id=name, status=stat))
+            if stat == 1:
+                subs = db.query(DeviceSubscription).filter(DeviceSubscription.sensor_name == name).all()
+                for sub in subs:
+                    send_push(
+                        sub.device_token, 
+                        "⚠️ Ktoś zajął Twoje miejsce!", 
+                        f"Miejsce {name} zajęte. Kliknij, aby znaleźć alternatywę.", 
+                        data={"action": "find_alt"}
+                    )
+                    db.delete(sub)
+        
+        db.commit()
+        await manager.broadcast({"sensor_id": name, "status": stat})
+        return {"status": "updated", "district_id": spot.district_id, "state_id": spot.state_id}
+
+    except HTTPException as he:
+        raise he
+    except Exception as e:
+        logger.error(f"Critical Error in iot_update: {e}")
+        traceback.print_exc()
+        # Jeśli to błąd bazy, spróbujmy rollback
+        try: db.rollback()
+        except: pass
+        raise HTTPException(500, detail=f"Internal Server Error: {str(e)}")
 
 if __name__ == "__main__":
     import uvicorn
