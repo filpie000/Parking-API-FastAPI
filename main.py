@@ -3,15 +3,16 @@ import datetime
 import logging
 import secrets
 import json
-from typing import Optional, List
+from typing import Optional, List, Dict
 from zoneinfo import ZoneInfo
 
-from fastapi import FastAPI, Depends, HTTPException, WebSocket
+from fastapi import FastAPI, Depends, HTTPException, Request, WebSocket
 from fastapi.responses import HTMLResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
-from sqlalchemy import create_engine, Column, Integer, String, DateTime, Boolean, ForeignKey, Text, Table, func
+# Added Float to imports here
+from sqlalchemy import create_engine, Column, Integer, String, DateTime, Boolean, ForeignKey, Float, Text, Table, func
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, Session, relationship
 
@@ -156,7 +157,6 @@ class AirbnbOffer(Base):
     end_date = Column(String, nullable=True)
     created_at = Column(DateTime(timezone=True), default=now_utc)
 
-# NOWA TABELA (ZGODNA Z SQL)
 class DeviceSubscription(Base):
     __tablename__ = "device_subscriptions"
     id = Column(Integer, primary_key=True, autoincrement=True)
@@ -178,7 +178,6 @@ class RaportRequest(BaseModel): start_date: str; end_date: str; groups: List[str
 class AirbnbAdd(BaseModel): token: str; title: str; description: str; price: str; availability: str; latitude: Optional[float]; longitude: Optional[float]; district: str; start_date: str; end_date: str
 class AirbnbDelete(BaseModel): token: str; offer_id: int
 class UserPermissionsUpdate(BaseModel): target_email: str; perm_disabled: bool
-# NOWY MODEL REQUESTU
 class SubscriptionRequest(BaseModel): sensor_name: str; device_token: str
 class StatystykiZapytanie(BaseModel): sensor_id: str; selected_date: str; selected_hour: int
 
@@ -225,7 +224,7 @@ def on_mqtt_message(client, userdata, msg):
                 if prev != status:
                     db.add(DaneHistoryczne(spot_name=name, status=status))
                     if status == 0:
-                        # POWIADOMIENIA Z NOWEJ TABELI
+                        # POWIADOMIENIA Z TABELI device_subscriptions
                         obs_list = db.query(DeviceSubscription).filter(DeviceSubscription.sensor_name == name).all()
                         for o in obs_list:
                             send_push(o.device_token, "Wolne Miejsce!", f"{name} jest wolne.")
@@ -248,7 +247,7 @@ app = FastAPI()
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 
 @app.on_event("startup")
-async def startup_event():
+async def startup():
     start_mqtt()
     with SessionLocal() as db:
         try:
@@ -258,7 +257,7 @@ async def startup_event():
         except: pass
 
 @app.get("/")
-def root(): return {"status": "System Online"}
+def root(): return {"status": "OK"}
 
 @app.get("/dashboard", response_class=HTMLResponse)
 def dash():
@@ -272,7 +271,7 @@ async def ws(ws: WebSocket):
         while True: await ws.receive_text()
     except: manager.disconnect(ws)
 
-# --- API ENDPOINTS ---
+# --- ENDPOINTS ---
 @app.get("/api/v1/options/filters")
 def opts(db: Session=Depends(get_db)):
     return {"cities": [c[0] for c in db.query(ParkingSpot.city).distinct().all() if c[0]], "states": [g.name for g in db.query(Group.name).all()]}
@@ -288,15 +287,12 @@ def status(limit: int=100, db: Session=Depends(get_db)):
         res.append({"sensor_id": s.name, "name": s.name, "status": s.current_status, "groups": [g.name for g in s.groups], "city": s.city, "state": s.state, "wspolrzedne": co, "is_disabled_friendly": s.is_disabled_friendly, "is_ev": s.is_ev, "is_paid": s.is_paid, "adres": f"{s.state or ''}, {s.city or ''}".strip(', '), "typ": 'niepelnosprawni' if s.is_disabled_friendly else ('ev' if s.is_ev else 'zwykle'), "cennik": "Płatny" if s.is_paid else "Bezpłatny"})
     return res
 
-# --- NOWY ENDPOINT: SUBSKRYPCJA ---
 @app.post("/api/v1/subscribe_spot")
 def subscribe_spot(r: SubscriptionRequest, db: Session=Depends(get_db)):
     logger.info(f"SUBSKRYPCJA: {r.sensor_name} -> {r.device_token}")
     
-    # 1. Usuń stare (dla porządku)
     db.query(DeviceSubscription).filter(DeviceSubscription.device_token == r.device_token, DeviceSubscription.sensor_name == r.sensor_name).delete()
     
-    # 2. Dodaj nowe
     new_sub = DeviceSubscription(device_token=r.device_token, sensor_name=r.sensor_name)
     db.add(new_sub)
     
@@ -343,7 +339,7 @@ def report(r: RaportRequest, db: Session = Depends(get_db)):
     except: return {}
     targets = [sp.name for sp in db.query(ParkingSpot).join(ParkingSpot.groups).filter(Group.name.in_(r.groups)).all()]
     if not targets: return {}
-    hist = db.query(DaneHistoryczne).filter(DaneHistoryczne.czas_pomiaru >= s_date, DaneHistoryczne.czas_pomiaru < e_date, DaneHistoryczne.spot_name.in_(targets)).all()
+    hist = db.query(DaneHistoryczne).filter(DaneHistoryczne.czas_pomiaru >= s, DaneHistoryczne.czas_pomiaru < e, DaneHistoryczne.spot_name.in_(targets)).all()
     res = {g:[0]*24 for g in r.groups}
     map_s_g = {sp.name: [g.name for g in sp.groups] for sp in db.query(ParkingSpot).filter(ParkingSpot.name.in_(targets)).all()}
     for h in hist:
