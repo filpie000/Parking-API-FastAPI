@@ -192,16 +192,16 @@ class StatystykiZapytanie(BaseModel): sensor_id: str; selected_date: str; select
 # --- MODELE DO EDYCJI DANYCH (ADMIN) ---
 class DistrictPayload(BaseModel):
     id: Optional[int] = None
-    district: str
-    city: str = "Inowrocław"
+    district: Optional[str] = None # Zmieniono na Optional
+    city: Optional[str] = None
     description: Optional[str] = None
     price_info: Optional[str] = None
-    capacity: int = 0
+    capacity: Optional[int] = None
 
 class StatePayload(BaseModel):
     state_id: Optional[int] = None
-    name: str 
-    city: str = "Inowrocław"
+    name: Optional[str] = None # Zmieniono na Optional
+    city: Optional[str] = None
 
 class SpotPayload(BaseModel):
     name: str # Klucz główny sensora (np. BUD_4)
@@ -227,7 +227,7 @@ def send_push(token, title, body, data=None):
         import requests
         payload = {"to": token, "title": title, "body": body}
         if data: payload["data"] = data 
-        requests.post("[https://exp.host/--/api/v2/push/send](https://exp.host/--/api/v2/push/send)", json=payload, timeout=2)
+        requests.post("https://exp.host/--/api/v2/push/send", json=payload, timeout=2)
         logger.info(f"PUSH SENT: {token}")
     except Exception as e: logger.error(f"PUSH ERROR: {e}")
 
@@ -403,16 +403,23 @@ async def manage_district(d: DistrictPayload, db: Session = Depends(get_db)):
         if d.id:
             existing = db.query(District).filter(District.id == d.id).first()
             if existing:
-                existing.district = d.district
-                existing.city = d.city
-                existing.description = d.description
-                existing.price_info = d.price_info
-                existing.capacity = d.capacity
+                if d.district is not None: existing.district = d.district
+                if d.city is not None: existing.city = d.city
+                if d.description is not None: existing.description = d.description
+                if d.price_info is not None: existing.price_info = d.price_info
+                if d.capacity is not None: existing.capacity = d.capacity
                 db.commit()
                 return {"status": "updated", "id": existing.id}
             else: raise HTTPException(404, "District not found")
         else:
-            new_dist = District(district=d.district, city=d.city, description=d.description, price_info=d.price_info, capacity=d.capacity)
+            if not d.district: raise HTTPException(400, "Field 'district' is required for creation")
+            new_dist = District(
+                district=d.district, 
+                city=d.city or "Inowrocław", 
+                description=d.description, 
+                price_info=d.price_info, 
+                capacity=d.capacity or 0
+            )
             db.add(new_dist); db.commit(); return {"status": "created", "id": new_dist.id}
     except Exception as e: db.rollback(); raise HTTPException(500, f"Error: {e}")
 
@@ -421,25 +428,26 @@ async def manage_state(s: StatePayload, db: Session = Depends(get_db)):
     try:
         if s.state_id:
             existing = db.query(State).filter(State.state_id == s.state_id).first()
-            if existing: existing.name = s.name; existing.city = s.city; db.commit(); return {"status": "updated", "state_id": existing.state_id}
+            if existing:
+                if s.name is not None: existing.name = s.name
+                if s.city is not None: existing.city = s.city
+                db.commit()
+                return {"status": "updated", "state_id": existing.state_id}
             else: raise HTTPException(404, "State not found")
         else:
-            new_state = State(name=s.name, city=s.city); db.add(new_state); db.commit(); return {"status": "created", "state_id": new_state.state_id}
+            if not s.name: raise HTTPException(400, "Field 'name' is required for creation")
+            new_state = State(name=s.name, city=s.city or "Inowrocław")
+            db.add(new_state); db.commit(); return {"status": "created", "state_id": new_state.state_id}
     except Exception as e: db.rollback(); raise HTTPException(500, f"Error: {e}")
 
 @app.post("/api/v1/admin/manage/spot")
 async def manage_spot(s: SpotPayload, db: Session = Depends(get_db)):
-    """
-    Edytuje statyczne dane miejsca (nie status).
-    Tworzy miejsce jeśli nie istnieje.
-    """
     try:
         spot = db.query(ParkingSpot).filter(ParkingSpot.name == s.name).first()
         if not spot:
             spot = ParkingSpot(name=s.name)
             db.add(spot)
         
-        # Aktualizuj tylko te pola, które zostały przesłane (nie są null)
         if s.city is not None: spot.city = s.city
         if s.state_id is not None: spot.state_id = s.state_id
         if s.district_id is not None: spot.district_id = s.district_id
