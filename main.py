@@ -131,12 +131,13 @@ class District(Base):
     id = Column(Integer, primary_key=True, autoincrement=True)
     district = Column(String(100), nullable=False) 
     city = Column(String(100), nullable=False)
+    description = Column(Text, nullable=True)
+    price_info = Column(String(255), nullable=True)
+    capacity = Column(Integer, default=0)
 
-# --- POPRAWIONY MODEL STATE ---
-# Zgodnie ze zrzutem ekranu, klucz główny to state_id, nie id
 class State(Base):
     __tablename__ = "states"
-    state_id = Column(Integer, primary_key=True, autoincrement=True) # ZMIANA NAZWY
+    state_id = Column(Integer, primary_key=True, autoincrement=True)
     name = Column(String(100), nullable=False)
     city = Column(String(100), default='Inowrocław')
 
@@ -158,7 +159,6 @@ class AirbnbOffer(Base):
     end_date = Column(Date)
     created_at = Column(DateTime, default=now_utc)
 
-# --- POPRAWIONY MODEL PARKING SPOT ---
 class ParkingSpot(Base):
     __tablename__ = "parking_spots"
     name = Column(String, primary_key=True) 
@@ -166,7 +166,6 @@ class ParkingSpot(Base):
     last_seen = Column(DateTime(timezone=True), default=now_utc)
     city = Column(String, nullable=True)
     
-    # Poprawiona relacja do states.state_id
     state_id = Column(Integer, ForeignKey("states.state_id"), nullable=True) 
     district_id = Column(Integer, ForeignKey("districts.id"), nullable=True)
     
@@ -178,7 +177,6 @@ class ParkingSpot(Base):
     district_rel = relationship("District")
     state_rel = relationship("State") 
 
-# Tworzenie tabel (jeśli nie istnieją)
 Base.metadata.create_all(bind=engine)
 
 # ==========================================
@@ -190,6 +188,30 @@ class SubscriptionRequest(BaseModel): device_token: str; sensor_name: str
 class TicketPurchase(BaseModel): token: str; place_name: str; plate_number: str; duration_hours: int
 class VehicleAdd(BaseModel): token: str; name: str; plate_number: str
 class StatystykiZapytanie(BaseModel): sensor_id: str; selected_date: str; selected_hour: int
+
+# --- MODELE DO EDYCJI DANYCH (ADMIN) ---
+class DistrictPayload(BaseModel):
+    id: Optional[int] = None
+    district: str
+    city: str = "Inowrocław"
+    description: Optional[str] = None
+    price_info: Optional[str] = None
+    capacity: int = 0
+
+class StatePayload(BaseModel):
+    state_id: Optional[int] = None
+    name: str 
+    city: str = "Inowrocław"
+
+class SpotPayload(BaseModel):
+    name: str # Klucz główny sensora (np. BUD_4)
+    city: Optional[str] = None
+    state_id: Optional[int] = None
+    district_id: Optional[int] = None
+    coordinates: Optional[str] = None
+    is_disabled_friendly: Optional[bool] = None
+    is_ev: Optional[bool] = None
+    is_paid: Optional[bool] = None
 
 # ==========================================
 #              POMOCNIKI
@@ -286,7 +308,6 @@ def login(u: UserLogin, db: Session = Depends(get_db)):
     token = secrets.token_hex(16); user.token = token; db.commit()
     return {"token": token, "email": user.email, "user_id": user.user_id, "is_disabled": user.is_disabled}
 
-# --- AKTUALNY STAN ---
 @app.get("/api/v1/aktualny_stan")
 def get_spots(
     city: Optional[str] = None,
@@ -305,7 +326,11 @@ def get_spots(
     for s in spots:
         override_disabled = True if s.name == "euro_4" else s.is_disabled_friendly
         
-        parking_name = s.district_rel.district if s.district_rel else "Parking Ogólny"
+        dist_obj = s.district_rel
+        parking_name = dist_obj.district if dist_obj else "Parking Ogólny"
+        parking_desc = dist_obj.description if dist_obj else ""
+        parking_price = dist_obj.price_info if dist_obj else ""
+        parking_capacity = dist_obj.capacity if dist_obj else 0
         rejon_name = s.state_rel.name if s.state_rel else "Brak danych"
 
         coords_obj = None
@@ -319,6 +344,9 @@ def get_spots(
             "city": s.city,
             "state": rejon_name, 
             "place_name": parking_name, 
+            "place_description": parking_desc,
+            "place_price": parking_price,
+            "place_capacity": parking_capacity,
             "district_id": s.district_id,
             "state_id": s.state_id,
             "wspolrzedne": coords_obj,
@@ -367,64 +395,151 @@ def stats_mobile(z: StatystykiZapytanie, db: Session = Depends(get_db)):
     occ = db.query(HistoricalData).filter(HistoricalData.sensor_id==z.sensor_id, HistoricalData.timestamp>=s, HistoricalData.timestamp<e, HistoricalData.status==1).count()
     return {"wynik": {"procent_zajetosci": int((occ/tot)*100) if tot>0 else 0, "liczba_pomiarow": tot}}
 
-# --- SIMULATION ENDPOINT (Poprawione nazwy kolumn) ---
+# --- ADMIN MANAGEMENT ENDPOINTS (CRUD) ---
+
+@app.post("/api/v1/admin/manage/district")
+async def manage_district(d: DistrictPayload, db: Session = Depends(get_db)):
+    try:
+        if d.id:
+            existing = db.query(District).filter(District.id == d.id).first()
+            if existing:
+                existing.district = d.district
+                existing.city = d.city
+                existing.description = d.description
+                existing.price_info = d.price_info
+                existing.capacity = d.capacity
+                db.commit()
+                return {"status": "updated", "id": existing.id}
+            else: raise HTTPException(404, "District not found")
+        else:
+            new_dist = District(district=d.district, city=d.city, description=d.description, price_info=d.price_info, capacity=d.capacity)
+            db.add(new_dist); db.commit(); return {"status": "created", "id": new_dist.id}
+    except Exception as e: db.rollback(); raise HTTPException(500, f"Error: {e}")
+
+@app.post("/api/v1/admin/manage/state")
+async def manage_state(s: StatePayload, db: Session = Depends(get_db)):
+    try:
+        if s.state_id:
+            existing = db.query(State).filter(State.state_id == s.state_id).first()
+            if existing: existing.name = s.name; existing.city = s.city; db.commit(); return {"status": "updated", "state_id": existing.state_id}
+            else: raise HTTPException(404, "State not found")
+        else:
+            new_state = State(name=s.name, city=s.city); db.add(new_state); db.commit(); return {"status": "created", "state_id": new_state.state_id}
+    except Exception as e: db.rollback(); raise HTTPException(500, f"Error: {e}")
+
+@app.post("/api/v1/admin/manage/spot")
+async def manage_spot(s: SpotPayload, db: Session = Depends(get_db)):
+    """
+    Edytuje statyczne dane miejsca (nie status).
+    Tworzy miejsce jeśli nie istnieje.
+    """
+    try:
+        spot = db.query(ParkingSpot).filter(ParkingSpot.name == s.name).first()
+        if not spot:
+            spot = ParkingSpot(name=s.name)
+            db.add(spot)
+        
+        # Aktualizuj tylko te pola, które zostały przesłane (nie są null)
+        if s.city is not None: spot.city = s.city
+        if s.state_id is not None: spot.state_id = s.state_id
+        if s.district_id is not None: spot.district_id = s.district_id
+        if s.coordinates is not None: spot.coordinates = s.coordinates
+        if s.is_disabled_friendly is not None: spot.is_disabled_friendly = s.is_disabled_friendly
+        if s.is_ev is not None: spot.is_ev = s.is_ev
+        if s.is_paid is not None: spot.is_paid = s.is_paid
+        
+        db.commit()
+        return {"status": "updated", "name": spot.name}
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(500, f"Error: {e}")
+
+# --- SIMULATION ENDPOINT ---
 @app.post("/api/v1/iot/update")
 async def iot_update_http(data: dict, db: Session = Depends(get_db)):
     try:
-        name = data.get("name")
-        stat = int(data.get("status", 0))
-        dist_id = data.get("district_id")
-        state_id = data.get("state_id") 
-
+        name = data.get("name"); stat = int(data.get("status", 0)); dist_id = data.get("district_id"); state_id = data.get("state_id") 
         if not name: raise HTTPException(400, "Brak nazwy")
-        
         spot = db.query(ParkingSpot).filter(ParkingSpot.name == name).first()
-        if not spot:
-            spot = ParkingSpot(name=name, current_status=stat)
-            db.add(spot)
-        
+        if not spot: spot = ParkingSpot(name=name, current_status=stat); db.add(spot)
         if dist_id is not None:
-            if not db.query(District).filter(District.id == int(dist_id)).first():
-                raise HTTPException(400, f"District ID {dist_id} not found")
+            if not db.query(District).filter(District.id == int(dist_id)).first(): raise HTTPException(400, f"District {dist_id} not found")
             spot.district_id = int(dist_id)
-
         if state_id is not None: 
-            # Używamy poprawnej nazwy kolumny: State.state_id
-            if not db.query(State).filter(State.state_id == int(state_id)).first():
-                raise HTTPException(400, f"State ID {state_id} not found (PK is state_id)")
+            if not db.query(State).filter(State.state_id == int(state_id)).first(): raise HTTPException(400, f"State {state_id} not found")
             spot.state_id = int(state_id)
-
         prev = spot.current_status; spot.current_status = stat; spot.last_seen = now_utc()
-        
         if prev != stat:
             db.add(HistoricalData(sensor_id=name, status=stat))
             if stat == 1:
                 subs = db.query(DeviceSubscription).filter(DeviceSubscription.sensor_name == name).all()
-                for sub in subs:
-                    send_push(
-                        sub.device_token, 
-                        "⚠️ Ktoś zajął Twoje miejsce!", 
-                        f"Miejsce {name} zajęte. Kliknij, aby znaleźć alternatywę.", 
-                        data={"action": "find_alt"}
-                    )
-                    db.delete(sub)
-        
+                for sub in subs: send_push(sub.device_token, "⚠️ Ktoś zajął Twoje miejsce!", f"Miejsce {name} zajęte. Kliknij, aby znaleźć alternatywę.", data={"action": "find_alt"}); db.delete(sub)
         db.commit()
         await manager.broadcast({"sensor_id": name, "status": stat})
-        return {"status": "updated", "district_id": spot.district_id, "state_id": spot.state_id}
-
-    except HTTPException as he:
-        raise he
-    except ProgrammingError as pe:
-        logger.error(f"DB Programming Error: {pe}")
-        db.rollback()
-        raise HTTPException(500, detail=f"DB Schema Error (check column names): {pe.orig}")
-    except Exception as e:
-        logger.error(f"Critical Error: {e}")
-        traceback.print_exc()
-        db.rollback()
-        raise HTTPException(500, detail=f"Internal Server Error: {str(e)}")
+        return {"status": "updated"}
+    except Exception as e: db.rollback(); raise HTTPException(500, detail=f"Error: {str(e)}")
 
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)
+```
+
+### 2. Postman: Gotowe Szablony (JSON)
+
+Oto instrukcja, co wklejać do Postmana (zakładka **Body** -> **raw** -> **JSON**). Ustaw metodę na `POST`.
+
+#### A. Zarządzanie Dzielnicami/Parkingami (Districts)
+**URL:** `.../api/v1/admin/manage/district`
+
+1.  **Dodaj nowy parking:**
+    ```json
+    {
+      "district": "Nowy Parking przy Rynku",
+      "city": "Inowrocław",
+      "description": "Monitorowany, nawierzchnia utwardzona.",
+      "price_info": "2 PLN/h",
+      "capacity": 50
+    }
+    ```
+
+2.  **Edytuj istniejący parking (wymagane ID):**
+    ```json
+    {
+      "id": 1,
+      "district": "Parking EuroAGD (Zmieniony)",
+      "description": "Nowy opis po remoncie.",
+      "capacity": 200
+    }
+    ```
+
+#### B. Zarządzanie Rejonami (States)
+**URL:** `.../api/v1/admin/manage/state`
+
+1.  **Dodaj rejon:**
+    ```json
+    {
+      "name": "Stare Miasto",
+      "city": "Inowrocław"
+    }
+    ```
+
+2.  **Edytuj rejon (wymagane state_id):**
+    ```json
+    {
+      "state_id": 1,
+      "name": "Rąbin I"
+    }
+    ```
+
+#### C. Zarządzanie Miejscami (Spots) - Edycja danych statycznych
+To jest nowy endpoint, który pozwala "naprawić" dane miejsca bez zmiany jego statusu zajętości.
+**URL:** `.../api/v1/admin/manage/spot`
+
+1.  **Ustaw współrzędne i typ dla miejsca:**
+    ```json
+    {
+      "name": "BUD_4",
+      "coordinates": "52.7925,18.2560",
+      "is_disabled_friendly": true,
+      "is_ev": false
+    }
