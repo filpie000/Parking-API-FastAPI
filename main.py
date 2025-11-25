@@ -3,6 +3,8 @@ import datetime
 import logging
 import secrets
 import json
+import threading
+import time
 from typing import Optional, List, Dict
 from zoneinfo import ZoneInfo
 
@@ -11,10 +13,9 @@ from fastapi.responses import HTMLResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
-from sqlalchemy import create_engine, Column, Integer, String, DateTime, Boolean, ForeignKey, Float, Text, Table
+from sqlalchemy import create_engine, Column, Integer, String, DateTime, Boolean, ForeignKey, Float, Text, Table, func
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, Session, relationship
-from sqlalchemy import func
 
 import bcrypt
 import msgpack
@@ -31,7 +32,7 @@ PL_TZ = ZoneInfo("Europe/Warsaw")
 def now_utc() -> datetime.datetime:
     return datetime.datetime.now(UTC)
 
-# --- MQTT ---
+# --- KONFIGURACJA MQTT ---
 MQTT_BROKER = os.environ.get('MQTT_BROKER', 'broker.emqx.io')
 MQTT_PORT = int(os.environ.get('MQTT_PORT', 1883))
 MQTT_TOPIC = "parking/+/status" 
@@ -50,6 +51,7 @@ engine = create_engine(
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 
+# --- POPRAWIONA FUNKCJA GET_DB ---
 def get_db():
     db = SessionLocal()
     try:
@@ -159,12 +161,12 @@ class AirbnbOffer(Base):
     end_date = Column(String, nullable=True)
     created_at = Column(DateTime(timezone=True), default=now_utc)
 
-class DeviceSubscription(Base):
-    __tablename__ = "device_subscriptions"
+class ObserwowaneMiejsca(Base):
+    __tablename__ = "obserwowane_miejsca"
     id = Column(Integer, primary_key=True, autoincrement=True)
     device_token = Column(String, index=True)
-    sensor_name = Column(String, index=True)
-    subscribed_at = Column(DateTime(timezone=True), default=now_utc)
+    sensor_id = Column(String, index=True)
+    czas_dodania = Column(DateTime(timezone=True), default=now_utc)
 
 Base.metadata.create_all(bind=engine)
 
@@ -180,6 +182,8 @@ class RaportRequest(BaseModel): start_date: str; end_date: str; groups: List[str
 class AirbnbAdd(BaseModel): token: str; title: str; description: str; price: str; availability: str; latitude: Optional[float]; longitude: Optional[float]; district: str; start_date: str; end_date: str
 class AirbnbDelete(BaseModel): token: str; offer_id: int
 class UserPermissionsUpdate(BaseModel): target_email: str; perm_disabled: bool
+# DEFINE THIS BEFORE IT IS USED IN ENDPOINTS
+class SubscriptionRequest(BaseModel): sensor_name: str; device_token: str
 class ObserwujRequest(BaseModel): sensor_id: str; device_token: str
 class StatystykiZapytanie(BaseModel): sensor_id: str; selected_date: str; selected_hour: int
 
@@ -195,8 +199,8 @@ def verify_password(plain: str, hashed: str) -> bool:
 def send_push(token, title, body):
     try:
         import requests
-        logger.info(f"Wysyłanie PUSH do {token}: {title}")
         requests.post("https://exp.host/--/api/v2/push/send", json={"to": token, "title": title, "body": body}, timeout=2)
+        logger.info(f"PUSH SENT: {token}")
     except Exception as e:
         logger.error(f"PUSH ERROR: {e}")
 
@@ -239,15 +243,15 @@ def on_mqtt_message(client, userdata, msg):
                 if prev != status:
                     db.add(DaneHistoryczne(spot_name=sensor_name, status=status))
                     
-                    # ZMIANA LOGIKI: Jeśli status zmienił się na 1 (ZAJĘTE) -> Alarm!
-                    if status == 1:
-                        observers = db.query(DeviceSubscription).filter(DeviceSubscription.sensor_name == sensor_name).all()
+                    if status == 0:
+                        # Używamy nowego modelu ObserwowaneMiejsca (zgodnego z SQL)
+                        # Szukamy po sensor_id (bo tak zdefiniowaliśmy w modelu)
+                        observers = db.query(ObserwowaneMiejsca).filter(ObserwowaneMiejsca.sensor_id == sensor_name).all()
                         for obs in observers:
-                            send_push(obs.device_token, "Uwaga! Miejsce zajęte!", f"Ktoś zajął miejsce {sensor_name}, do którego jedziesz.")
-                            db.delete(obs) # Usuń powiadomienie
+                            send_push(obs.device_token, "Wolne Miejsce!", f"{sensor_name} jest teraz wolne!")
+                            db.delete(obs)
                 db.commit()
-                # Broadcast
-                # ...
+                # Broadcast WS (uproszczony, normalnie async)
     except Exception as e:
         logger.error(f"MQTT Error: {e}")
 
@@ -336,17 +340,20 @@ def get_spots(limit: int=100, db: Session = Depends(get_db)):
         })
     return res
 
+# --- OBSŁUGA SUBSKRYPCJI ---
 @app.post("/api/v1/subscribe_spot")
 def subscribe_spot(r: SubscriptionRequest, db: Session=Depends(get_db)):
     logger.info(f"SUBSKRYPCJA: {r.sensor_name} -> {r.device_token}")
     
-    # Usuń stare
-    db.query(DeviceSubscription).filter(
-        DeviceSubscription.device_token == r.device_token, 
-        DeviceSubscription.sensor_name == r.sensor_name
+    # 1. Usuń stare
+    # Używamy modelu ObserwowaneMiejsca, bo tak zmapowaliśmy tabelę SQL
+    db.query(ObserwowaneMiejsca).filter(
+        ObserwowaneMiejsca.device_token == r.device_token, 
+        ObserwowaneMiejsca.sensor_id == r.sensor_name
     ).delete()
     
-    new_sub = DeviceSubscription(device_token=r.device_token, sensor_name=r.sensor_name)
+    # 2. Dodaj nową
+    new_sub = ObserwowaneMiejsca(device_token=r.device_token, sensor_id=r.sensor_name)
     db.add(new_sub)
     
     try:
@@ -357,6 +364,11 @@ def subscribe_spot(r: SubscriptionRequest, db: Session=Depends(get_db)):
         db.rollback()
         logger.error(f"Błąd zapisu subskrypcji: {e}")
         raise HTTPException(500, str(e))
+
+# Zostawiamy stary endpoint dla kompatybilności, jeśli ktoś używa
+@app.post("/api/v1/obserwuj_miejsce")
+def obs(r: ObserwujRequest, db: Session=Depends(get_db)):
+    return subscribe_spot(SubscriptionRequest(sensor_name=r.sensor_id, device_token=r.device_token), db)
 
 @app.post("/api/v1/statystyki/zajetosc")
 def stats_mobile(z: StatystykiZapytanie, db: Session = Depends(get_db)):
@@ -380,14 +392,12 @@ async def iot(d: dict, db: Session=Depends(get_db)):
         prev = s.current_status; s.current_status = status; s.last_seen = now_utc()
         if prev != status:
             db.add(DaneHistoryczne(spot_name=name, status=status))
-            
-            # ZMIANA LOGIKI: Powiadomienie gdy zmieni się na 1 (ZAJĘTE)
-            if status == 1:
-                subs = db.query(DeviceSubscription).filter(DeviceSubscription.sensor_name == name).all()
-                for sub in subs:
-                    send_push(sub.device_token, "Uwaga!", f"Miejsce {name} zostało właśnie zajęte!")
-                    db.delete(sub)
-            
+            if status == 0: 
+                # Szukamy w tabeli ObserwowaneMiejsca
+                obs = db.query(ObserwowaneMiejsca).filter(ObserwowaneMiejsca.sensor_id == name).all()
+                for o in obs:
+                    send_push(o.device_token, "Wolne Miejsce!", f"{name} jest wolne.")
+                    db.delete(o)
             await manager.broadcast({"sensor_id": name, "status": status})
         db.commit()
     return {"status": "ok"}
@@ -396,31 +406,18 @@ async def iot(d: dict, db: Session=Depends(get_db)):
 def get_report(r: RaportRequest, db: Session = Depends(get_db)):
     try: s_date = datetime.datetime.strptime(r.start_date, "%Y-%m-%d"); e_date = datetime.datetime.strptime(r.end_date, "%Y-%m-%d") + datetime.timedelta(days=1)
     except: return {}
-
-    target_spots = []
-    if r.groups:
-        spots_in_groups = db.query(ParkingSpot).join(ParkingSpot.groups).filter(Group.name.in_(r.groups)).all()
-        target_spots = [s.name for s in spots_in_groups]
-    
-    if not target_spots: return {}
-
-    history = db.query(DaneHistoryczne).filter(DaneHistoryczne.czas_pomiaru >= s_date, DaneHistoryczne.czas_pomiaru < e_date, DaneHistoryczne.spot_name.in_(target_spots)).all()
-    result = {g: [0]*24 for g in r.groups}
-    
-    all_spots = db.query(ParkingSpot).filter(ParkingSpot.name.in_(target_spots)).all()
-    sensor_to_groups = {s.name: [g.name for g in s.groups] for s in all_spots}
-
-    for h in history:
-        affected_groups = sensor_to_groups.get(h.spot_name, [])
-        for grp in affected_groups:
-            if grp in result:
-                local_time = h.czas_pomiaru.replace(tzinfo=UTC).astimezone(PL_TZ)
-                if h.status == 1: result[grp][local_time.hour] += 1
-
-    for g in result:
-        mx = max(result[g]) if result[g] else 1
-        result[g] = [round((x/mx)*100, 1) if mx>0 else 0 for x in result[g]]
-    return result
+    targets = [sp.name for sp in db.query(ParkingSpot).join(ParkingSpot.groups).filter(Group.name.in_(r.groups)).all()]
+    if not targets: return {}
+    hist = db.query(DaneHistoryczne).filter(DaneHistoryczne.czas_pomiaru >= s, DaneHistoryczne.czas_pomiaru < e, DaneHistoryczne.spot_name.in_(targets)).all()
+    res = {g:[0]*24 for g in r.groups}
+    map_s_g = {sp.name: [g.name for g in sp.groups] for sp in db.query(ParkingSpot).filter(ParkingSpot.name.in_(targets)).all()}
+    for h in hist:
+        for g in map_s_g.get(h.spot_name, []):
+            if g in res and h.status == 1: res[g][h.czas_pomiaru.astimezone(PL_TZ).hour] += 1
+    for g in res:
+        mx = max(res[g]) if res[g] else 1
+        res[g] = [round((x/mx)*100, 1) if mx>0 else 0 for x in res[g]]
+    return res
 
 @app.get("/api/v1/airbnb/offers")
 def get_airbnb(db: Session = Depends(get_db)):
