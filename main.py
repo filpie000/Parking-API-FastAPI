@@ -50,13 +50,10 @@ engine = create_engine(
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 
-# --- FUNKCJA DB ---
 def get_db():
     db = SessionLocal()
-    try:
-        yield db
-    finally:
-        db.close()
+    try: yield db
+    finally: db.close()
 
 # ==========================================
 #      MODELE BAZY DANYCH
@@ -121,14 +118,6 @@ class HistoricalData(Base):
     sensor_id = Column(String(50), nullable=False)
     status = Column(Integer, nullable=False)
 
-class HolidayData(Base):
-    __tablename__ = "holiday_data"
-    id = Column(Integer, primary_key=True, autoincrement=True)
-    timestamp = Column(DateTime, default=now_utc)
-    sensor_id = Column(String(50), nullable=False)
-    status = Column(Integer, nullable=False)
-    holiday_name = Column(String(100))
-
 class DeviceSubscription(Base):
     __tablename__ = "device_subscriptions"
     id = Column(Integer, primary_key=True, autoincrement=True)
@@ -136,10 +125,11 @@ class DeviceSubscription(Base):
     sensor_name = Column(String(100), nullable=False)
     subscribed_at = Column(DateTime, default=now_utc)
 
+# District przechowuje teraz nazwę parkingu/kompleksu
 class District(Base):
     __tablename__ = "districts"
     id = Column(Integer, primary_key=True, autoincrement=True)
-    district = Column(String(100), nullable=False)
+    district = Column(String(100), nullable=False) # Nazwa Parkingu
     city = Column(String(100), nullable=False)
 
 class AirbnbOffer(Base):
@@ -160,83 +150,60 @@ class AirbnbOffer(Base):
     end_date = Column(Date)
     created_at = Column(DateTime, default=now_utc)
 
-# Model pomocniczy (Parking Spot)
+# ParkingSpot z relacją do District
 class ParkingSpot(Base):
     __tablename__ = "parking_spots"
     name = Column(String, primary_key=True) 
     current_status = Column(Integer, default=0) 
     last_seen = Column(DateTime(timezone=True), default=now_utc)
     city = Column(String, nullable=True)
+    state = Column(String, nullable=True) # Rejon np. Centrum
+    district_id = Column(Integer, ForeignKey("districts.id"), nullable=True)
     coordinates = Column(String, nullable=True)
     is_disabled_friendly = Column(Boolean, default=False)
     is_ev = Column(Boolean, default=False)
     is_paid = Column(Boolean, default=True)
+    
+    district_rel = relationship("District")
 
 Base.metadata.create_all(bind=engine)
 
 # ==========================================
 #            SCHEMATY PYDANTIC
 # ==========================================
-class UserRegister(BaseModel):
-    email: str
-    password: str
-    phone_number: Optional[str] = None
-
-class UserLogin(BaseModel):
-    email: str
-    password: str
-
-class SubscriptionRequest(BaseModel):
-    device_token: str
-    sensor_name: str
-
-class TicketPurchase(BaseModel):
-    token: str
-    place_name: str
-    plate_number: str
-    duration_hours: int
-
-class VehicleAdd(BaseModel):
-    token: str
-    name: str
-    plate_number: str
-
-class StatystykiZapytanie(BaseModel):
-    sensor_id: str
-    selected_date: str
-    selected_hour: int
+class UserRegister(BaseModel): email: str; password: str; phone_number: Optional[str] = None
+class UserLogin(BaseModel): email: str; password: str
+class SubscriptionRequest(BaseModel): device_token: str; sensor_name: str
+class TicketPurchase(BaseModel): token: str; place_name: str; plate_number: str; duration_hours: int
+class VehicleAdd(BaseModel): token: str; name: str; plate_number: str
+class StatystykiZapytanie(BaseModel): sensor_id: str; selected_date: str; selected_hour: int
 
 # ==========================================
 #              POMOCNIKI
 # ==========================================
-def get_password_hash(p: str) -> str:
-    return bcrypt.hashpw(p.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
-
+def get_password_hash(p: str) -> str: return bcrypt.hashpw(p.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
 def verify_password(plain: str, hashed: str) -> bool:
     if not hashed: return False
     try: return bcrypt.checkpw(plain.encode('utf-8'), hashed.encode('utf-8'))
     except: return False
 
-def send_push(token, title, body):
+def send_push(token, title, body, data=None):
     try:
         import requests
-        requests.post("https://exp.host/--/api/v2/push/send", json={"to": token, "title": title, "body": body}, timeout=2)
+        payload = {"to": token, "title": title, "body": body}
+        if data: payload["data"] = data 
+        requests.post("https://exp.host/--/api/v2/push/send", json=payload, timeout=2)
         logger.info(f"PUSH SENT: {token}")
-    except Exception as e:
-        logger.error(f"PUSH ERROR: {e}")
+    except Exception as e: logger.error(f"PUSH ERROR: {e}")
 
 # ==========================================
 #              LOGIKA MQTT
 # ==========================================
 class ConnectionManager:
-    def __init__(self):
-        self.active_connections: List[WebSocket] = []
-    async def connect(self, websocket: WebSocket):
-        await websocket.accept()
-        self.active_connections.append(websocket)
-    def disconnect(self, websocket: WebSocket):
-        if websocket in self.active_connections:
-            self.active_connections.remove(websocket)
+    def __init__(self): self.active_connections: List[WebSocket] = []
+    async def connect(self, websocket: WebSocket): await websocket.accept(); self.active_connections.append(websocket)
+    def disconnect(self, websocket: WebSocket): 
+        if websocket in self.active_connections: self.active_connections.remove(websocket)
     async def broadcast(self, message: dict):
         try:
             msg_bin = msgpack.packb(message)
@@ -252,45 +219,30 @@ def on_mqtt_message(client, userdata, msg):
         payload = json.loads(msg.payload.decode())
         sensor_name = payload.get("name") or payload.get("sensor_id")
         status = int(payload.get("status", 0))
-        
         if not sensor_name: return
-
         with SessionLocal() as db:
             spot = db.query(ParkingSpot).filter(ParkingSpot.name == sensor_name).first()
             if spot:
-                prev = spot.current_status
-                spot.current_status = status
-                spot.last_seen = now_utc()
-                
+                prev = spot.current_status; spot.current_status = status; spot.last_seen = now_utc()
                 if prev != status:
-                    # 1. Zapisz historię
                     db.add(HistoricalData(sensor_id=sensor_name, status=status))
-                    
-                    # 2. LOGIKA OCHRONY MIEJSCA: Jeśli status zmienia się na 1 (Zajęte)
+                    # NOWA LOGIKA: Powiadomienie tylko gdy status == 1 (Zajęte)
                     if status == 1:
                         subs = db.query(DeviceSubscription).filter(DeviceSubscription.sensor_name == sensor_name).all()
                         for sub in subs:
                             send_push(
                                 sub.device_token, 
                                 "⚠️ Ktoś zajął Twoje miejsce!", 
-                                f"Miejsce {sensor_name} zostało właśnie zajęte. Kliknij, aby znaleźć alternatywę."
+                                f"Miejsce {sensor_name} zajęte. Kliknij, aby znaleźć alternatywę.", 
+                                data={"action": "find_alt"}
                             )
-                            db.delete(sub) # Powiadomienie jednorazowe
-                
+                            db.delete(sub)
                 db.commit()
-    except Exception as e:
-        logger.error(f"MQTT Error: {e}")
+    except Exception as e: logger.error(f"MQTT Error: {e}")
 
 def start_mqtt():
-    try:
-        client = mqtt.Client()
-        client.on_message = on_mqtt_message
-        client.connect(MQTT_BROKER, MQTT_PORT, 60)
-        client.subscribe(MQTT_TOPIC)
-        client.loop_start()
-        logger.info("MQTT Client Started")
-    except Exception as e:
-        logger.warning(f"MQTT Failed to start: {e}")
+    try: client = mqtt.Client(); client.on_message = on_mqtt_message; client.connect(MQTT_BROKER, MQTT_PORT, 60); client.subscribe(MQTT_TOPIC); client.loop_start(); logger.info("MQTT Client Started")
+    except Exception as e: logger.warning(f"MQTT Failed to start: {e}")
 
 # ==========================================
 #                APLIKACJA
@@ -299,16 +251,12 @@ app = FastAPI()
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 
 @app.on_event("startup")
-async def startup_event():
-    start_mqtt()
-
-@app.get("/")
-def root(): return {"status": "System Online API v2"}
+async def startup_event(): start_mqtt()
 
 @app.websocket("/ws/stan")
 async def ws(ws: WebSocket):
     await manager.connect(ws)
-    try:
+    try: 
         while True: await ws.receive_text()
     except: manager.disconnect(ws)
 
@@ -316,30 +264,17 @@ async def ws(ws: WebSocket):
 
 @app.post("/api/v1/auth/register")
 def register(u: UserRegister, db: Session = Depends(get_db)):
-    if db.query(User).filter(User.email == u.email).first():
-        raise HTTPException(400, "Email zajęty")
-    hashed = get_password_hash(u.password)
-    new_user = User(email=u.email, password_hashed=hashed, phone_number=u.phone_number)
-    db.add(new_user)
-    db.commit()
-    return {"status": "registered"}
+    if db.query(User).filter(User.email == u.email).first(): raise HTTPException(400, "Email zajęty")
+    db.add(User(email=u.email, password_hashed=get_password_hash(u.password), phone_number=u.phone_number)); db.commit(); return {"status": "registered"}
 
 @app.post("/api/v1/auth/login")
 def login(u: UserLogin, db: Session = Depends(get_db)):
     user = db.query(User).filter(User.email == u.email).first()
-    if not user or not verify_password(u.password, user.password_hashed):
-        raise HTTPException(401, "Błędne dane")
-    
-    token = secrets.token_hex(16)
-    user.token = token
-    db.commit()
-    return {
-        "token": token, 
-        "email": user.email, 
-        "user_id": user.user_id,
-        "is_disabled": user.is_disabled
-    }
+    if not user or not verify_password(u.password, user.password_hashed): raise HTTPException(401, "Błędne dane")
+    token = secrets.token_hex(16); user.token = token; db.commit()
+    return {"token": token, "email": user.email, "user_id": user.user_id, "is_disabled": user.is_disabled}
 
+# --- AKTUALNY STAN (Z danymi o dystrykcie/parkingu) ---
 @app.get("/api/v1/aktualny_stan")
 def get_spots(
     city: Optional[str] = None,
@@ -356,95 +291,53 @@ def get_spots(
     res = []
     
     for s in spots:
-        override_disabled = s.is_disabled_friendly
-        if s.name == "euro_4":
-            override_disabled = True 
+        override_disabled = True if s.name == "euro_4" else s.is_disabled_friendly
         
+        # Pobieranie nazwy parkingu z tabeli districts
+        parking_name = s.district_rel.district if s.district_rel else "Parking Ogólny"
+
         coords_obj = None
         if s.coordinates and ',' in s.coordinates:
-            try:
-                parts = s.coordinates.split(',')
-                coords_obj = {"latitude": float(parts[0]), "longitude": float(parts[1])}
+            try: parts = s.coordinates.split(','); coords_obj = {"latitude": float(parts[0]), "longitude": float(parts[1])}
             except: pass
-
+        
         res.append({
             "sensor_id": s.name,
             "status": s.current_status,
             "city": s.city,
+            "state": s.state,       # Np. "Centrum"
+            "place_name": parking_name, # Np. "Parking EuroAGD"
+            "district_id": s.district_id,
             "wspolrzedne": coords_obj,
             "is_disabled_friendly": override_disabled,
             "is_ev": s.is_ev,
-            "is_paid": s.is_paid,
-            "type_label": "Dla niepełnosprawnych" if override_disabled else ("EV" if s.is_ev else "Ogólne")
+            "is_paid": s.is_paid
         })
     return res
 
 @app.post("/api/v1/subscribe_spot")
 async def subscribe_device(request: SubscriptionRequest, db: Session = Depends(get_db)):
-    db.query(DeviceSubscription).filter(
-        DeviceSubscription.device_token == request.device_token,
-        DeviceSubscription.sensor_name == request.sensor_name
-    ).delete()
-    
-    new_sub = DeviceSubscription(
-        device_token=request.device_token,
-        sensor_name=request.sensor_name
-    )
-    db.add(new_sub)
-    try:
-        db.commit()
-        return {"status": "success", "message": f"Zasubskrybowano {request.sensor_name}"}
-    except Exception as e:
-        db.rollback()
-        raise HTTPException(500, detail="Błąd bazy")
+    db.query(DeviceSubscription).filter(DeviceSubscription.device_token == request.device_token, DeviceSubscription.sensor_name == request.sensor_name).delete()
+    db.add(DeviceSubscription(device_token=request.device_token, sensor_name=request.sensor_name)); db.commit(); return {"status": "success"}
 
 @app.get("/api/v1/user/where_is_my_car")
 def where_is_my_car(token: str, db: Session = Depends(get_db)):
     user = db.query(User).filter(User.token == token).first()
-    if not user:
-        raise HTTPException(401, "Nieprawidłowy token")
-    if not user.ticket_id:
-        return {"status": "no_ticket", "message": "Nie masz aktywnego biletu"}
-    
-    ticket = db.query(Ticket).filter(Ticket.id == user.ticket_id).first()
-    if not ticket:
-         return {"status": "error", "message": "Bilet nie istnieje"}
-         
-    return {
-        "status": "found",
-        "place_name": ticket.place_name,
-        "end_time": ticket.end_time,
-        "plate_number": ticket.plate_number
-    }
+    if not user: raise HTTPException(401)
+    if not user.ticket_id: return {"status": "no_ticket"}
+    t = db.query(Ticket).filter(Ticket.id == user.ticket_id).first()
+    return {"status": "found", "place_name": t.place_name, "end_time": t.end_time, "plate_number": t.plate_number} if t else {"status": "error"}
 
 @app.post("/api/v1/user/buy_ticket")
 def buy_ticket(req: TicketPurchase, db: Session = Depends(get_db)):
     user = db.query(User).filter(User.token == req.token).first()
     if not user: raise HTTPException(401)
-        
-    start = now_utc()
-    end = start + datetime.timedelta(hours=req.duration_hours)
-    price = 5.0 * req.duration_hours
-    
-    new_ticket = Ticket(
-        place_name=req.place_name,
-        plate_number=req.plate_number,
-        start_time=start,
-        end_time=end,
-        price=price,
-        user_id=user.user_id
-    )
-    db.add(new_ticket)
-    db.flush()
-    
-    user.ticket_id = new_ticket.id
+    start = now_utc(); end = start + datetime.timedelta(hours=req.duration_hours)
+    nt = Ticket(place_name=req.place_name, plate_number=req.plate_number, start_time=start, end_time=end, price=5.0*req.duration_hours, user_id=user.user_id)
+    db.add(nt); db.flush(); user.ticket_id = nt.id
     spot = db.query(ParkingSpot).filter(ParkingSpot.name == req.place_name).first()
-    if spot:
-        spot.current_status = 1
-        db.add(HistoricalData(sensor_id=spot.name, status=1))
-    
-    db.commit()
-    return {"status": "ok", "ticket_id": new_ticket.id, "ends_at": end}
+    if spot: spot.current_status = 1; db.add(HistoricalData(sensor_id=spot.name, status=1))
+    db.commit(); return {"status": "ok", "ticket_id": nt.id}
 
 @app.get("/api/v1/airbnb/offers")
 def get_airbnb(district_id: Optional[int] = None, db: Session = Depends(get_db)):
@@ -454,48 +347,49 @@ def get_airbnb(district_id: Optional[int] = None, db: Session = Depends(get_db))
 
 @app.post("/api/v1/statystyki/zajetosc")
 def stats_mobile(z: StatystykiZapytanie, db: Session = Depends(get_db)):
-    try: target = datetime.datetime.strptime(z.selected_date, "%Y-%m-%d").date()
-    except: raise HTTPException(400, "Format daty")
-    start = datetime.datetime.combine(target, datetime.time(z.selected_hour, 0))
-    end = start + datetime.timedelta(hours=1)
-    
-    total = db.query(HistoricalData).filter(HistoricalData.sensor_id == z.sensor_id, HistoricalData.timestamp >= start, HistoricalData.timestamp < end).count()
-    occ = db.query(HistoricalData).filter(HistoricalData.sensor_id == z.sensor_id, HistoricalData.timestamp >= start, HistoricalData.timestamp < end, HistoricalData.status == 1).count()
-    pct = int((occ/total)*100) if total > 0 else 0
-    return {"wynik": {"procent_zajetosci": pct, "liczba_pomiarow": total}}
+    try: t = datetime.datetime.strptime(z.selected_date, "%Y-%m-%d").date()
+    except: raise HTTPException(400)
+    s = datetime.datetime.combine(t, datetime.time(z.selected_hour, 0)); e = s + datetime.timedelta(hours=1)
+    tot = db.query(HistoricalData).filter(HistoricalData.sensor_id==z.sensor_id, HistoricalData.timestamp>=s, HistoricalData.timestamp<e).count()
+    occ = db.query(HistoricalData).filter(HistoricalData.sensor_id==z.sensor_id, HistoricalData.timestamp>=s, HistoricalData.timestamp<e, HistoricalData.status==1).count()
+    return {"wynik": {"procent_zajetosci": int((occ/tot)*100) if tot>0 else 0, "liczba_pomiarow": tot}}
 
-# --- SIMULATION ENDPOINT (Dla Postmana) ---
+# --- SIMULATION ENDPOINT (Z edycją district_id) ---
 @app.post("/api/v1/iot/update")
 async def iot_update_http(data: dict, db: Session = Depends(get_db)):
-    sensor_name = data.get("name")
-    status = int(data.get("status", 0))
+    name = data.get("name")
+    stat = int(data.get("status", 0))
+    dist_id = data.get("district_id") # Opcjonalna zmiana dzielnicy
 
-    if not sensor_name: raise HTTPException(400, "Brak nazwy sensora")
-    spot = db.query(ParkingSpot).filter(ParkingSpot.name == sensor_name).first()
+    if not name: raise HTTPException(400, "Brak nazwy")
+    spot = db.query(ParkingSpot).filter(ParkingSpot.name == name).first()
+    
     if not spot:
-        spot = ParkingSpot(name=sensor_name, current_status=status)
+        spot = ParkingSpot(name=name, current_status=stat)
         db.add(spot)
     
-    prev_status = spot.current_status
-    spot.current_status = status
-    spot.last_seen = now_utc()
+    # Aktualizacja District ID jeśli podano w JSON
+    if dist_id is not None:
+        spot.district_id = int(dist_id)
 
-    if prev_status != status:
-        db.add(HistoricalData(sensor_id=sensor_name, status=status))
-        # OSTRZEŻENIE O ZAJĘCIU MIEJSCA
-        if status == 1:
-            subs = db.query(DeviceSubscription).filter(DeviceSubscription.sensor_name == sensor_name).all()
+    prev = spot.current_status; spot.current_status = stat; spot.last_seen = now_utc()
+    
+    if prev != stat:
+        db.add(HistoricalData(sensor_id=name, status=stat))
+        # Powiadomienie tylko gdy ZAJĘTE (1)
+        if stat == 1:
+            subs = db.query(DeviceSubscription).filter(DeviceSubscription.sensor_name == name).all()
             for sub in subs:
                 send_push(
                     sub.device_token, 
                     "⚠️ Ktoś zajął Twoje miejsce!", 
-                    f"Miejsce {sensor_name} zostało właśnie zajęte. Kliknij, aby znaleźć alternatywę."
+                    f"Miejsce {name} zajęte. Kliknij, aby znaleźć alternatywę.", 
+                    data={"action": "find_alt"}
                 )
                 db.delete(sub)
-
     db.commit()
-    await manager.broadcast({"sensor_id": sensor_name, "status": status})
-    return {"status": "updated", "sensor": sensor_name, "new_state": status}
+    await manager.broadcast({"sensor_id": name, "status": stat})
+    return {"status": "updated", "district_id": spot.district_id}
 
 if __name__ == "__main__":
     import uvicorn
