@@ -5,7 +5,7 @@ import secrets
 import json
 import threading
 import time
-import traceback # Dodano do debugowania
+import traceback
 from typing import Optional, List, Dict
 from zoneinfo import ZoneInfo
 
@@ -17,7 +17,7 @@ from pydantic import BaseModel
 from sqlalchemy import create_engine, Column, Integer, String, DateTime, Boolean, ForeignKey, Float, Text, Table, func, Date, DECIMAL
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, Session, relationship
-from sqlalchemy.exc import IntegrityError 
+from sqlalchemy.exc import IntegrityError, ProgrammingError
 
 import bcrypt
 import msgpack
@@ -126,17 +126,17 @@ class DeviceSubscription(Base):
     sensor_name = Column(String(100), nullable=False)
     subscribed_at = Column(DateTime, default=now_utc)
 
-# District = Nazwa Parkingu (np. Parking EuroAGD)
 class District(Base):
     __tablename__ = "districts"
     id = Column(Integer, primary_key=True, autoincrement=True)
     district = Column(String(100), nullable=False) 
     city = Column(String(100), nullable=False)
 
-# State = Rejon/Dzielnica (np. Rąbin, Mątwy) - NOWA TABELA
+# --- POPRAWIONY MODEL STATE ---
+# Zgodnie ze zrzutem ekranu, klucz główny to state_id, nie id
 class State(Base):
     __tablename__ = "states"
-    id = Column(Integer, primary_key=True, autoincrement=True)
+    state_id = Column(Integer, primary_key=True, autoincrement=True) # ZMIANA NAZWY
     name = Column(String(100), nullable=False)
     city = Column(String(100), default='Inowrocław')
 
@@ -158,15 +158,18 @@ class AirbnbOffer(Base):
     end_date = Column(Date)
     created_at = Column(DateTime, default=now_utc)
 
+# --- POPRAWIONY MODEL PARKING SPOT ---
 class ParkingSpot(Base):
     __tablename__ = "parking_spots"
     name = Column(String, primary_key=True) 
     current_status = Column(Integer, default=0) 
     last_seen = Column(DateTime(timezone=True), default=now_utc)
     city = Column(String, nullable=True)
-    # USUNIĘTO: state = Column(String, nullable=True) - powodowało błąd, bo kolumny już nie ma
-    state_id = Column(Integer, ForeignKey("states.id"), nullable=True) 
+    
+    # Poprawiona relacja do states.state_id
+    state_id = Column(Integer, ForeignKey("states.state_id"), nullable=True) 
     district_id = Column(Integer, ForeignKey("districts.id"), nullable=True)
+    
     coordinates = Column(String, nullable=True)
     is_disabled_friendly = Column(Boolean, default=False)
     is_ev = Column(Boolean, default=False)
@@ -175,6 +178,7 @@ class ParkingSpot(Base):
     district_rel = relationship("District")
     state_rel = relationship("State") 
 
+# Tworzenie tabel (jeśli nie istnieją)
 Base.metadata.create_all(bind=engine)
 
 # ==========================================
@@ -302,10 +306,7 @@ def get_spots(
         override_disabled = True if s.name == "euro_4" else s.is_disabled_friendly
         
         parking_name = s.district_rel.district if s.district_rel else "Parking Ogólny"
-        
-        # Pobieranie rejonu (state) z nowej tabeli
-        # Jeśli s.state_rel jest None, wyświetlamy "Brak danych", bo stara kolumna 'state' już nie istnieje
-        rejon_name = s.state_rel.name if s.state_rel else "Nieznany"
+        rejon_name = s.state_rel.name if s.state_rel else "Brak danych"
 
         coords_obj = None
         if s.coordinates and ',' in s.coordinates:
@@ -316,7 +317,7 @@ def get_spots(
             "sensor_id": s.name,
             "status": s.current_status,
             "city": s.city,
-            "state": rejon_name,       # Nazwa rejonu z tabeli states
+            "state": rejon_name, 
             "place_name": parking_name, 
             "district_id": s.district_id,
             "state_id": s.state_id,
@@ -366,7 +367,7 @@ def stats_mobile(z: StatystykiZapytanie, db: Session = Depends(get_db)):
     occ = db.query(HistoricalData).filter(HistoricalData.sensor_id==z.sensor_id, HistoricalData.timestamp>=s, HistoricalData.timestamp<e, HistoricalData.status==1).count()
     return {"wynik": {"procent_zajetosci": int((occ/tot)*100) if tot>0 else 0, "liczba_pomiarow": tot}}
 
-# --- SIMULATION ENDPOINT (Update) ---
+# --- SIMULATION ENDPOINT (Poprawione nazwy kolumn) ---
 @app.post("/api/v1/iot/update")
 async def iot_update_http(data: dict, db: Session = Depends(get_db)):
     try:
@@ -376,21 +377,21 @@ async def iot_update_http(data: dict, db: Session = Depends(get_db)):
         state_id = data.get("state_id") 
 
         if not name: raise HTTPException(400, "Brak nazwy")
-        spot = db.query(ParkingSpot).filter(ParkingSpot.name == name).first()
         
+        spot = db.query(ParkingSpot).filter(ParkingSpot.name == name).first()
         if not spot:
             spot = ParkingSpot(name=name, current_status=stat)
             db.add(spot)
         
-        # Walidacja i przypisanie ID
         if dist_id is not None:
             if not db.query(District).filter(District.id == int(dist_id)).first():
-                raise HTTPException(400, f"Błąd: District ID {dist_id} nie istnieje w bazie")
+                raise HTTPException(400, f"District ID {dist_id} not found")
             spot.district_id = int(dist_id)
 
         if state_id is not None: 
-            if not db.query(State).filter(State.id == int(state_id)).first():
-                raise HTTPException(400, f"Błąd: State ID {state_id} nie istnieje w bazie")
+            # Używamy poprawnej nazwy kolumny: State.state_id
+            if not db.query(State).filter(State.state_id == int(state_id)).first():
+                raise HTTPException(400, f"State ID {state_id} not found (PK is state_id)")
             spot.state_id = int(state_id)
 
         prev = spot.current_status; spot.current_status = stat; spot.last_seen = now_utc()
@@ -414,11 +415,14 @@ async def iot_update_http(data: dict, db: Session = Depends(get_db)):
 
     except HTTPException as he:
         raise he
+    except ProgrammingError as pe:
+        logger.error(f"DB Programming Error: {pe}")
+        db.rollback()
+        raise HTTPException(500, detail=f"DB Schema Error (check column names): {pe.orig}")
     except Exception as e:
-        logger.error(f"Critical Error in iot_update: {e}")
+        logger.error(f"Critical Error: {e}")
         traceback.print_exc()
-        try: db.rollback()
-        except: pass
+        db.rollback()
         raise HTTPException(500, detail=f"Internal Server Error: {str(e)}")
 
 if __name__ == "__main__":
