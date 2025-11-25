@@ -16,6 +16,7 @@ from pydantic import BaseModel
 from sqlalchemy import create_engine, Column, Integer, String, DateTime, Boolean, ForeignKey, Float, Text, Table, func, Date, DECIMAL
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, Session, relationship
+from sqlalchemy.exc import IntegrityError # Import do obsługi błędów bazy
 
 import bcrypt
 import msgpack
@@ -378,8 +379,16 @@ async def iot_update_http(data: dict, db: Session = Depends(get_db)):
         spot = ParkingSpot(name=name, current_status=stat)
         db.add(spot)
     
-    if dist_id is not None: spot.district_id = int(dist_id)
-    if state_id is not None: spot.state_id = int(state_id)
+    # Walidacja i przypisanie ID (bezpieczne)
+    if dist_id is not None:
+        if not db.query(District).filter(District.id == int(dist_id)).first():
+            raise HTTPException(400, f"Błąd: District ID {dist_id} nie istnieje")
+        spot.district_id = int(dist_id)
+
+    if state_id is not None: 
+        if not db.query(State).filter(State.id == int(state_id)).first():
+            raise HTTPException(400, f"Błąd: State ID {state_id} nie istnieje")
+        spot.state_id = int(state_id)
 
     prev = spot.current_status; spot.current_status = stat; spot.last_seen = now_utc()
     
@@ -395,7 +404,18 @@ async def iot_update_http(data: dict, db: Session = Depends(get_db)):
                     data={"action": "find_alt"}
                 )
                 db.delete(sub)
-    db.commit()
+    
+    try:
+        db.commit()
+    except IntegrityError as e:
+        db.rollback()
+        logger.error(f"DB Error: {e}")
+        raise HTTPException(400, "Błąd spójności danych (np. niepoprawne ID)")
+    except Exception as e:
+        db.rollback()
+        logger.error(f"DB Error: {e}")
+        raise HTTPException(500, "Błąd serwera")
+
     await manager.broadcast({"sensor_id": name, "status": stat})
     return {"status": "updated", "district_id": spot.district_id, "state_id": spot.state_id}
 
