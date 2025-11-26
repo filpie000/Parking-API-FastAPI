@@ -98,7 +98,6 @@ class Admin(Base):
     __tablename__ = "admins"
     admin_id = Column(Integer, primary_key=True, autoincrement=True)
     username = Column(String(50), unique=True, nullable=False)
-    # FIX: password_hash (zgodnie z bazą danych), było password_hashed
     password_hash = Column(String(255), nullable=False)
     badge_name = Column(String(100))
     permissions = relationship("AdminPermissions", back_populates="admin", uselist=False)
@@ -251,7 +250,6 @@ class AirbnbResponse(BaseModel):
     class Config:
         orm_mode = True
 
-# Modele Admina
 class AdminUserUpdate(BaseModel):
     user_id: int
     is_blocked: Optional[bool] = None
@@ -299,8 +297,11 @@ class SpotPayload(BaseModel):
 def get_password_hash(p: str) -> str: return bcrypt.hashpw(p.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
 def verify_password(plain: str, hashed: str) -> bool:
     if not hashed: return False
-    try: return bcrypt.checkpw(plain.encode('utf-8'), hashed.encode('utf-8'))
-    except: return False
+    try: 
+        return bcrypt.checkpw(plain.encode('utf-8'), hashed.encode('utf-8'))
+    except: 
+        # Fallback dla haseł w plain text
+        return plain == hashed
 
 def send_push(token, title, body, data=None):
     try:
@@ -385,8 +386,25 @@ def start_mqtt():
 app = FastAPI()
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 
+# --- FIX: AUTORESET HASŁA ADMINA PRZY STARCIE ---
 @app.on_event("startup")
-async def startup_event(): start_mqtt()
+async def startup_event():
+    start_mqtt()
+    try:
+        with SessionLocal() as db:
+            # Sprawdzamy czy istnieje admin 'admin' i resetujemy mu hasło
+            admin = db.query(Admin).filter(Admin.username == "admin").first()
+            if admin:
+                logger.info("STARTUP: Resetowanie hasła admina do 'admin123'")
+                admin.password_hash = get_password_hash("admin123")
+                db.commit()
+            else:
+                logger.info("STARTUP: Tworzenie konta admina")
+                new_admin = Admin(username="admin", password_hash=get_password_hash("admin123"), badge_name="Super Admin")
+                db.add(new_admin)
+                db.commit()
+    except Exception as e:
+        logger.error(f"STARTUP ERROR: {e}")
 
 @app.websocket("/ws/stan")
 async def ws(ws: WebSocket):
@@ -404,9 +422,10 @@ def get_dashboard():
 @app.post("/api/v1/admin/auth")
 def admin_login(d: AdminLogin, db: Session = Depends(get_db)):
     admin = db.query(Admin).filter(Admin.username == d.username).first()
-    # FIX: Używamy password_hash zamiast password_hashed
+    
     if not admin or not verify_password(d.password, admin.password_hash):
         raise HTTPException(401, "Błędne dane")
+        
     is_super = (admin.username == 'admin')
     return {
         "status": "ok",
@@ -439,7 +458,6 @@ def list_admins(db: Session = Depends(get_db)):
 @app.post("/api/v1/admin/create")
 def create_admin(d: AdminPayload, db: Session = Depends(get_db)):
     if db.query(Admin).filter(Admin.username == d.username).first(): raise HTTPException(400, "Nazwa zajęta")
-    # FIX: password_hash zamiast password_hashed
     new_admin = Admin(username=d.username, password_hash=get_password_hash(d.password or "admin123"))
     db.add(new_admin); db.flush()
     perms = AdminPermissions(admin_id=new_admin.admin_id, city=d.city, view_disabled=d.view_disabled, view_ev=d.view_ev, allowed_state=d.allowed_state)
@@ -450,7 +468,6 @@ def update_admin(d: AdminPayload, db: Session = Depends(get_db)):
     if not d.id: raise HTTPException(400, "ID wymagane")
     admin = db.query(Admin).filter(Admin.admin_id == d.id).first()
     if not admin: raise HTTPException(404)
-    # FIX: password_hash zamiast password_hashed
     if d.password: admin.password_hash = get_password_hash(d.password)
     if admin.permissions:
         admin.permissions.city = d.city
@@ -520,7 +537,6 @@ def login(u: UserLogin, db: Session = Depends(get_db)):
         return {"token": token, "email": user.email, "user_id": user.user_id, "is_disabled": user.is_disabled}
     except Exception as e: db.rollback(); logger.error(f"Login: {e}"); raise HTTPException(500, str(e))
 
-# --- ZAKTUALIZOWANY GET_ME ---
 @app.get("/api/v1/user/me")
 def get_me(token: str, db: Session = Depends(get_db)):
     user = db.query(User).filter(User.token == token).first()
@@ -674,7 +690,6 @@ def debug_airbnb(db: Session = Depends(get_db)):
         return {"count": len(result), "rows": [dict(row._mapping) for row in result]}
     except Exception as e: return {"error": str(e)}
 
-# ... (Admin/Management/IoT bez zmian) ...
 @app.post("/api/v1/admin/manage/district")
 async def manage_district(d: DistrictPayload, db: Session = Depends(get_db)):
     try:
