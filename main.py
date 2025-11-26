@@ -207,22 +207,23 @@ class AirbnbAdd(BaseModel):
     price: float
     h_availability: Optional[str] = None
     contact: str
-    district_id: int 
+    district_id: Optional[int] = None 
     start_date: Optional[str] = None
     end_date: Optional[str] = None
     latitude: Optional[float] = None
     longitude: Optional[float] = None
 
+# MODEL ODPOWIEDZI - wszystko opcjonalne, by uniknąć błędów walidacji
 class AirbnbResponse(BaseModel):
     id: int
-    title: str
-    description: Optional[str]
-    price: float
-    h_availability: Optional[str]
-    contact: Optional[str]
-    latitude: Optional[float]
-    longitude: Optional[float]
-    state_name: str 
+    title: Optional[str] = "Brak tytułu"
+    description: Optional[str] = None
+    price: Optional[float] = 0.0
+    h_availability: Optional[str] = None
+    contact: Optional[str] = None
+    latitude: Optional[float] = None
+    longitude: Optional[float] = None
+    state_name: Optional[str] = "Inny"
     
     class Config:
         orm_mode = True
@@ -443,7 +444,7 @@ def add_airbnb(a: AirbnbAdd, db: Session = Depends(get_db)):
             title=a.title, description=a.description, price=a.price, 
             h_availability=a.h_availability, owner_name=u.email, 
             owner_user_id=u.user_id, contact=a.contact,
-            state_id=a.district_id, 
+            state_id=a.district_id, # Frontend wysyła state_id w polu district_id
             start_date=datetime.datetime.strptime(a.start_date, "%Y-%m-%d").date() if a.start_date else None,
             end_date=datetime.datetime.strptime(a.end_date, "%Y-%m-%d").date() if a.end_date else None,
             latitude=a.latitude, longitude=a.longitude
@@ -456,30 +457,35 @@ def add_airbnb(a: AirbnbAdd, db: Session = Depends(get_db)):
         logger.error(f"Airbnb Add Error: {e}")
         raise HTTPException(500, f"Błąd bazy: {str(e)}")
 
-# LISTA OFERT Z SERIALIZACJĄ I POPRAWKĄ DLA RELACJI
+# LISTA OFERT Z POPRAWKĄ (PANCERNA WERSJA)
 @app.get("/api/v1/airbnb/offers", response_model=List[AirbnbResponse])
 def get_airbnb(district_id: Optional[int] = None, db: Session = Depends(get_db)):
     try:
-        # Używamy joinedload, aby pobrać dane rejonu w jednym zapytaniu
+        # joinedload, aby pobrać relację
         q = db.query(AirbnbOffer).options(joinedload(AirbnbOffer.state_rel))
         if district_id: q = q.filter(AirbnbOffer.state_id == district_id)
         
         offers = q.all()
         
-        # Manualne mapowanie
         res = []
         for o in offers:
+            # BEZPIECZNE POBIERANIE PÓL
+            state_name = "Inny"
+            if o.state_rel:
+                state_name = o.state_rel.name
+            elif o.state_id:
+                state_name = f"Rejon ID: {o.state_id}"
+
             res.append({
                 "id": o.id,
-                "title": o.title,
+                "title": o.title or "Brak tytułu",
                 "description": o.description,
                 "price": float(o.price) if o.price is not None else 0.0,
                 "h_availability": o.h_availability,
                 "contact": o.contact,
                 "latitude": float(o.latitude) if o.latitude is not None else 0.0,
                 "longitude": float(o.longitude) if o.longitude is not None else 0.0,
-                # Bezpieczne pobranie nazwy rejonu
-                "state_name": o.state_rel.name if o.state_rel else "Inny"
+                "state_name": state_name
             })
         return res
     except Exception as e:
