@@ -65,7 +65,6 @@ class User(Base):
     __tablename__ = "users"
     user_id = Column(Integer, primary_key=True, autoincrement=True)
     email = Column(String(255), unique=True, nullable=False)
-    # POPRAWKA: Zmiana nazwy kolumny na zgodną z bazą danych (password_hash)
     password_hash = Column(String(255), nullable=False)
     phone_number = Column(String(20))
     token = Column(String(255))
@@ -163,10 +162,17 @@ class AirbnbOffer(Base):
     rating = Column(DECIMAL(3, 2), default=0)
     latitude = Column(DECIMAL(9, 6))
     longitude = Column(DECIMAL(9, 6))
-    district_id = Column(Integer, ForeignKey("districts.id"))
+    
+    # Używamy state_id (Rejon) jako głównego odniesienia dla Airbnb
+    state_id = Column(Integer, ForeignKey("states.state_id"), nullable=True)
+    # District ID zostawiamy jako opcję (nullable), żeby stary kod nie wybuchł
+    district_id = Column(Integer, ForeignKey("districts.id"), nullable=True)
+    
     start_date = Column(Date)
     end_date = Column(Date)
     created_at = Column(DateTime, default=now_utc)
+    
+    state_rel = relationship("State") # Relacja do pobrania nazwy rejonu
 
 class ParkingSpot(Base):
     __tablename__ = "parking_spots"
@@ -203,11 +209,26 @@ class AirbnbAdd(BaseModel):
     price: float
     h_availability: Optional[str] = None
     contact: str
-    district_id: int 
+    district_id: Optional[int] = None # ID Rejonu (state_id)
     start_date: Optional[str] = None
     end_date: Optional[str] = None
     latitude: Optional[float] = None
     longitude: Optional[float] = None
+
+# MODEL ODPOWIEDZI (SERIALIZER) - KLUCZOWE DLA POPRAWNEGO WYŚWIETLANIA
+class AirbnbResponse(BaseModel):
+    id: int
+    title: str
+    description: Optional[str]
+    price: float
+    h_availability: Optional[str]
+    contact: Optional[str]
+    latitude: Optional[float]
+    longitude: Optional[float]
+    state_name: str # Zwracamy nazwę rejonu, nie tylko ID
+    
+    class Config:
+        orm_mode = True
 
 class DistrictPayload(BaseModel):
     id: Optional[int] = None
@@ -334,20 +355,14 @@ async def ws(ws: WebSocket):
         while True: await ws.receive_text()
     except: manager.disconnect(ws)
 
-# --- ENDPOINTY AUTH (POPRAWIONE) ---
+# --- ENDPOINTY AUTH ---
 
 @app.post("/api/v1/auth/register")
 def register(u: UserRegister, db: Session = Depends(get_db)):
     try:
         if db.query(User).filter(User.email == u.email).first(): 
             raise HTTPException(400, "Email zajęty")
-        
-        new_user = User(
-            email=u.email, 
-            # POPRAWKA: Używamy password_hash zamiast password_hashed
-            password_hash=get_password_hash(u.password), 
-            phone_number=u.phone_number
-        )
+        new_user = User(email=u.email, password_hash=get_password_hash(u.password), phone_number=u.phone_number)
         db.add(new_user)
         db.commit()
         return {"status": "registered", "user_id": new_user.user_id}
@@ -360,29 +375,12 @@ def register(u: UserRegister, db: Session = Depends(get_db)):
 def login(u: UserLogin, db: Session = Depends(get_db)):
     try:
         user = db.query(User).filter(User.email == u.email).first()
-        if not user: 
-            raise HTTPException(401, "Błędne dane (użytkownik nie istnieje)")
-        
-        # POPRAWKA: Używamy password_hash zamiast password_hashed
-        if not verify_password(u.password, user.password_hash): 
-            raise HTTPException(401, "Błędne dane (złe hasło)")
-        
-        token = secrets.token_hex(16)
-        user.token = token
-        db.commit()
-        
-        return {
-            "token": token, 
-            "email": user.email, 
-            "user_id": user.user_id, 
-            "is_disabled": user.is_disabled
-        }
-    except HTTPException as he:
-        raise he
-    except Exception as e:
-        db.rollback()
-        logger.error(f"Login Error: {e}")
-        raise HTTPException(500, f"Błąd logowania: {str(e)}")
+        if not user: raise HTTPException(401, "Błędne dane")
+        if not verify_password(u.password, user.password_hash): raise HTTPException(401, "Błędne dane")
+        token = secrets.token_hex(16); user.token = token; db.commit()
+        return {"token": token, "email": user.email, "user_id": user.user_id, "is_disabled": user.is_disabled}
+    except HTTPException as he: raise he
+    except Exception as e: db.rollback(); logger.error(f"Login Error: {e}"); raise HTTPException(500, f"Błąd logowania: {str(e)}")
 
 @app.get("/api/v1/aktualny_stan")
 def get_spots(db: Session = Depends(get_db)):
@@ -436,30 +434,56 @@ def buy_ticket(req: TicketPurchase, db: Session = Depends(get_db)):
     if spot: spot.current_status = 1; db.add(HistoricalData(sensor_id=spot.name, status=1))
     db.commit(); return {"status": "ok", "ticket_id": nt.id}
 
-# --- AIRBNB ADD ---
+# --- AIRBNB ---
+
 @app.post("/api/v1/airbnb/add")
 def add_airbnb(a: AirbnbAdd, db: Session = Depends(get_db)):
     u = db.query(User).filter(User.token == a.token).first()
     if not u: raise HTTPException(401, "Nieautoryzowany")
     
-    new_offer = AirbnbOffer(
-        title=a.title, description=a.description, price=a.price, 
-        h_availability=a.h_availability, owner_name=u.email, 
-        owner_user_id=u.user_id, contact=a.contact,
-        district_id=a.district_id, 
-        start_date=datetime.datetime.strptime(a.start_date, "%Y-%m-%d").date() if a.start_date else None,
-        end_date=datetime.datetime.strptime(a.end_date, "%Y-%m-%d").date() if a.end_date else None,
-        latitude=a.latitude, longitude=a.longitude
-    )
-    db.add(new_offer)
-    db.commit()
-    return {"status": "ok"}
+    try:
+        # Zapisujemy do state_id (Rejon) zamiast district_id
+        new_offer = AirbnbOffer(
+            title=a.title, description=a.description, price=a.price, 
+            h_availability=a.h_availability, owner_name=u.email, 
+            owner_user_id=u.user_id, contact=a.contact,
+            state_id=a.district_id, # FRONTEND WYSYŁA ID REJONU W POLU district_id
+            start_date=datetime.datetime.strptime(a.start_date, "%Y-%m-%d").date() if a.start_date else None,
+            end_date=datetime.datetime.strptime(a.end_date, "%Y-%m-%d").date() if a.end_date else None,
+            latitude=a.latitude, longitude=a.longitude
+        )
+        db.add(new_offer)
+        db.commit()
+        return {"status": "ok"}
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Airbnb Add Error: {e}")
+        raise HTTPException(500, f"Błąd bazy: {str(e)}")
 
-@app.get("/api/v1/airbnb/offers")
+# LISTA OFERT Z SERIALIZACJĄ
+@app.get("/api/v1/airbnb/offers", response_model=List[AirbnbResponse])
 def get_airbnb(district_id: Optional[int] = None, db: Session = Depends(get_db)):
     q = db.query(AirbnbOffer)
-    if district_id: q = q.filter(AirbnbOffer.district_id == district_id)
-    return q.all()
+    # Tu też logika: jeśli frontend pyta o district_id, filtrujemy po state_id
+    if district_id: q = q.filter(AirbnbOffer.state_id == district_id)
+    
+    offers = q.all()
+    
+    # Manualne mapowanie (bezpieczniejsze niż Pydantic wprost z SQLAlchemy przy relacjach)
+    res = []
+    for o in offers:
+        res.append({
+            "id": o.id,
+            "title": o.title,
+            "description": o.description,
+            "price": float(o.price) if o.price else 0.0, # DECIMAL -> Float
+            "h_availability": o.h_availability,
+            "contact": o.contact,
+            "latitude": float(o.latitude) if o.latitude else None,
+            "longitude": float(o.longitude) if o.longitude else None,
+            "state_name": o.state_rel.name if o.state_rel else "Nieznany rejon"
+        })
+    return res
 
 # --- STATYSTYKI ---
 @app.post("/api/v1/statystyki/zajetosc")
