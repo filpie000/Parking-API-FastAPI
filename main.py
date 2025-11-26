@@ -58,56 +58,6 @@ def get_db():
     finally: db.close()
 
 # ==========================================
-#      ALGORYTMY ŚWIĄTECZNE
-# ==========================================
-
-def get_easter_date(year):
-    """Oblicza datę Wielkanocy (Algorytm Meeusa/Jonesa/Butchera)."""
-    a = year % 19
-    b = year // 100
-    c = year % 100
-    d = b // 4
-    e = b % 4
-    f = (b + 8) // 25
-    g = (b - f + 1) // 3
-    h = (19 * a + b - d - g + 15) % 30
-    i = c // 4
-    k = c % 4
-    l = (32 + 2 * e + 2 * i - h - k) % 7
-    m = (a + 11 * h + 22 * l) // 451
-    month = (h + l - 7 * m + 114) // 31
-    day = ((h + l - 7 * m + 114) % 31) + 1
-    return datetime.date(year, month, day)
-
-def get_holidays_for_year(year):
-    """Zwraca mapę świąt dla danego roku."""
-    easter = get_easter_date(year)
-    easter_monday = easter + datetime.timedelta(days=1)
-    corpus_christi = easter + datetime.timedelta(days=60)
-
-    holidays = {
-        datetime.date(year, 1, 1): "Nowy Rok",
-        datetime.date(year, 1, 6): "Trzech Króli",
-        easter: "Wielkanoc",
-        easter_monday: "Poniedziałek Wielkanocny",
-        datetime.date(year, 5, 1): "Święto Pracy",
-        datetime.date(year, 5, 3): "Święto Konstytucji 3 Maja",
-        corpus_christi: "Boże Ciało",
-        datetime.date(year, 8, 15): "Wniebowzięcie NMP",
-        datetime.date(year, 11, 1): "Wszystkich Świętych",
-        datetime.date(year, 11, 11): "Święto Niepodległości",
-        datetime.date(year, 12, 24): "Wigilia", # Specjalny dzień
-        datetime.date(year, 12, 25): "Boże Narodzenie (1)",
-        datetime.date(year, 12, 26): "Boże Narodzenie (2)"
-    }
-    return holidays
-
-def check_if_holiday(target_date):
-    """Zwraca nazwę święta lub None."""
-    holidays = get_holidays_for_year(target_date.year)
-    return holidays.get(target_date)
-
-# ==========================================
 #      MODELE BAZY DANYCH
 # ==========================================
 
@@ -223,8 +173,10 @@ class ParkingSpot(Base):
     current_status = Column(Integer, default=0) 
     last_seen = Column(DateTime(timezone=True), default=now_utc)
     city = Column(String, nullable=True)
+    
     state_id = Column(Integer, ForeignKey("states.state_id"), nullable=True) 
     district_id = Column(Integer, ForeignKey("districts.id"), nullable=True)
+    
     coordinates = Column(String, nullable=True)
     is_disabled_friendly = Column(Boolean, default=False)
     is_ev = Column(Boolean, default=False)
@@ -269,7 +221,7 @@ class SpotPayload(BaseModel):
     is_paid: Optional[bool] = None
 
 # ==========================================
-#              POMOCNIKI
+#              POMOCNIKI / ALGORYTMY
 # ==========================================
 def get_password_hash(p: str) -> str: return bcrypt.hashpw(p.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
 def verify_password(plain: str, hashed: str) -> bool:
@@ -285,6 +237,28 @@ def send_push(token, title, body, data=None):
         requests.post("https://exp.host/--/api/v2/push/send", json=payload, timeout=2)
         logger.info(f"PUSH SENT: {token}")
     except Exception as e: logger.error(f"PUSH ERROR: {e}")
+
+def get_easter_date(year):
+    a = year % 19; b = year // 100; c = year % 100; d = b // 4; e = b % 4; f = (b + 8) // 25; g = (b - f + 1) // 3
+    h = (19 * a + b - d - g + 15) % 30; i = c // 4; k = c % 4; l = (32 + 2 * e + 2 * i - h - k) % 7
+    m = (a + 11 * h + 22 * l) // 451; month = (h + l - 7 * m + 114) // 31; day = ((h + l - 7 * m + 114) % 31) + 1
+    return datetime.date(year, month, day)
+
+def get_holidays_for_year(year):
+    easter = get_easter_date(year)
+    easter_monday = easter + datetime.timedelta(days=1)
+    corpus_christi = easter + datetime.timedelta(days=60)
+    holidays = {
+        datetime.date(year, 1, 1): "Nowy Rok", datetime.date(year, 1, 6): "Trzech Króli", easter: "Wielkanoc", easter_monday: "Poniedziałek Wielkanocny",
+        datetime.date(year, 5, 1): "Święto Pracy", datetime.date(year, 5, 3): "Święto Konstytucji 3 Maja", corpus_christi: "Boże Ciało",
+        datetime.date(year, 8, 15): "Wniebowzięcie NMP", datetime.date(year, 11, 1): "Wszystkich Świętych", datetime.date(year, 11, 11): "Święto Niepodległości",
+        datetime.date(year, 12, 24): "Wigilia", datetime.date(year, 12, 25): "Boże Narodzenie (1)", datetime.date(year, 12, 26): "Boże Narodzenie (2)"
+    }
+    return holidays
+
+def check_if_holiday(target_date):
+    holidays = get_holidays_for_year(target_date.year)
+    return holidays.get(target_date)
 
 # ==========================================
 #              LOGIKA MQTT
@@ -315,7 +289,6 @@ def on_mqtt_message(client, userdata, msg):
             if spot:
                 prev = spot.current_status; spot.current_status = status; spot.last_seen = now_utc()
                 if prev != status:
-                    # Sprawdzamy czy dziś jest święto, aby zapisać do holiday_data
                     today_holiday = check_if_holiday(datetime.date.today())
                     if today_holiday:
                         db.add(HolidayData(sensor_id=sensor_name, status=status, holiday_name=today_holiday))
@@ -325,12 +298,7 @@ def on_mqtt_message(client, userdata, msg):
                     if status == 1:
                         subs = db.query(DeviceSubscription).filter(DeviceSubscription.sensor_name == sensor_name).all()
                         for sub in subs:
-                            send_push(
-                                sub.device_token, 
-                                "⚠️ Ktoś zajął Twoje miejsce!", 
-                                f"Miejsce {sensor_name} zajęte. Kliknij, aby znaleźć alternatywę.", 
-                                data={"action": "find_alt"}
-                            )
+                            send_push(sub.device_token, "⚠️ Ktoś zajął Twoje miejsce!", f"Miejsce {sensor_name} zajęte. Kliknij, aby znaleźć alternatywę.", data={"action": "find_alt"})
                             db.delete(sub)
                 db.commit()
     except Exception as e: logger.error(f"MQTT Error: {e}")
@@ -370,20 +338,9 @@ def login(u: UserLogin, db: Session = Depends(get_db)):
     return {"token": token, "email": user.email, "user_id": user.user_id, "is_disabled": user.is_disabled}
 
 @app.get("/api/v1/aktualny_stan")
-def get_spots(
-    city: Optional[str] = None,
-    is_disabled_friendly: Optional[bool] = None,
-    is_ev: Optional[bool] = None,
-    db: Session = Depends(get_db)
-):
-    query = db.query(ParkingSpot)
-    if city: query = query.filter(ParkingSpot.city == city)
-    if is_disabled_friendly: query = query.filter(ParkingSpot.is_disabled_friendly == True)
-    if is_ev: query = query.filter(ParkingSpot.is_ev == True)
-
-    spots = query.all()
+def get_spots(db: Session = Depends(get_db)):
+    spots = db.query(ParkingSpot).all()
     res = []
-    
     for s in spots:
         override_disabled = True if s.name == "euro_4" else s.is_disabled_friendly
         dist_obj = s.district_rel
@@ -395,22 +352,20 @@ def get_spots(
             except: pass
         
         res.append({
-            "sensor_id": s.name,
-            "status": s.current_status,
-            "city": s.city,
-            "state": rejon_name, 
+            "sensor_id": s.name, "status": s.current_status, "city": s.city, "state": rejon_name, 
             "place_name": dist_obj.district if dist_obj else "Parking Ogólny", 
             "place_description": dist_obj.description if dist_obj else "",
             "place_price": dist_obj.price_info if dist_obj else "",
             "place_capacity": dist_obj.capacity if dist_obj else 0,
-            "district_id": s.district_id,
-            "state_id": s.state_id,
-            "wspolrzedne": coords_obj,
-            "is_disabled_friendly": override_disabled,
-            "is_ev": s.is_ev,
-            "is_paid": s.is_paid
+            "district_id": s.district_id, "state_id": s.state_id,
+            "wspolrzedne": coords_obj, "is_disabled_friendly": override_disabled, "is_ev": s.is_ev, "is_paid": s.is_paid
         })
     return res
+
+@app.get("/api/v1/states")
+def get_all_states(db: Session = Depends(get_db)):
+    """Zwraca wszystkie regiony (states) do formularzy"""
+    return db.query(State).all()
 
 @app.post("/api/v1/subscribe_spot")
 async def subscribe_device(request: SubscriptionRequest, db: Session = Depends(get_db)):
@@ -442,90 +397,35 @@ def get_airbnb(district_id: Optional[int] = None, db: Session = Depends(get_db))
     if district_id: q = q.filter(AirbnbOffer.district_id == district_id)
     return q.all()
 
-# --- STATYSTYKI ZAAWANSOWANE (Z Agregacją & Filtrowaniem typu) ---
+# --- STATYSTYKI ZAAWANSOWANE ---
 @app.post("/api/v1/statystyki/zajetosc")
 def stats_mobile(z: StatystykiZapytanie, db: Session = Depends(get_db)):
-    try: 
-        target_date = datetime.datetime.strptime(z.selected_date, "%Y-%m-%d").date()
-    except: 
-        raise HTTPException(400, "Błędny format daty")
-
-    start_h = max(0, z.selected_hour - 1)
-    end_h = min(23, z.selected_hour + 1)
-
-    # 1. Określenie puli czujników (Target Pool)
-    target_sensors = [z.sensor_id] # Domyślnie tylko ten jeden
-    target_spot = db.query(ParkingSpot).filter(ParkingSpot.name == z.sensor_id).first()
-    
+    try: target_date = datetime.datetime.strptime(z.selected_date, "%Y-%m-%d").date()
+    except: raise HTTPException(400, "Błędny format daty")
+    start_h = max(0, z.selected_hour - 1); end_h = min(23, z.selected_hour + 1)
+    target_sensors = [z.sensor_id]; target_spot = db.query(ParkingSpot).filter(ParkingSpot.name == z.sensor_id).first()
     if target_spot:
-        # Jeśli miejsce jest specjalne (EV lub Inwalida), bierzemy tylko jego historię
-        # lub historię innych takich samych miejsc w tej samej dzielnicy
-        # Tutaj uproszczenie: dla specjalnych bierzemy tylko to konkretne miejsce (specyfika użycia)
-        if target_spot.is_ev or target_spot.is_disabled_friendly:
-            target_sensors = [z.sensor_id]
-        
-        # Jeśli to miejsce zwykłe, agregujemy dane z całej dzielnicy (tylko ze zwykłych miejsc)
+        if target_spot.is_ev or target_spot.is_disabled_friendly: target_sensors = [z.sensor_id]
         elif target_spot.district_id:
-            district_peers = db.query(ParkingSpot.name).filter(
-                ParkingSpot.district_id == target_spot.district_id,
-                ParkingSpot.is_ev == False,
-                ParkingSpot.is_disabled_friendly == False
-            ).all()
-            
-            if district_peers:
-                target_sensors = [p.name for p in district_peers]
+            district_peers = db.query(ParkingSpot.name).filter(ParkingSpot.district_id == target_spot.district_id, ParkingSpot.is_ev == False, ParkingSpot.is_disabled_friendly == False).all()
+            if district_peers: target_sensors = [p.name for p in district_peers]
 
-    # 2. Sprawdzenie święta
     holiday_name = check_if_holiday(target_date)
-    
     if holiday_name:
-        query = db.query(HolidayData).filter(
-            HolidayData.sensor_id.in_(target_sensors),
-            HolidayData.holiday_name == holiday_name,
-            extract('hour', HolidayData.timestamp) >= start_h,
-            extract('hour', HolidayData.timestamp) <= end_h
-        )
-        if query.count() == 0:
-             query = db.query(HistoricalData).filter(
-                HistoricalData.sensor_id.in_(target_sensors),
-                extract('month', HistoricalData.timestamp) == target_date.month,
-                extract('day', HistoricalData.timestamp) == target_date.day,
-                extract('hour', HistoricalData.timestamp) >= start_h,
-                extract('hour', HistoricalData.timestamp) <= end_h
-            )
+        query = db.query(HolidayData).filter(HolidayData.sensor_id.in_(target_sensors), HolidayData.holiday_name == holiday_name, extract('hour', HolidayData.timestamp) >= start_h, extract('hour', HolidayData.timestamp) <= end_h)
+        if query.count() == 0: query = db.query(HistoricalData).filter(HistoricalData.sensor_id.in_(target_sensors), extract('month', HistoricalData.timestamp) == target_date.month, extract('day', HistoricalData.timestamp) == target_date.day, extract('hour', HistoricalData.timestamp) >= start_h, extract('hour', HistoricalData.timestamp) <= end_h)
     else:
-        query = db.query(HistoricalData).filter(
-            HistoricalData.sensor_id.in_(target_sensors),
-            extract('hour', HistoricalData.timestamp) >= start_h,
-            extract('hour', HistoricalData.timestamp) <= end_h
-        )
+        query = db.query(HistoricalData).filter(HistoricalData.sensor_id.in_(target_sensors), extract('hour', HistoricalData.timestamp) >= start_h, extract('hour', HistoricalData.timestamp) <= end_h)
         weekday = target_date.weekday()
+        if 0 <= weekday <= 3: query = query.filter(extract('dow', HistoricalData.timestamp).in_([1, 2, 3, 4])) 
+        elif weekday == 4: query = query.filter(extract('dow', HistoricalData.timestamp) == 5)
+        elif weekday == 5: query = query.filter(extract('dow', HistoricalData.timestamp) == 6)
+        elif weekday == 6: query = query.filter(extract('dow', HistoricalData.timestamp) == 0)
 
-        if 0 <= weekday <= 3:
-            query = query.filter(extract('dow', HistoricalData.timestamp).in_([1, 2, 3, 4])) 
-        elif weekday == 4:
-            query = query.filter(extract('dow', HistoricalData.timestamp) == 5)
-        elif weekday == 5:
-            query = query.filter(extract('dow', HistoricalData.timestamp) == 6)
-        elif weekday == 6:
-            query = query.filter(extract('dow', HistoricalData.timestamp) == 0)
-
-    # 3. Wykonanie zapytania i obliczenie
     raw_data = query.all()
-    valid_measurements = []
-    
-    if not holiday_name:
-        for row in raw_data:
-            if not check_if_holiday(row.timestamp.date()):
-                valid_measurements.append(row)
-    else:
-        valid_measurements = raw_data
-
-    total = len(valid_measurements)
-    occupied = sum(1 for x in valid_measurements if x.status == 1)
-    pct = int((occupied / total) * 100) if total > 0 else 0
-    
-    return {"wynik": {"procent_zajetosci": pct, "liczba_pomiarow": total, "typ_dnia": holiday_name or "Standardowy"}}
+    valid_measurements = raw_data if holiday_name else [row for row in raw_data if not check_if_holiday(row.timestamp.date())]
+    total = len(valid_measurements); occupied = sum(1 for x in valid_measurements if x.status == 1)
+    return {"wynik": {"procent_zajetosci": int((occupied / total) * 100) if total > 0 else 0, "liczba_pomiarow": total, "typ_dnia": holiday_name or "Standardowy"}}
 
 # --- ADMIN ENDPOINTS ---
 @app.post("/api/v1/admin/manage/district")
@@ -593,16 +493,12 @@ async def iot_update_http(data: dict, db: Session = Depends(get_db)):
             spot.state_id = int(state_id)
         prev = spot.current_status; spot.current_status = stat; spot.last_seen = now_utc()
         if prev != stat:
-            # LOGIKA ZAPISU DO HISTORYCZNYCH LUB ŚWIĄTECZNYCH
             today_holiday = check_if_holiday(datetime.date.today())
-            if today_holiday:
-                db.add(HolidayData(sensor_id=name, status=stat, holiday_name=today_holiday))
-            else:
-                db.add(HistoricalData(sensor_id=name, status=stat))
-            
+            if today_holiday: db.add(HolidayData(sensor_id=name, status=stat, holiday_name=today_holiday))
+            else: db.add(HistoricalData(sensor_id=name, status=stat))
             if stat == 1:
                 subs = db.query(DeviceSubscription).filter(DeviceSubscription.sensor_name == name).all()
-                for sub in subs: send_push(sub.device_token, "⚠️ Ktoś zajął Twoje miejsce!", f"Miejsce {name} zajęte. Kliknij, aby znaleźć alternatywę.", data={"action": "find_alt"}); db.delete(sub)
+                for sub in subs: send_push(sub.device_token, "⚠️ Ktoś zajął Twoje miejsce!", f"Miejsce {name} zajęte.", data={"action": "find_alt"}); db.delete(sub)
         db.commit()
         await manager.broadcast({"sensor_id": name, "status": stat})
         return {"status": "updated"}
