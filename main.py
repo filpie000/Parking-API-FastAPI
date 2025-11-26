@@ -16,7 +16,7 @@ from pydantic import BaseModel
 
 from sqlalchemy import create_engine, Column, Integer, String, DateTime, Boolean, ForeignKey, Float, Text, Table, func, Date, DECIMAL, extract, and_, or_
 from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import sessionmaker, Session, relationship
+from sqlalchemy.orm import sessionmaker, Session, relationship, joinedload
 from sqlalchemy.exc import IntegrityError, ProgrammingError
 
 import bcrypt
@@ -163,16 +163,14 @@ class AirbnbOffer(Base):
     latitude = Column(DECIMAL(9, 6))
     longitude = Column(DECIMAL(9, 6))
     
-    # Używamy state_id (Rejon) jako głównego odniesienia dla Airbnb
     state_id = Column(Integer, ForeignKey("states.state_id"), nullable=True)
-    # District ID zostawiamy jako opcję (nullable), żeby stary kod nie wybuchł
     district_id = Column(Integer, ForeignKey("districts.id"), nullable=True)
     
     start_date = Column(Date)
     end_date = Column(Date)
     created_at = Column(DateTime, default=now_utc)
     
-    state_rel = relationship("State") # Relacja do pobrania nazwy rejonu
+    state_rel = relationship("State") 
 
 class ParkingSpot(Base):
     __tablename__ = "parking_spots"
@@ -209,13 +207,12 @@ class AirbnbAdd(BaseModel):
     price: float
     h_availability: Optional[str] = None
     contact: str
-    district_id: Optional[int] = None # ID Rejonu (state_id)
+    district_id: int 
     start_date: Optional[str] = None
     end_date: Optional[str] = None
     latitude: Optional[float] = None
     longitude: Optional[float] = None
 
-# MODEL ODPOWIEDZI (SERIALIZER) - KLUCZOWE DLA POPRAWNEGO WYŚWIETLANIA
 class AirbnbResponse(BaseModel):
     id: int
     title: str
@@ -225,7 +222,7 @@ class AirbnbResponse(BaseModel):
     contact: Optional[str]
     latitude: Optional[float]
     longitude: Optional[float]
-    state_name: str # Zwracamy nazwę rejonu, nie tylko ID
+    state_name: str 
     
     class Config:
         orm_mode = True
@@ -442,12 +439,11 @@ def add_airbnb(a: AirbnbAdd, db: Session = Depends(get_db)):
     if not u: raise HTTPException(401, "Nieautoryzowany")
     
     try:
-        # Zapisujemy do state_id (Rejon) zamiast district_id
         new_offer = AirbnbOffer(
             title=a.title, description=a.description, price=a.price, 
             h_availability=a.h_availability, owner_name=u.email, 
             owner_user_id=u.user_id, contact=a.contact,
-            state_id=a.district_id, # FRONTEND WYSYŁA ID REJONU W POLU district_id
+            state_id=a.district_id, 
             start_date=datetime.datetime.strptime(a.start_date, "%Y-%m-%d").date() if a.start_date else None,
             end_date=datetime.datetime.strptime(a.end_date, "%Y-%m-%d").date() if a.end_date else None,
             latitude=a.latitude, longitude=a.longitude
@@ -460,30 +456,36 @@ def add_airbnb(a: AirbnbAdd, db: Session = Depends(get_db)):
         logger.error(f"Airbnb Add Error: {e}")
         raise HTTPException(500, f"Błąd bazy: {str(e)}")
 
-# LISTA OFERT Z SERIALIZACJĄ
+# LISTA OFERT Z SERIALIZACJĄ I POPRAWKĄ DLA RELACJI
 @app.get("/api/v1/airbnb/offers", response_model=List[AirbnbResponse])
 def get_airbnb(district_id: Optional[int] = None, db: Session = Depends(get_db)):
-    q = db.query(AirbnbOffer)
-    # Tu też logika: jeśli frontend pyta o district_id, filtrujemy po state_id
-    if district_id: q = q.filter(AirbnbOffer.state_id == district_id)
-    
-    offers = q.all()
-    
-    # Manualne mapowanie (bezpieczniejsze niż Pydantic wprost z SQLAlchemy przy relacjach)
-    res = []
-    for o in offers:
-        res.append({
-            "id": o.id,
-            "title": o.title,
-            "description": o.description,
-            "price": float(o.price) if o.price else 0.0, # DECIMAL -> Float
-            "h_availability": o.h_availability,
-            "contact": o.contact,
-            "latitude": float(o.latitude) if o.latitude else None,
-            "longitude": float(o.longitude) if o.longitude else None,
-            "state_name": o.state_rel.name if o.state_rel else "Nieznany rejon"
-        })
-    return res
+    try:
+        # Używamy joinedload, aby pobrać dane rejonu w jednym zapytaniu
+        q = db.query(AirbnbOffer).options(joinedload(AirbnbOffer.state_rel))
+        if district_id: q = q.filter(AirbnbOffer.state_id == district_id)
+        
+        offers = q.all()
+        
+        # Manualne mapowanie
+        res = []
+        for o in offers:
+            res.append({
+                "id": o.id,
+                "title": o.title,
+                "description": o.description,
+                "price": float(o.price) if o.price is not None else 0.0,
+                "h_availability": o.h_availability,
+                "contact": o.contact,
+                "latitude": float(o.latitude) if o.latitude is not None else 0.0,
+                "longitude": float(o.longitude) if o.longitude is not None else 0.0,
+                # Bezpieczne pobranie nazwy rejonu
+                "state_name": o.state_rel.name if o.state_rel else "Inny"
+            })
+        return res
+    except Exception as e:
+        logger.error(f"Get Airbnb Error: {e}")
+        traceback.print_exc()
+        return []
 
 # --- STATYSTYKI ---
 @app.post("/api/v1/statystyki/zajetosc")
