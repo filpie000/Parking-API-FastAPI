@@ -235,12 +235,12 @@ class AirbnbResponse(BaseModel):
     h_availability: Optional[str] = None
     contact: Optional[str] = None
     owner_name: Optional[str] = None
-    owner_user_id: Optional[int] = None # DODANO do identyfikacji właściciela
+    owner_user_id: Optional[int] = None 
     latitude: Optional[float] = None
     longitude: Optional[float] = None
     state_name: Optional[str] = "Inny"
-    start_date: Optional[datetime.date] = None # DODANO
-    end_date: Optional[datetime.date] = None   # DODANO
+    start_date: Optional[datetime.date] = None
+    end_date: Optional[datetime.date] = None
     
     class Config:
         orm_mode = True
@@ -389,6 +389,18 @@ def login(u: UserLogin, db: Session = Depends(get_db)):
         return {"token": token, "email": user.email, "user_id": user.user_id, "is_disabled": user.is_disabled}
     except Exception as e: db.rollback(); logger.error(f"Login: {e}"); raise HTTPException(500, str(e))
 
+# --- NOWY ENDPOINT USER/ME (DLA PROFILU) ---
+@app.get("/api/v1/user/me")
+def get_me(token: str, db: Session = Depends(get_db)):
+    user = db.query(User).filter(User.token == token).first()
+    if not user: raise HTTPException(401, "Nieprawidłowy token")
+    return {
+        "user_id": user.user_id,
+        "email": user.email,
+        "is_disabled": user.is_disabled,
+        "phone_number": user.phone_number
+    }
+
 @app.get("/api/v1/aktualny_stan")
 def get_spots(db: Session = Depends(get_db)):
     spots = db.query(ParkingSpot).all()
@@ -409,7 +421,8 @@ def get_spots(db: Session = Depends(get_db)):
     return res
 
 @app.get("/api/v1/states")
-def get_all_states(db: Session = Depends(get_db)): return db.query(State).all()
+def get_all_states(db: Session = Depends(get_db)):
+    return db.query(State).all()
 
 @app.post("/api/v1/subscribe_spot")
 async def subscribe_device(request: SubscriptionRequest, db: Session = Depends(get_db)):
@@ -444,19 +457,13 @@ def add_airbnb(a: AirbnbAdd, db: Session = Depends(get_db)):
         db.commit(); return {"status": "ok"}
     except Exception as e: db.rollback(); logger.error(f"Airbnb Add: {e}"); raise HTTPException(500, f"DB Error: {str(e)}")
 
-# --- NOWY ENDPOINT EDYCJI OFERTY ---
 @app.post("/api/v1/airbnb/update")
 def update_airbnb(u: AirbnbUpdate, db: Session = Depends(get_db)):
     user = db.query(User).filter(User.token == u.token).first()
     if not user: raise HTTPException(401, "Nieautoryzowany")
-    
     offer = db.query(AirbnbOffer).filter(AirbnbOffer.id == u.offer_id).first()
     if not offer: raise HTTPException(404, "Nie znaleziono oferty")
-    
-    # Sprawdź czy to właściciel
-    if offer.owner_user_id != user.user_id:
-        raise HTTPException(403, "Brak uprawnień do edycji tej oferty")
-
+    if offer.owner_user_id != user.user_id: raise HTTPException(403, "Brak uprawnień")
     try:
         if u.title is not None: offer.title = u.title
         if u.description is not None: offer.description = u.description
@@ -468,13 +475,8 @@ def update_airbnb(u: AirbnbUpdate, db: Session = Depends(get_db)):
         if u.longitude is not None: offer.longitude = u.longitude
         if u.start_date: offer.start_date = datetime.datetime.strptime(u.start_date, "%Y-%m-%d").date()
         if u.end_date: offer.end_date = datetime.datetime.strptime(u.end_date, "%Y-%m-%d").date()
-        
-        db.commit()
-        return {"status": "updated"}
-    except Exception as e:
-        db.rollback()
-        logger.error(f"Airbnb Update Error: {e}")
-        raise HTTPException(500, f"Błąd edycji: {str(e)}")
+        db.commit(); return {"status": "updated"}
+    except Exception as e: db.rollback(); logger.error(f"Airbnb Update: {e}"); raise HTTPException(500, f"Błąd: {str(e)}")
 
 @app.get("/api/v1/airbnb/offers", response_model=List[AirbnbResponse])
 def get_airbnb(district_id: Optional[int] = None, db: Session = Depends(get_db)):
@@ -494,14 +496,11 @@ def get_airbnb(district_id: Optional[int] = None, db: Session = Depends(get_db))
                     "owner_name": o.owner_name, "owner_user_id": o.owner_user_id,
                     "latitude": float(o.latitude) if o.latitude is not None else 0.0,
                     "longitude": float(o.longitude) if o.longitude is not None else 0.0,
-                    "state_name": s_name,
-                    "start_date": o.start_date, "end_date": o.end_date
+                    "state_name": s_name, "start_date": o.start_date, "end_date": o.end_date
                 })
             except Exception as e: continue
         return res
-    except Exception as e:
-        logger.error(f"Global Airbnb Error: {e}")
-        return []
+    except Exception as e: logger.error(f"Global Airbnb Error: {e}"); return []
 
 @app.get("/api/v1/debug/airbnb")
 def debug_airbnb(db: Session = Depends(get_db)):
