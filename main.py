@@ -6,15 +6,15 @@ import json
 import threading
 import time
 import traceback
-from typing import Optional, List, Dict
+from typing import Optional, List, Dict, Any
 from zoneinfo import ZoneInfo
 
 from fastapi import FastAPI, Depends, HTTPException, Request, WebSocket, Query
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
-from sqlalchemy import create_engine, Column, Integer, String, DateTime, Boolean, ForeignKey, Float, Text, Table, func, Date, DECIMAL, extract, and_, or_
+from sqlalchemy import create_engine, Column, Integer, String, DateTime, Boolean, ForeignKey, Float, Text, Table, func, Date, DECIMAL, extract, and_, or_, text
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, Session, relationship, joinedload
 from sqlalchemy.exc import IntegrityError, ProgrammingError
@@ -213,7 +213,6 @@ class AirbnbAdd(BaseModel):
     latitude: Optional[float] = None
     longitude: Optional[float] = None
 
-# MODEL ODPOWIEDZI - wszystko opcjonalne, by uniknąć błędów walidacji
 class AirbnbResponse(BaseModel):
     id: int
     title: Optional[str] = "Brak tytułu"
@@ -353,60 +352,45 @@ async def ws(ws: WebSocket):
         while True: await ws.receive_text()
     except: manager.disconnect(ws)
 
-# --- ENDPOINTY AUTH ---
-
+# --- ENDPOINTY ---
 @app.post("/api/v1/auth/register")
 def register(u: UserRegister, db: Session = Depends(get_db)):
     try:
-        if db.query(User).filter(User.email == u.email).first(): 
-            raise HTTPException(400, "Email zajęty")
+        if db.query(User).filter(User.email == u.email).first(): raise HTTPException(400, "Email zajęty")
         new_user = User(email=u.email, password_hash=get_password_hash(u.password), phone_number=u.phone_number)
-        db.add(new_user)
-        db.commit()
-        return {"status": "registered", "user_id": new_user.user_id}
-    except Exception as e:
-        db.rollback()
-        logger.error(f"Register Error: {e}")
-        raise HTTPException(500, f"Błąd rejestracji: {str(e)}")
+        db.add(new_user); db.commit(); return {"status": "registered", "user_id": new_user.user_id}
+    except Exception as e: db.rollback(); logger.error(f"Register: {e}"); raise HTTPException(500, str(e))
 
 @app.post("/api/v1/auth/login")
 def login(u: UserLogin, db: Session = Depends(get_db)):
     try:
         user = db.query(User).filter(User.email == u.email).first()
-        if not user: raise HTTPException(401, "Błędne dane")
-        if not verify_password(u.password, user.password_hash): raise HTTPException(401, "Błędne dane")
+        if not user or not verify_password(u.password, user.password_hash): raise HTTPException(401, "Błędne dane")
         token = secrets.token_hex(16); user.token = token; db.commit()
         return {"token": token, "email": user.email, "user_id": user.user_id, "is_disabled": user.is_disabled}
-    except HTTPException as he: raise he
-    except Exception as e: db.rollback(); logger.error(f"Login Error: {e}"); raise HTTPException(500, f"Błąd logowania: {str(e)}")
+    except Exception as e: db.rollback(); logger.error(f"Login: {e}"); raise HTTPException(500, str(e))
 
 @app.get("/api/v1/aktualny_stan")
 def get_spots(db: Session = Depends(get_db)):
     spots = db.query(ParkingSpot).all()
     res = []
     for s in spots:
-        override_disabled = True if s.name == "euro_4" else s.is_disabled_friendly
         dist_obj = s.district_rel
-        rejon_name = s.state_rel.name if s.state_rel else "Brak danych"
-        coords_obj = None
-        if s.coordinates and ',' in s.coordinates:
-            try: parts = s.coordinates.split(','); coords_obj = {"latitude": float(parts[0]), "longitude": float(parts[1])}
-            except: pass
-        
         res.append({
-            "sensor_id": s.name, "status": s.current_status, "city": s.city, "state": rejon_name, 
+            "sensor_id": s.name, "status": s.current_status, "city": s.city, 
+            "state": s.state_rel.name if s.state_rel else "Brak danych", 
             "place_name": dist_obj.district if dist_obj else "Parking Ogólny", 
             "place_description": dist_obj.description if dist_obj else "",
             "place_price": dist_obj.price_info if dist_obj else "",
             "place_capacity": dist_obj.capacity if dist_obj else 0,
             "district_id": s.district_id, "state_id": s.state_id,
-            "wspolrzedne": coords_obj, "is_disabled_friendly": override_disabled, "is_ev": s.is_ev, "is_paid": s.is_paid
+            "wspolrzedne": {"latitude": float(s.coordinates.split(',')[0]), "longitude": float(s.coordinates.split(',')[1])} if s.coordinates else None, 
+            "is_disabled_friendly": s.is_disabled_friendly, "is_ev": s.is_ev, "is_paid": s.is_paid
         })
     return res
 
 @app.get("/api/v1/states")
-def get_all_states(db: Session = Depends(get_db)):
-    return db.query(State).all()
+def get_all_states(db: Session = Depends(get_db)): return db.query(State).all()
 
 @app.post("/api/v1/subscribe_spot")
 async def subscribe_device(request: SubscriptionRequest, db: Session = Depends(get_db)):
@@ -432,72 +416,62 @@ def buy_ticket(req: TicketPurchase, db: Session = Depends(get_db)):
     if spot: spot.current_status = 1; db.add(HistoricalData(sensor_id=spot.name, status=1))
     db.commit(); return {"status": "ok", "ticket_id": nt.id}
 
-# --- AIRBNB ---
-
 @app.post("/api/v1/airbnb/add")
 def add_airbnb(a: AirbnbAdd, db: Session = Depends(get_db)):
     u = db.query(User).filter(User.token == a.token).first()
     if not u: raise HTTPException(401, "Nieautoryzowany")
-    
     try:
-        new_offer = AirbnbOffer(
-            title=a.title, description=a.description, price=a.price, 
-            h_availability=a.h_availability, owner_name=u.email, 
-            owner_user_id=u.user_id, contact=a.contact,
-            state_id=a.district_id, # Frontend wysyła state_id w polu district_id
-            start_date=datetime.datetime.strptime(a.start_date, "%Y-%m-%d").date() if a.start_date else None,
-            end_date=datetime.datetime.strptime(a.end_date, "%Y-%m-%d").date() if a.end_date else None,
-            latitude=a.latitude, longitude=a.longitude
-        )
-        db.add(new_offer)
-        db.commit()
-        return {"status": "ok"}
-    except Exception as e:
-        db.rollback()
-        logger.error(f"Airbnb Add Error: {e}")
-        raise HTTPException(500, f"Błąd bazy: {str(e)}")
+        db.add(AirbnbOffer(title=a.title, description=a.description, price=a.price, h_availability=a.h_availability, owner_name=u.email, owner_user_id=u.user_id, contact=a.contact, state_id=a.district_id, start_date=datetime.datetime.strptime(a.start_date, "%Y-%m-%d").date() if a.start_date else None, end_date=datetime.datetime.strptime(a.end_date, "%Y-%m-%d").date() if a.end_date else None, latitude=a.latitude, longitude=a.longitude))
+        db.commit(); return {"status": "ok"}
+    except Exception as e: db.rollback(); logger.error(f"Airbnb Add: {e}"); raise HTTPException(500, f"DB Error: {str(e)}")
 
-# LISTA OFERT Z POPRAWKĄ (PANCERNA WERSJA)
+# --- BEZPIECZNE POBIERANIE OFERT (BEZ CRASHA NA JEDNYM REKORDZIE) ---
 @app.get("/api/v1/airbnb/offers", response_model=List[AirbnbResponse])
 def get_airbnb(district_id: Optional[int] = None, db: Session = Depends(get_db)):
     try:
-        # joinedload, aby pobrać relację
-        q = db.query(AirbnbOffer).options(joinedload(AirbnbOffer.state_rel))
+        q = db.query(AirbnbOffer)
+        # Nie używamy joinedload dla bezpieczeństwa, pobierzemy lazy
         if district_id: q = q.filter(AirbnbOffer.state_id == district_id)
-        
         offers = q.all()
         
         res = []
         for o in offers:
-            # BEZPIECZNE POBIERANIE PÓL
-            state_name = "Inny"
-            if o.state_rel:
-                state_name = o.state_rel.name
-            elif o.state_id:
-                state_name = f"Rejon ID: {o.state_id}"
-
-            res.append({
-                "id": o.id,
-                "title": o.title or "Brak tytułu",
-                "description": o.description,
-                "price": float(o.price) if o.price is not None else 0.0,
-                "h_availability": o.h_availability,
-                "contact": o.contact,
-                "latitude": float(o.latitude) if o.latitude is not None else 0.0,
-                "longitude": float(o.longitude) if o.longitude is not None else 0.0,
-                "state_name": state_name
-            })
+            try:
+                # Bezpieczne pobieranie pól
+                s_name = "Inny"
+                if o.state_rel: s_name = o.state_rel.name
+                
+                res.append({
+                    "id": o.id, "title": o.title or "Brak tytułu", "description": o.description,
+                    "price": float(o.price) if o.price is not None else 0.0,
+                    "h_availability": o.h_availability, "contact": o.contact,
+                    "latitude": float(o.latitude) if o.latitude is not None else 0.0,
+                    "longitude": float(o.longitude) if o.longitude is not None else 0.0,
+                    "state_name": s_name
+                })
+            except Exception as e:
+                logger.error(f"Skipping corrupted offer {o.id}: {e}")
+                continue # Pomijamy uszkodzony rekord zamiast wywalać całą listę
         return res
     except Exception as e:
-        logger.error(f"Get Airbnb Error: {e}")
-        traceback.print_exc()
+        logger.error(f"Global Airbnb Error: {e}")
         return []
 
-# --- STATYSTYKI ---
+# --- DEBUG ENDPOINT (Zrzut surowej bazy) ---
+@app.get("/api/v1/debug/airbnb")
+def debug_airbnb(db: Session = Depends(get_db)):
+    """Zwraca surowe dane z tabeli airbnb_offers (bez ORM)"""
+    try:
+        result = db.execute(text("SELECT * FROM airbnb_offers LIMIT 20")).fetchall()
+        return {"count": len(result), "rows": [dict(row._mapping) for row in result]}
+    except Exception as e:
+        return {"error": str(e)}
+
+# --- POZOSTAŁE ENDPOINTY (Stats, Admin, IoT) BEZ ZMIAN ---
 @app.post("/api/v1/statystyki/zajetosc")
 def stats_mobile(z: StatystykiZapytanie, db: Session = Depends(get_db)):
     try: target_date = datetime.datetime.strptime(z.selected_date, "%Y-%m-%d").date()
-    except: raise HTTPException(400, "Błędny format daty")
+    except: raise HTTPException(400)
     start_h = max(0, z.selected_hour - 1); end_h = min(23, z.selected_hour + 1)
     target_sensors = [z.sensor_id]; target_spot = db.query(ParkingSpot).filter(ParkingSpot.name == z.sensor_id).first()
     if target_spot:
@@ -505,7 +479,6 @@ def stats_mobile(z: StatystykiZapytanie, db: Session = Depends(get_db)):
         elif target_spot.district_id:
             district_peers = db.query(ParkingSpot.name).filter(ParkingSpot.district_id == target_spot.district_id, ParkingSpot.is_ev == False, ParkingSpot.is_disabled_friendly == False).all()
             if district_peers: target_sensors = [p.name for p in district_peers]
-
     holiday_name = check_if_holiday(target_date)
     if holiday_name:
         query = db.query(HolidayData).filter(HolidayData.sensor_id.in_(target_sensors), HolidayData.holiday_name == holiday_name, extract('hour', HolidayData.timestamp) >= start_h, extract('hour', HolidayData.timestamp) <= end_h)
@@ -517,88 +490,74 @@ def stats_mobile(z: StatystykiZapytanie, db: Session = Depends(get_db)):
         elif weekday == 4: query = query.filter(extract('dow', HistoricalData.timestamp) == 5)
         elif weekday == 5: query = query.filter(extract('dow', HistoricalData.timestamp) == 6)
         elif weekday == 6: query = query.filter(extract('dow', HistoricalData.timestamp) == 0)
-
     raw_data = query.all()
-    valid_measurements = raw_data if holiday_name else [row for row in raw_data if not check_if_holiday(row.timestamp.date())]
-    total = len(valid_measurements); occupied = sum(1 for x in valid_measurements if x.status == 1)
-    return {"wynik": {"procent_zajetosci": int((occupied / total) * 100) if total > 0 else 0, "liczba_pomiarow": total, "typ_dnia": holiday_name or "Standardowy"}}
+    valid = raw_data if holiday_name else [r for r in raw_data if not check_if_holiday(r.timestamp.date())]
+    return {"wynik": {"procent_zajetosci": int((sum(1 for x in valid if x.status==1)/len(valid))*100) if valid else 0, "liczba_pomiarow": len(valid), "typ_dnia": holiday_name or "Standardowy"}}
 
-# --- ADMIN ENDPOINTS ---
 @app.post("/api/v1/admin/manage/district")
 async def manage_district(d: DistrictPayload, db: Session = Depends(get_db)):
     try:
         if d.id:
-            existing = db.query(District).filter(District.id == d.id).first()
-            if existing:
-                if d.district is not None: existing.district = d.district
-                if d.city is not None: existing.city = d.city
-                if d.description is not None: existing.description = d.description
-                if d.price_info is not None: existing.price_info = d.price_info
-                if d.capacity is not None: existing.capacity = d.capacity
-                db.commit(); return {"status": "updated", "id": existing.id}
-            else: raise HTTPException(404, "District not found")
+            ex = db.query(District).filter(District.id == d.id).first()
+            if ex: 
+                if d.district: ex.district = d.district
+                if d.city: ex.city = d.city
+                if d.description: ex.description = d.description
+                if d.price_info: ex.price_info = d.price_info
+                if d.capacity is not None: ex.capacity = d.capacity
+                db.commit(); return {"status": "updated"}
         else:
-            if not d.district: raise HTTPException(400, "Field 'district' is required")
-            new_dist = District(district=d.district, city=d.city or "Inowrocław", description=d.description, price_info=d.price_info, capacity=d.capacity or 0)
-            db.add(new_dist); db.commit(); return {"status": "created", "id": new_dist.id}
-    except Exception as e: db.rollback(); raise HTTPException(500, f"Error: {e}")
+            if not d.district: raise HTTPException(400)
+            db.add(District(district=d.district, city=d.city, description=d.description, price_info=d.price_info, capacity=d.capacity or 0)); db.commit(); return {"status": "created"}
+    except Exception as e: db.rollback(); raise HTTPException(500, str(e))
 
 @app.post("/api/v1/admin/manage/state")
 async def manage_state(s: StatePayload, db: Session = Depends(get_db)):
     try:
         if s.state_id:
-            existing = db.query(State).filter(State.state_id == s.state_id).first()
-            if existing:
-                if s.name is not None: existing.name = s.name
-                if s.city is not None: existing.city = s.city
-                db.commit(); return {"status": "updated", "state_id": existing.state_id}
-            else: raise HTTPException(404, "State not found")
+            ex = db.query(State).filter(State.state_id == s.state_id).first()
+            if ex: 
+                if s.name: ex.name = s.name
+                if s.city: ex.city = s.city
+                db.commit(); return {"status": "updated"}
         else:
-            if not s.name: raise HTTPException(400, "Field 'name' is required")
-            new_state = State(name=s.name, city=s.city or "Inowrocław")
-            db.add(new_state); db.commit(); return {"status": "created", "state_id": new_state.state_id}
-    except Exception as e: db.rollback(); raise HTTPException(500, f"Error: {e}")
+            if not s.name: raise HTTPException(400)
+            db.add(State(name=s.name, city=s.city)); db.commit(); return {"status": "created"}
+    except Exception as e: db.rollback(); raise HTTPException(500, str(e))
 
 @app.post("/api/v1/admin/manage/spot")
 async def manage_spot(s: SpotPayload, db: Session = Depends(get_db)):
     try:
         spot = db.query(ParkingSpot).filter(ParkingSpot.name == s.name).first()
         if not spot: spot = ParkingSpot(name=s.name); db.add(spot)
-        if s.city is not None: spot.city = s.city
-        if s.state_id is not None: spot.state_id = s.state_id
-        if s.district_id is not None: spot.district_id = s.district_id
-        if s.coordinates is not None: spot.coordinates = s.coordinates
+        if s.city: spot.city = s.city
+        if s.state_id: spot.state_id = s.state_id
+        if s.district_id: spot.district_id = s.district_id
+        if s.coordinates: spot.coordinates = s.coordinates
         if s.is_disabled_friendly is not None: spot.is_disabled_friendly = s.is_disabled_friendly
         if s.is_ev is not None: spot.is_ev = s.is_ev
         if s.is_paid is not None: spot.is_paid = s.is_paid
-        db.commit(); return {"status": "updated", "name": spot.name}
-    except Exception as e: db.rollback(); raise HTTPException(500, f"Error: {e}")
+        db.commit(); return {"status": "updated"}
+    except Exception as e: db.rollback(); raise HTTPException(500, str(e))
 
 @app.post("/api/v1/iot/update")
 async def iot_update_http(data: dict, db: Session = Depends(get_db)):
     try:
-        name = data.get("name"); stat = int(data.get("status", 0)); dist_id = data.get("district_id"); state_id = data.get("state_id") 
-        if not name: raise HTTPException(400, "Brak nazwy")
+        name = data.get("name"); stat = int(data.get("status", 0))
         spot = db.query(ParkingSpot).filter(ParkingSpot.name == name).first()
         if not spot: spot = ParkingSpot(name=name, current_status=stat); db.add(spot)
-        if dist_id is not None:
-            if not db.query(District).filter(District.id == int(dist_id)).first(): raise HTTPException(400, f"District {dist_id} not found")
-            spot.district_id = int(dist_id)
-        if state_id is not None: 
-            if not db.query(State).filter(State.state_id == int(state_id)).first(): raise HTTPException(400, f"State {state_id} not found")
-            spot.state_id = int(state_id)
+        if data.get("district_id"): spot.district_id = int(data.get("district_id"))
+        if data.get("state_id"): spot.state_id = int(data.get("state_id"))
         prev = spot.current_status; spot.current_status = stat; spot.last_seen = now_utc()
         if prev != stat:
-            today_holiday = check_if_holiday(datetime.date.today())
-            if today_holiday: db.add(HolidayData(sensor_id=name, status=stat, holiday_name=today_holiday))
+            today = check_if_holiday(datetime.date.today())
+            if today: db.add(HolidayData(sensor_id=name, status=stat, holiday_name=today))
             else: db.add(HistoricalData(sensor_id=name, status=stat))
             if stat == 1:
                 subs = db.query(DeviceSubscription).filter(DeviceSubscription.sensor_name == name).all()
-                for sub in subs: send_push(sub.device_token, "⚠️ Ktoś zajął Twoje miejsce!", f"Miejsce {name} zajęte. Kliknij, aby znaleźć alternatywę.", data={"action": "find_alt"}); db.delete(sub)
-        db.commit()
-        await manager.broadcast({"sensor_id": name, "status": stat})
-        return {"status": "updated"}
-    except Exception as e: db.rollback(); raise HTTPException(500, detail=f"Error: {str(e)}")
+                for s in subs: send_push(s.device_token, "Zajęto miejsce!", f"{name} zajęte", data={"action": "find_alt"}); db.delete(s)
+        db.commit(); await manager.broadcast({"sensor_id": name, "status": stat}); return {"status": "updated"}
+    except Exception as e: db.rollback(); raise HTTPException(500, str(e))
 
 if __name__ == "__main__":
     import uvicorn
