@@ -213,13 +213,15 @@ class AirbnbAdd(BaseModel):
     latitude: Optional[float] = None
     longitude: Optional[float] = None
 
+# MODEL ODPOWIEDZI - DODANO BRAKUJĄCE POLA
 class AirbnbResponse(BaseModel):
     id: int
     title: Optional[str] = "Brak tytułu"
     description: Optional[str] = None
     price: Optional[float] = 0.0
-    h_availability: Optional[str] = None
+    h_availability: Optional[str] = None # DODANO
     contact: Optional[str] = None
+    owner_name: Optional[str] = None # DODANO
     latitude: Optional[float] = None
     longitude: Optional[float] = None
     state_name: Optional[str] = "Inny"
@@ -365,7 +367,8 @@ def register(u: UserRegister, db: Session = Depends(get_db)):
 def login(u: UserLogin, db: Session = Depends(get_db)):
     try:
         user = db.query(User).filter(User.email == u.email).first()
-        if not user or not verify_password(u.password, user.password_hash): raise HTTPException(401, "Błędne dane")
+        if not user: raise HTTPException(401, "Błędne dane")
+        if not verify_password(u.password, user.password_hash): raise HTTPException(401, "Błędne dane")
         token = secrets.token_hex(16); user.token = token; db.commit()
         return {"token": token, "email": user.email, "user_id": user.user_id, "is_disabled": user.is_disabled}
     except Exception as e: db.rollback(); logger.error(f"Login: {e}"); raise HTTPException(500, str(e))
@@ -425,49 +428,45 @@ def add_airbnb(a: AirbnbAdd, db: Session = Depends(get_db)):
         db.commit(); return {"status": "ok"}
     except Exception as e: db.rollback(); logger.error(f"Airbnb Add: {e}"); raise HTTPException(500, f"DB Error: {str(e)}")
 
-# --- BEZPIECZNE POBIERANIE OFERT (BEZ CRASHA NA JEDNYM REKORDZIE) ---
+# LISTA OFERT Z PEŁNYMI DANYMI
 @app.get("/api/v1/airbnb/offers", response_model=List[AirbnbResponse])
 def get_airbnb(district_id: Optional[int] = None, db: Session = Depends(get_db)):
     try:
         q = db.query(AirbnbOffer)
-        # Nie używamy joinedload dla bezpieczeństwa, pobierzemy lazy
         if district_id: q = q.filter(AirbnbOffer.state_id == district_id)
         offers = q.all()
         
         res = []
         for o in offers:
             try:
-                # Bezpieczne pobieranie pól
                 s_name = "Inny"
                 if o.state_rel: s_name = o.state_rel.name
                 
                 res.append({
                     "id": o.id, "title": o.title or "Brak tytułu", "description": o.description,
                     "price": float(o.price) if o.price is not None else 0.0,
-                    "h_availability": o.h_availability, "contact": o.contact,
+                    # MAPUJEMY NOWE POLA DO MODELU
+                    "h_availability": o.h_availability or "Brak danych",
+                    "owner_name": o.owner_name or "Nieznany",
+                    "contact": o.contact,
                     "latitude": float(o.latitude) if o.latitude is not None else 0.0,
                     "longitude": float(o.longitude) if o.longitude is not None else 0.0,
                     "state_name": s_name
                 })
             except Exception as e:
-                logger.error(f"Skipping corrupted offer {o.id}: {e}")
-                continue # Pomijamy uszkodzony rekord zamiast wywalać całą listę
+                continue
         return res
     except Exception as e:
         logger.error(f"Global Airbnb Error: {e}")
         return []
 
-# --- DEBUG ENDPOINT (Zrzut surowej bazy) ---
 @app.get("/api/v1/debug/airbnb")
 def debug_airbnb(db: Session = Depends(get_db)):
-    """Zwraca surowe dane z tabeli airbnb_offers (bez ORM)"""
     try:
         result = db.execute(text("SELECT * FROM airbnb_offers LIMIT 20")).fetchall()
         return {"count": len(result), "rows": [dict(row._mapping) for row in result]}
-    except Exception as e:
-        return {"error": str(e)}
+    except Exception as e: return {"error": str(e)}
 
-# --- POZOSTAŁE ENDPOINTY (Stats, Admin, IoT) BEZ ZMIAN ---
 @app.post("/api/v1/statystyki/zajetosc")
 def stats_mobile(z: StatystykiZapytanie, db: Session = Depends(get_db)):
     try: target_date = datetime.datetime.strptime(z.selected_date, "%Y-%m-%d").date()
