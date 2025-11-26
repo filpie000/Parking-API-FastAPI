@@ -162,7 +162,7 @@ class AirbnbOffer(Base):
     rating = Column(DECIMAL(3, 2), default=0)
     latitude = Column(DECIMAL(9, 6))
     longitude = Column(DECIMAL(9, 6))
-    district_id = Column(Integer, ForeignKey("districts.id")) # Zmieniono na districts zgodnie z kodem
+    district_id = Column(Integer, ForeignKey("districts.id"))
     start_date = Column(Date)
     end_date = Column(Date)
     created_at = Column(DateTime, default=now_utc)
@@ -202,7 +202,7 @@ class AirbnbAdd(BaseModel):
     price: float
     h_availability: Optional[str] = None
     contact: str
-    district_id: int # Z frontendem mapuje to na state_id lub district_id zależnie od logiki, w DB district_id to districts
+    district_id: int 
     start_date: Optional[str] = None
     end_date: Optional[str] = None
     latitude: Optional[float] = None
@@ -333,19 +333,53 @@ async def ws(ws: WebSocket):
         while True: await ws.receive_text()
     except: manager.disconnect(ws)
 
-# --- ENDPOINTY ---
+# --- ENDPOINTY AUTH (POPRAWIONE) ---
 
 @app.post("/api/v1/auth/register")
 def register(u: UserRegister, db: Session = Depends(get_db)):
-    if db.query(User).filter(User.email == u.email).first(): raise HTTPException(400, "Email zajęty")
-    db.add(User(email=u.email, password_hashed=get_password_hash(u.password), phone_number=u.phone_number)); db.commit(); return {"status": "registered"}
+    try:
+        if db.query(User).filter(User.email == u.email).first(): 
+            raise HTTPException(400, "Email zajęty")
+        
+        new_user = User(
+            email=u.email, 
+            password_hashed=get_password_hash(u.password), 
+            phone_number=u.phone_number
+        )
+        db.add(new_user)
+        db.commit()
+        return {"status": "registered", "user_id": new_user.user_id}
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Register Error: {e}")
+        raise HTTPException(500, f"Błąd rejestracji: {str(e)}")
 
 @app.post("/api/v1/auth/login")
 def login(u: UserLogin, db: Session = Depends(get_db)):
-    user = db.query(User).filter(User.email == u.email).first()
-    if not user or not verify_password(u.password, user.password_hashed): raise HTTPException(401, "Błędne dane")
-    token = secrets.token_hex(16); user.token = token; db.commit()
-    return {"token": token, "email": user.email, "user_id": user.user_id, "is_disabled": user.is_disabled}
+    try:
+        user = db.query(User).filter(User.email == u.email).first()
+        if not user: 
+            raise HTTPException(401, "Błędne dane (użytkownik nie istnieje)")
+        
+        if not verify_password(u.password, user.password_hashed): 
+            raise HTTPException(401, "Błędne dane (złe hasło)")
+        
+        token = secrets.token_hex(16)
+        user.token = token
+        db.commit()
+        
+        return {
+            "token": token, 
+            "email": user.email, 
+            "user_id": user.user_id, 
+            "is_disabled": user.is_disabled
+        }
+    except HTTPException as he:
+        raise he
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Login Error: {e}")
+        raise HTTPException(500, f"Błąd logowania: {str(e)}")
 
 @app.get("/api/v1/aktualny_stan")
 def get_spots(db: Session = Depends(get_db)):
