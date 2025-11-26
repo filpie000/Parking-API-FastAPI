@@ -442,7 +442,7 @@ def get_airbnb(district_id: Optional[int] = None, db: Session = Depends(get_db))
     if district_id: q = q.filter(AirbnbOffer.district_id == district_id)
     return q.all()
 
-# --- STATYSTYKI ZAAWANSOWANE ---
+# --- STATYSTYKI ZAAWANSOWANE (Z Agregacją & Filtrowaniem typu) ---
 @app.post("/api/v1/statystyki/zajetosc")
 def stats_mobile(z: StatystykiZapytanie, db: Session = Depends(get_db)):
     try: 
@@ -453,44 +453,64 @@ def stats_mobile(z: StatystykiZapytanie, db: Session = Depends(get_db)):
     start_h = max(0, z.selected_hour - 1)
     end_h = min(23, z.selected_hour + 1)
 
+    # 1. Określenie puli czujników (Target Pool)
+    target_sensors = [z.sensor_id] # Domyślnie tylko ten jeden
+    target_spot = db.query(ParkingSpot).filter(ParkingSpot.name == z.sensor_id).first()
+    
+    if target_spot:
+        # Jeśli miejsce jest specjalne (EV lub Inwalida), bierzemy tylko jego historię
+        # lub historię innych takich samych miejsc w tej samej dzielnicy
+        # Tutaj uproszczenie: dla specjalnych bierzemy tylko to konkretne miejsce (specyfika użycia)
+        if target_spot.is_ev or target_spot.is_disabled_friendly:
+            target_sensors = [z.sensor_id]
+        
+        # Jeśli to miejsce zwykłe, agregujemy dane z całej dzielnicy (tylko ze zwykłych miejsc)
+        elif target_spot.district_id:
+            district_peers = db.query(ParkingSpot.name).filter(
+                ParkingSpot.district_id == target_spot.district_id,
+                ParkingSpot.is_ev == False,
+                ParkingSpot.is_disabled_friendly == False
+            ).all()
+            
+            if district_peers:
+                target_sensors = [p.name for p in district_peers]
+
+    # 2. Sprawdzenie święta
     holiday_name = check_if_holiday(target_date)
     
-    # Jeśli to święto, szukamy w tabeli holiday_data (jeśli istnieje) lub w historii świąt
     if holiday_name:
         query = db.query(HolidayData).filter(
-            HolidayData.sensor_id == z.sensor_id,
+            HolidayData.sensor_id.in_(target_sensors),
             HolidayData.holiday_name == holiday_name,
             extract('hour', HolidayData.timestamp) >= start_h,
             extract('hour', HolidayData.timestamp) <= end_h
         )
-        # Fallback: Jeśli holiday_data puste, szukamy w historical_data po dacie (dla świąt stałych)
         if query.count() == 0:
              query = db.query(HistoricalData).filter(
-                HistoricalData.sensor_id == z.sensor_id,
+                HistoricalData.sensor_id.in_(target_sensors),
                 extract('month', HistoricalData.timestamp) == target_date.month,
                 extract('day', HistoricalData.timestamp) == target_date.day,
                 extract('hour', HistoricalData.timestamp) >= start_h,
                 extract('hour', HistoricalData.timestamp) <= end_h
             )
     else:
-        # Dzień zwykły - szukamy w historical_data
         query = db.query(HistoricalData).filter(
-            HistoricalData.sensor_id == z.sensor_id,
+            HistoricalData.sensor_id.in_(target_sensors),
             extract('hour', HistoricalData.timestamp) >= start_h,
             extract('hour', HistoricalData.timestamp) <= end_h
         )
-        weekday = target_date.weekday() # 0=Mon, 6=Sun
+        weekday = target_date.weekday()
 
-        if 0 <= weekday <= 3: # Pon-Czw
+        if 0 <= weekday <= 3:
             query = query.filter(extract('dow', HistoricalData.timestamp).in_([1, 2, 3, 4])) 
-        elif weekday == 4: # Pt
+        elif weekday == 4:
             query = query.filter(extract('dow', HistoricalData.timestamp) == 5)
-        elif weekday == 5: # Sob
+        elif weekday == 5:
             query = query.filter(extract('dow', HistoricalData.timestamp) == 6)
-        elif weekday == 6: # Nd
+        elif weekday == 6:
             query = query.filter(extract('dow', HistoricalData.timestamp) == 0)
 
-    # Pobieramy dane i filtrujemy święta w Pythonie (jeśli dzień zwykły)
+    # 3. Wykonanie zapytania i obliczenie
     raw_data = query.all()
     valid_measurements = []
     
