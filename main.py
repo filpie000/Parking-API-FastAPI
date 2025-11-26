@@ -65,7 +65,8 @@ class User(Base):
     __tablename__ = "users"
     user_id = Column(Integer, primary_key=True, autoincrement=True)
     email = Column(String(255), unique=True, nullable=False)
-    password_hashed = Column(String(255), nullable=False)
+    # POPRAWKA: Zmiana nazwy kolumny na zgodną z bazą danych (password_hash)
+    password_hash = Column(String(255), nullable=False)
     phone_number = Column(String(20))
     token = Column(String(255))
     is_disabled = Column(Boolean, default=False)
@@ -343,7 +344,8 @@ def register(u: UserRegister, db: Session = Depends(get_db)):
         
         new_user = User(
             email=u.email, 
-            password_hashed=get_password_hash(u.password), 
+            # POPRAWKA: Używamy password_hash zamiast password_hashed
+            password_hash=get_password_hash(u.password), 
             phone_number=u.phone_number
         )
         db.add(new_user)
@@ -361,7 +363,8 @@ def login(u: UserLogin, db: Session = Depends(get_db)):
         if not user: 
             raise HTTPException(401, "Błędne dane (użytkownik nie istnieje)")
         
-        if not verify_password(u.password, user.password_hashed): 
+        # POPRAWKA: Używamy password_hash zamiast password_hashed
+        if not verify_password(u.password, user.password_hash): 
             raise HTTPException(401, "Błędne dane (złe hasło)")
         
         token = secrets.token_hex(16)
