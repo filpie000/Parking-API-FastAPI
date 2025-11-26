@@ -98,7 +98,8 @@ class Admin(Base):
     __tablename__ = "admins"
     admin_id = Column(Integer, primary_key=True, autoincrement=True)
     username = Column(String(50), unique=True, nullable=False)
-    password_hashed = Column(String(255), nullable=False)
+    # FIX: password_hash (zgodnie z bazą danych), było password_hashed
+    password_hash = Column(String(255), nullable=False)
     badge_name = Column(String(100))
     permissions = relationship("AdminPermissions", back_populates="admin", uselist=False)
 
@@ -196,15 +197,7 @@ Base.metadata.create_all(bind=engine)
 class UserRegister(BaseModel): email: str; password: str; phone_number: Optional[str] = None
 class UserLogin(BaseModel): email: str; password: str
 class SubscriptionRequest(BaseModel): device_token: str; sensor_name: str
-
-# FIX: duration_hours jako float (dla minut np. 0.016)
-class TicketPurchase(BaseModel): 
-    token: str
-    place_name: str
-    plate_number: str
-    duration_hours: float 
-    total_price: Optional[float] = None
-
+class TicketPurchase(BaseModel): token: str; place_name: str; plate_number: str; duration_hours: float; total_price: Optional[float] = None
 class VehicleAdd(BaseModel): token: str; name: str; plate_number: str
 class VehicleDelete(BaseModel): token: str; vehicle_id: int
 class StatystykiZapytanie(BaseModel): sensor_id: str; selected_date: str; selected_hour: int
@@ -411,7 +404,8 @@ def get_dashboard():
 @app.post("/api/v1/admin/auth")
 def admin_login(d: AdminLogin, db: Session = Depends(get_db)):
     admin = db.query(Admin).filter(Admin.username == d.username).first()
-    if not admin or not verify_password(d.password, admin.password_hashed):
+    # FIX: Używamy password_hash zamiast password_hashed
+    if not admin or not verify_password(d.password, admin.password_hash):
         raise HTTPException(401, "Błędne dane")
     is_super = (admin.username == 'admin')
     return {
@@ -445,7 +439,8 @@ def list_admins(db: Session = Depends(get_db)):
 @app.post("/api/v1/admin/create")
 def create_admin(d: AdminPayload, db: Session = Depends(get_db)):
     if db.query(Admin).filter(Admin.username == d.username).first(): raise HTTPException(400, "Nazwa zajęta")
-    new_admin = Admin(username=d.username, password_hashed=get_password_hash(d.password or "admin123"))
+    # FIX: password_hash zamiast password_hashed
+    new_admin = Admin(username=d.username, password_hash=get_password_hash(d.password or "admin123"))
     db.add(new_admin); db.flush()
     perms = AdminPermissions(admin_id=new_admin.admin_id, city=d.city, view_disabled=d.view_disabled, view_ev=d.view_ev, allowed_state=d.allowed_state)
     db.add(perms); db.commit(); return {"status": "created"}
@@ -455,7 +450,8 @@ def update_admin(d: AdminPayload, db: Session = Depends(get_db)):
     if not d.id: raise HTTPException(400, "ID wymagane")
     admin = db.query(Admin).filter(Admin.admin_id == d.id).first()
     if not admin: raise HTTPException(404)
-    if d.password: admin.password_hashed = get_password_hash(d.password)
+    # FIX: password_hash zamiast password_hashed
+    if d.password: admin.password_hash = get_password_hash(d.password)
     if admin.permissions:
         admin.permissions.city = d.city
         admin.permissions.view_disabled = d.view_disabled
@@ -576,7 +572,8 @@ def get_spots(db: Session = Depends(get_db)):
     return res
 
 @app.get("/api/v1/states")
-def get_all_states(db: Session = Depends(get_db)): return db.query(State).all()
+def get_all_states(db: Session = Depends(get_db)):
+    return db.query(State).all()
 
 @app.post("/api/v1/subscribe_spot")
 async def subscribe_device(request: SubscriptionRequest, db: Session = Depends(get_db)):
@@ -677,7 +674,7 @@ def debug_airbnb(db: Session = Depends(get_db)):
         return {"count": len(result), "rows": [dict(row._mapping) for row in result]}
     except Exception as e: return {"error": str(e)}
 
-# ... (Admin/Management endpoints bez zmian) ...
+# ... (Admin/Management/IoT bez zmian) ...
 @app.post("/api/v1/admin/manage/district")
 async def manage_district(d: DistrictPayload, db: Session = Depends(get_db)):
     try:
