@@ -227,7 +227,6 @@ class AirbnbUpdate(BaseModel):
     latitude: Optional[float] = None
     longitude: Optional[float] = None
 
-# NOWY MODEL DO USUWANIA
 class AirbnbDelete(BaseModel):
     token: str
     offer_id: int
@@ -443,14 +442,38 @@ def where_is_my_car(token: str, db: Session = Depends(get_db)):
 
 @app.post("/api/v1/user/buy_ticket")
 def buy_ticket(req: TicketPurchase, db: Session = Depends(get_db)):
-    user = db.query(User).filter(User.token == req.token).first()
-    if not user: raise HTTPException(401)
-    start = now_utc(); end = start + datetime.timedelta(hours=req.duration_hours)
-    nt = Ticket(place_name=req.place_name, plate_number=req.plate_number, start_time=start, end_time=end, price=5.0*req.duration_hours, user_id=user.user_id)
-    db.add(nt); db.flush(); user.ticket_id = nt.id
-    spot = db.query(ParkingSpot).filter(ParkingSpot.name == req.place_name).first()
-    if spot: spot.current_status = 1; db.add(HistoricalData(sensor_id=spot.name, status=1))
-    db.commit(); return {"status": "ok", "ticket_id": nt.id}
+    try:
+        user = db.query(User).filter(User.token == req.token).first()
+        if not user: raise HTTPException(401, "Nieprawidłowy token")
+        
+        start = now_utc()
+        end = start + datetime.timedelta(hours=req.duration_hours)
+        
+        nt = Ticket(
+            place_name=req.place_name, 
+            plate_number=req.plate_number, 
+            start_time=start, 
+            end_time=end, 
+            price=5.0*req.duration_hours, 
+            user_id=user.user_id
+        )
+        db.add(nt)
+        db.flush() # Pobieramy ID biletu
+        
+        user.ticket_id = nt.id # Przypisujemy bilet do usera
+        
+        # Opcjonalnie zmieniamy status miejsca
+        spot = db.query(ParkingSpot).filter(ParkingSpot.name == req.place_name).first()
+        if spot: 
+            spot.current_status = 1
+            db.add(HistoricalData(sensor_id=spot.name, status=1))
+            
+        db.commit()
+        return {"status": "ok", "ticket_id": nt.id}
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Buy Ticket Error: {e}")
+        raise HTTPException(500, str(e))
 
 @app.post("/api/v1/airbnb/add")
 def add_airbnb(a: AirbnbAdd, db: Session = Depends(get_db)):
@@ -482,7 +505,6 @@ def update_airbnb(u: AirbnbUpdate, db: Session = Depends(get_db)):
         db.commit(); return {"status": "updated"}
     except Exception as e: db.rollback(); logger.error(f"Airbnb Update: {e}"); raise HTTPException(500, f"Błąd: {str(e)}")
 
-# --- NOWY ENDPOINT USUWANIA ---
 @app.post("/api/v1/airbnb/delete")
 def delete_airbnb(d: AirbnbDelete, db: Session = Depends(get_db)):
     user = db.query(User).filter(User.token == d.token).first()
