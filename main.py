@@ -227,6 +227,11 @@ class AirbnbUpdate(BaseModel):
     latitude: Optional[float] = None
     longitude: Optional[float] = None
 
+# NOWY MODEL DO USUWANIA
+class AirbnbDelete(BaseModel):
+    token: str
+    offer_id: int
+
 class AirbnbResponse(BaseModel):
     id: int
     title: Optional[str] = "Brak tytułu"
@@ -389,7 +394,6 @@ def login(u: UserLogin, db: Session = Depends(get_db)):
         return {"token": token, "email": user.email, "user_id": user.user_id, "is_disabled": user.is_disabled}
     except Exception as e: db.rollback(); logger.error(f"Login: {e}"); raise HTTPException(500, str(e))
 
-# --- NOWY ENDPOINT USER/ME (DLA PROFILU) ---
 @app.get("/api/v1/user/me")
 def get_me(token: str, db: Session = Depends(get_db)):
     user = db.query(User).filter(User.token == token).first()
@@ -478,6 +482,26 @@ def update_airbnb(u: AirbnbUpdate, db: Session = Depends(get_db)):
         db.commit(); return {"status": "updated"}
     except Exception as e: db.rollback(); logger.error(f"Airbnb Update: {e}"); raise HTTPException(500, f"Błąd: {str(e)}")
 
+# --- NOWY ENDPOINT USUWANIA ---
+@app.post("/api/v1/airbnb/delete")
+def delete_airbnb(d: AirbnbDelete, db: Session = Depends(get_db)):
+    user = db.query(User).filter(User.token == d.token).first()
+    if not user: raise HTTPException(401, "Nieautoryzowany")
+    
+    offer = db.query(AirbnbOffer).filter(AirbnbOffer.id == d.offer_id).first()
+    if not offer: raise HTTPException(404, "Nie znaleziono oferty")
+    
+    if offer.owner_user_id != user.user_id: raise HTTPException(403, "Brak uprawnień")
+    
+    try:
+        db.delete(offer)
+        db.commit()
+        return {"status": "deleted"}
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Airbnb Delete: {e}")
+        raise HTTPException(500, f"Błąd bazy: {str(e)}")
+
 @app.get("/api/v1/airbnb/offers", response_model=List[AirbnbResponse])
 def get_airbnb(district_id: Optional[int] = None, db: Session = Depends(get_db)):
     try:
@@ -509,6 +533,7 @@ def debug_airbnb(db: Session = Depends(get_db)):
         return {"count": len(result), "rows": [dict(row._mapping) for row in result]}
     except Exception as e: return {"error": str(e)}
 
+# --- POZOSTAŁE ENDPOINTY BEZ ZMIAN ---
 @app.post("/api/v1/statystyki/zajetosc")
 def stats_mobile(z: StatystykiZapytanie, db: Session = Depends(get_db)):
     try: target_date = datetime.datetime.strptime(z.selected_date, "%Y-%m-%d").date()
