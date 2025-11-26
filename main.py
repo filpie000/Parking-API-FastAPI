@@ -162,7 +162,7 @@ class AirbnbOffer(Base):
     rating = Column(DECIMAL(3, 2), default=0)
     latitude = Column(DECIMAL(9, 6))
     longitude = Column(DECIMAL(9, 6))
-    district_id = Column(Integer, ForeignKey("districts.id"))
+    district_id = Column(Integer, ForeignKey("districts.id")) # Zmieniono na districts zgodnie z kodem
     start_date = Column(Date)
     end_date = Column(Date)
     created_at = Column(DateTime, default=now_utc)
@@ -173,10 +173,8 @@ class ParkingSpot(Base):
     current_status = Column(Integer, default=0) 
     last_seen = Column(DateTime(timezone=True), default=now_utc)
     city = Column(String, nullable=True)
-    
     state_id = Column(Integer, ForeignKey("states.state_id"), nullable=True) 
     district_id = Column(Integer, ForeignKey("districts.id"), nullable=True)
-    
     coordinates = Column(String, nullable=True)
     is_disabled_friendly = Column(Boolean, default=False)
     is_ev = Column(Boolean, default=False)
@@ -196,6 +194,19 @@ class SubscriptionRequest(BaseModel): device_token: str; sensor_name: str
 class TicketPurchase(BaseModel): token: str; place_name: str; plate_number: str; duration_hours: int
 class VehicleAdd(BaseModel): token: str; name: str; plate_number: str
 class StatystykiZapytanie(BaseModel): sensor_id: str; selected_date: str; selected_hour: int
+
+class AirbnbAdd(BaseModel):
+    token: str
+    title: str
+    description: Optional[str] = None
+    price: float
+    h_availability: Optional[str] = None
+    contact: str
+    district_id: int # Z frontendem mapuje to na state_id lub district_id zależnie od logiki, w DB district_id to districts
+    start_date: Optional[str] = None
+    end_date: Optional[str] = None
+    latitude: Optional[float] = None
+    longitude: Optional[float] = None
 
 class DistrictPayload(BaseModel):
     id: Optional[int] = None
@@ -221,7 +232,7 @@ class SpotPayload(BaseModel):
     is_paid: Optional[bool] = None
 
 # ==========================================
-#              POMOCNIKI / ALGORYTMY
+#              POMOCNIKI
 # ==========================================
 def get_password_hash(p: str) -> str: return bcrypt.hashpw(p.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
 def verify_password(plain: str, hashed: str) -> bool:
@@ -294,7 +305,6 @@ def on_mqtt_message(client, userdata, msg):
                         db.add(HolidayData(sensor_id=sensor_name, status=status, holiday_name=today_holiday))
                     else:
                         db.add(HistoricalData(sensor_id=sensor_name, status=status))
-                    
                     if status == 1:
                         subs = db.query(DeviceSubscription).filter(DeviceSubscription.sensor_name == sensor_name).all()
                         for sub in subs:
@@ -345,7 +355,6 @@ def get_spots(db: Session = Depends(get_db)):
         override_disabled = True if s.name == "euro_4" else s.is_disabled_friendly
         dist_obj = s.district_rel
         rejon_name = s.state_rel.name if s.state_rel else "Brak danych"
-        
         coords_obj = None
         if s.coordinates and ',' in s.coordinates:
             try: parts = s.coordinates.split(','); coords_obj = {"latitude": float(parts[0]), "longitude": float(parts[1])}
@@ -364,7 +373,6 @@ def get_spots(db: Session = Depends(get_db)):
 
 @app.get("/api/v1/states")
 def get_all_states(db: Session = Depends(get_db)):
-    """Zwraca wszystkie regiony (states) do formularzy"""
     return db.query(State).all()
 
 @app.post("/api/v1/subscribe_spot")
@@ -391,13 +399,32 @@ def buy_ticket(req: TicketPurchase, db: Session = Depends(get_db)):
     if spot: spot.current_status = 1; db.add(HistoricalData(sensor_id=spot.name, status=1))
     db.commit(); return {"status": "ok", "ticket_id": nt.id}
 
+# --- AIRBNB ADD ---
+@app.post("/api/v1/airbnb/add")
+def add_airbnb(a: AirbnbAdd, db: Session = Depends(get_db)):
+    u = db.query(User).filter(User.token == a.token).first()
+    if not u: raise HTTPException(401, "Nieautoryzowany")
+    
+    new_offer = AirbnbOffer(
+        title=a.title, description=a.description, price=a.price, 
+        h_availability=a.h_availability, owner_name=u.email, 
+        owner_user_id=u.user_id, contact=a.contact,
+        district_id=a.district_id, 
+        start_date=datetime.datetime.strptime(a.start_date, "%Y-%m-%d").date() if a.start_date else None,
+        end_date=datetime.datetime.strptime(a.end_date, "%Y-%m-%d").date() if a.end_date else None,
+        latitude=a.latitude, longitude=a.longitude
+    )
+    db.add(new_offer)
+    db.commit()
+    return {"status": "ok"}
+
 @app.get("/api/v1/airbnb/offers")
 def get_airbnb(district_id: Optional[int] = None, db: Session = Depends(get_db)):
     q = db.query(AirbnbOffer)
     if district_id: q = q.filter(AirbnbOffer.district_id == district_id)
     return q.all()
 
-# --- STATYSTYKI ZAAWANSOWANE ---
+# --- STATYSTYKI ---
 @app.post("/api/v1/statystyki/zajetosc")
 def stats_mobile(z: StatystykiZapytanie, db: Session = Depends(get_db)):
     try: target_date = datetime.datetime.strptime(z.selected_date, "%Y-%m-%d").date()
@@ -498,7 +525,7 @@ async def iot_update_http(data: dict, db: Session = Depends(get_db)):
             else: db.add(HistoricalData(sensor_id=name, status=stat))
             if stat == 1:
                 subs = db.query(DeviceSubscription).filter(DeviceSubscription.sensor_name == name).all()
-                for sub in subs: send_push(sub.device_token, "⚠️ Ktoś zajął Twoje miejsce!", f"Miejsce {name} zajęte.", data={"action": "find_alt"}); db.delete(sub)
+                for sub in subs: send_push(sub.device_token, "⚠️ Ktoś zajął Twoje miejsce!", f"Miejsce {name} zajęte. Kliknij, aby znaleźć alternatywę.", data={"action": "find_alt"}); db.delete(sub)
         db.commit()
         await manager.broadcast({"sensor_id": name, "status": stat})
         return {"status": "updated"}
