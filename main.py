@@ -33,11 +33,6 @@ PL_TZ = ZoneInfo("Europe/Warsaw")
 def now_utc() -> datetime.datetime:
     return datetime.datetime.now(UTC)
 
-# --- KONFIGURACJA SEKURITY (HASH ADMINA) ---
-# SHA-256 dla hasła "admin123"
-# Frontend musi wysłać ten hash, a nie czysty tekst!
-ADMIN_PASS_HASH = "ef797c8118f02dfb649607dd5d3f8c7623048c9c063d532cc95c5ed7a898a64f"
-
 # --- KONFIGURACJA MQTT ---
 MQTT_BROKER = os.environ.get('MQTT_BROKER', 'broker.emqx.io')
 MQTT_PORT = int(os.environ.get('MQTT_PORT', 1883))
@@ -45,8 +40,8 @@ MQTT_TOPIC = "parking/+/status"
 
 # --- BAZA DANYCH ---
 DATABASE_URL = os.environ.get('DATABASE_URL', "postgresql://postgres:postgres@localhost:5432/postgres")
-# Fallback na SQLite jeśli nie ma Postgresa (dla testów lokalnych)
-# DATABASE_URL = "sqlite:///./test.db" 
+# Jeśli chcesz testować lokalnie na pliku (bez Postgresa), odkomentuj poniższą linię:
+# DATABASE_URL = "sqlite:///./test_parking.db"
 
 if DATABASE_URL.startswith("postgres://"):
     DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
@@ -302,11 +297,7 @@ class SpotPayload(BaseModel):
 # ==========================================
 #              POMOCNIKI
 # ==========================================
-def get_password_hash(p: str) -> str: 
-    # Backend robi drugie haszowanie (Double Hashing)
-    # p tutaj jest już hashem z frontendu (SHA-256 string)
-    return bcrypt.hashpw(p.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
-
+def get_password_hash(p: str) -> str: return bcrypt.hashpw(p.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
 def verify_password(plain: str, hashed: str) -> bool:
     if not hashed: return False
     try: 
@@ -368,8 +359,6 @@ def on_mqtt_message(client, userdata, msg):
         payload = json.loads(msg.payload.decode())
         sensor_name = payload.get("name") or payload.get("sensor_id")
         status = int(payload.get("status", 0))
-        # Tutaj bierzemy timestamp z bramki, a nie serwera! (Offline Mode)
-        # Jeśli bramka nie wyśle czasu, bierzemy teraz.
         event_time_str = payload.get("timestamp")
         event_time = datetime.datetime.fromisoformat(event_time_str.replace("Z", "+00:00")) if event_time_str else now_utc()
 
@@ -379,7 +368,7 @@ def on_mqtt_message(client, userdata, msg):
             if spot:
                 prev = spot.current_status
                 spot.current_status = status
-                spot.last_seen = event_time # Używamy czasu z bramki
+                spot.last_seen = event_time 
                 
                 if prev != status:
                     today_holiday = check_if_holiday(event_time.date())
@@ -411,16 +400,19 @@ async def startup_event():
     start_mqtt()
     try:
         with SessionLocal() as db:
-            # 1. Autoreset hasła admina
+            # RESET HASŁA PRZY KAŻDYM STARCIE DLA PEWNOŚCI
             admin = db.query(Admin).filter(Admin.username == "admin").first()
-            # Haszujemy hash SHA-256 zdefiniowany na górze (podwójne haszowanie)
+            default_pass_hash = get_password_hash("admin123")
+            
             if admin:
-                admin.password_hash = get_password_hash(ADMIN_PASS_HASH)
+                admin.password_hash = default_pass_hash
                 db.commit()
+                logger.info(">>> HASŁO ADMINA ZRESETOWANE NA 'admin123' <<<")
             else:
-                new_admin = Admin(username="admin", password_hash=get_password_hash(ADMIN_PASS_HASH), badge_name="Super Admin")
+                new_admin = Admin(username="admin", password_hash=default_pass_hash, badge_name="Super Admin")
                 db.add(new_admin)
                 db.commit()
+                logger.info(">>> UTWORZONO KONTO ADMINA 'admin' / 'admin123' <<<")
     except Exception as e:
         logger.error(f"STARTUP ERROR: {e}")
 
@@ -437,23 +429,34 @@ def get_dashboard():
     try: return open("dashboard.html", "r", encoding="utf-8").read()
     except: return "Brak pliku dashboard.html"
 
+# DEBUGOWANE LOGOWANIE
 @app.post("/api/v1/admin/auth")
 def admin_login(d: AdminLogin, db: Session = Depends(get_db)):
+    # WYPISZ DO KONSOLI CO OTRZYMAŁEŚ
+    print(f"DEBUG LOGIN: User=[{d.username}] Pass=[{d.password}]")
+    
     admin = db.query(Admin).filter(Admin.username == d.username).first()
     
     is_valid = False
     
-    # FIX: Backend oczekuje teraz HASHA (SHA-256) z frontendu
-    # Sprawdzamy, czy przesłany hash odpowiada hashowi dla "admin123"
-    if d.username == "admin" and d.password == ADMIN_PASS_HASH:
+    # 1. Hardcoded check (Ostatnia deska ratunku)
+    if d.username == "admin" and d.password == "admin123":
+        print("DEBUG LOGIN: Pasuje do hardcoded!")
         is_valid = True
-    elif admin and verify_password(d.password, admin.password_hash):
-        is_valid = True
+    # 2. Database check
+    elif admin:
+        if verify_password(d.password, admin.password_hash):
+             print("DEBUG LOGIN: Hasło z bazy poprawne!")
+             is_valid = True
+        else:
+             print("DEBUG LOGIN: Hasło z bazy BŁĘDNE")
+    else:
+        print("DEBUG LOGIN: Nie ma takiego użytkownika w bazie")
 
     if not is_valid:
         raise HTTPException(401, "Błędne dane")
         
-    is_super = (admin.username == 'admin') if admin else (d.username == 'admin')
+    is_super = (d.username == 'admin')
     
     return {
         "status": "ok",
@@ -467,7 +470,7 @@ def admin_login(d: AdminLogin, db: Session = Depends(get_db)):
         }
     }
 
-# ... (Reszta endpointów admina bez zmian) ...
+# ... (Reszta endpointów - bez zmian) ...
 @app.get("/api/v1/admin/list")
 def list_admins(db: Session = Depends(get_db)):
     admins = db.query(Admin).options(joinedload(Admin.permissions)).all()
@@ -487,9 +490,7 @@ def list_admins(db: Session = Depends(get_db)):
 @app.post("/api/v1/admin/create")
 def create_admin(d: AdminPayload, db: Session = Depends(get_db)):
     if db.query(Admin).filter(Admin.username == d.username).first(): raise HTTPException(400, "Nazwa zajęta")
-    # Haszowanie: Frontend wysłał hash, my go solimy i haszujemy
-    pass_to_hash = d.password or ADMIN_PASS_HASH # Domyślnie admin123 hash
-    new_admin = Admin(username=d.username, password_hash=get_password_hash(pass_to_hash))
+    new_admin = Admin(username=d.username, password_hash=get_password_hash(d.password or "admin123"))
     db.add(new_admin); db.flush()
     perms = AdminPermissions(admin_id=new_admin.admin_id, city=d.city, view_disabled=d.view_disabled, view_ev=d.view_ev, allowed_state=d.allowed_state)
     db.add(perms); db.commit(); return {"status": "created"}
@@ -554,7 +555,6 @@ def get_history_stats(days: int = 7, db: Session = Depends(get_db)):
 def register(u: UserRegister, db: Session = Depends(get_db)):
     try:
         if db.query(User).filter(User.email == u.email).first(): raise HTTPException(400, "Email zajęty")
-        # Tu też przychodzi hash z frontendu, my go solimy i zapisujemy
         new_user = User(email=u.email, password_hash=get_password_hash(u.password), phone_number=u.phone_number)
         db.add(new_user); db.commit(); return {"status": "registered", "user_id": new_user.user_id}
     except Exception as e: db.rollback(); logger.error(f"Register: {e}"); raise HTTPException(500, str(e))
@@ -564,11 +564,9 @@ def login(u: UserLogin, db: Session = Depends(get_db)):
     try:
         user = db.query(User).filter(User.email == u.email).first()
         if not user: raise HTTPException(401, "Błędne dane")
-        # verify_password sprawdzi hash z frontendu vs bcrypt z bazy
         if not verify_password(u.password, user.password_hash): raise HTTPException(401, "Błędne dane")
-        
         token = secrets.token_hex(16); user.token = token; db.commit()
-        return {"token": token, "email": user.email, "user_id": user.user_id, "is_disabled": user.is_disabled, "dark_mode": False} # Dodalem dark_mode default
+        return {"token": token, "email": user.email, "user_id": user.user_id, "is_disabled": user.is_disabled, "dark_mode": False}
     except Exception as e: db.rollback(); logger.error(f"Login: {e}"); raise HTTPException(500, str(e))
 
 @app.get("/api/v1/user/me")
@@ -774,7 +772,7 @@ async def manage_spot(s: SpotPayload, db: Session = Depends(get_db)):
 async def iot_update_http(data: dict, db: Session = Depends(get_db)):
     try:
         name = data.get("name"); stat = int(data.get("status", 0))
-        # Tu też logika timestampu z bramki
+        # Logika Offline (timestamp z bramki)
         event_time_str = data.get("timestamp")
         event_time = datetime.datetime.fromisoformat(event_time_str.replace("Z", "+00:00")) if event_time_str else now_utc()
 
@@ -785,7 +783,7 @@ async def iot_update_http(data: dict, db: Session = Depends(get_db)):
         
         prev = spot.current_status
         spot.current_status = stat
-        spot.last_seen = event_time # Czas z bramki
+        spot.last_seen = event_time 
         
         if prev != stat:
             today = check_if_holiday(event_time.date())
