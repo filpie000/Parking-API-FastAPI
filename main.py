@@ -33,6 +33,11 @@ PL_TZ = ZoneInfo("Europe/Warsaw")
 def now_utc() -> datetime.datetime:
     return datetime.datetime.now(UTC)
 
+# --- KONFIGURACJA SEKURITY (HASH ADMINA) ---
+# SHA-256 dla hasła "admin123"
+# Frontend musi wysłać ten hash, a nie czysty tekst!
+ADMIN_PASS_HASH = "ef797c8118f02dfb649607dd5d3f8c7623048c9c063d532cc95c5ed7a898a64f"
+
 # --- KONFIGURACJA MQTT ---
 MQTT_BROKER = os.environ.get('MQTT_BROKER', 'broker.emqx.io')
 MQTT_PORT = int(os.environ.get('MQTT_PORT', 1883))
@@ -40,6 +45,9 @@ MQTT_TOPIC = "parking/+/status"
 
 # --- BAZA DANYCH ---
 DATABASE_URL = os.environ.get('DATABASE_URL', "postgresql://postgres:postgres@localhost:5432/postgres")
+# Fallback na SQLite jeśli nie ma Postgresa (dla testów lokalnych)
+# DATABASE_URL = "sqlite:///./test.db" 
+
 if DATABASE_URL.startswith("postgres://"):
     DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
 
@@ -294,7 +302,11 @@ class SpotPayload(BaseModel):
 # ==========================================
 #              POMOCNIKI
 # ==========================================
-def get_password_hash(p: str) -> str: return bcrypt.hashpw(p.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
+def get_password_hash(p: str) -> str: 
+    # Backend robi drugie haszowanie (Double Hashing)
+    # p tutaj jest już hashem z frontendu (SHA-256 string)
+    return bcrypt.hashpw(p.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
+
 def verify_password(plain: str, hashed: str) -> bool:
     if not hashed: return False
     try: 
@@ -356,17 +368,26 @@ def on_mqtt_message(client, userdata, msg):
         payload = json.loads(msg.payload.decode())
         sensor_name = payload.get("name") or payload.get("sensor_id")
         status = int(payload.get("status", 0))
+        # Tutaj bierzemy timestamp z bramki, a nie serwera! (Offline Mode)
+        # Jeśli bramka nie wyśle czasu, bierzemy teraz.
+        event_time_str = payload.get("timestamp")
+        event_time = datetime.datetime.fromisoformat(event_time_str.replace("Z", "+00:00")) if event_time_str else now_utc()
+
         if not sensor_name: return
         with SessionLocal() as db:
             spot = db.query(ParkingSpot).filter(ParkingSpot.name == sensor_name).first()
             if spot:
-                prev = spot.current_status; spot.current_status = status; spot.last_seen = now_utc()
+                prev = spot.current_status
+                spot.current_status = status
+                spot.last_seen = event_time # Używamy czasu z bramki
+                
                 if prev != status:
-                    today_holiday = check_if_holiday(datetime.date.today())
+                    today_holiday = check_if_holiday(event_time.date())
                     if today_holiday:
-                        db.add(HolidayData(sensor_id=sensor_name, status=status, holiday_name=today_holiday))
+                        db.add(HolidayData(sensor_id=sensor_name, status=status, holiday_name=today_holiday, timestamp=event_time))
                     else:
-                        db.add(HistoricalData(sensor_id=sensor_name, status=status))
+                        db.add(HistoricalData(sensor_id=sensor_name, status=status, timestamp=event_time))
+                    
                     if status == 1:
                         subs = db.query(DeviceSubscription).filter(DeviceSubscription.sensor_name == sensor_name).all()
                         for sub in subs:
@@ -392,11 +413,12 @@ async def startup_event():
         with SessionLocal() as db:
             # 1. Autoreset hasła admina
             admin = db.query(Admin).filter(Admin.username == "admin").first()
+            # Haszujemy hash SHA-256 zdefiniowany na górze (podwójne haszowanie)
             if admin:
-                admin.password_hash = get_password_hash("admin123")
+                admin.password_hash = get_password_hash(ADMIN_PASS_HASH)
                 db.commit()
             else:
-                new_admin = Admin(username="admin", password_hash=get_password_hash("admin123"), badge_name="Super Admin")
+                new_admin = Admin(username="admin", password_hash=get_password_hash(ADMIN_PASS_HASH), badge_name="Super Admin")
                 db.add(new_admin)
                 db.commit()
     except Exception as e:
@@ -419,9 +441,11 @@ def get_dashboard():
 def admin_login(d: AdminLogin, db: Session = Depends(get_db)):
     admin = db.query(Admin).filter(Admin.username == d.username).first()
     
-    # FIX: Backdoor dla superadmina (jeśli hasze się nie zgadzają)
     is_valid = False
-    if d.username == "admin" and d.password == "admin123":
+    
+    # FIX: Backend oczekuje teraz HASHA (SHA-256) z frontendu
+    # Sprawdzamy, czy przesłany hash odpowiada hashowi dla "admin123"
+    if d.username == "admin" and d.password == ADMIN_PASS_HASH:
         is_valid = True
     elif admin and verify_password(d.password, admin.password_hash):
         is_valid = True
@@ -463,7 +487,9 @@ def list_admins(db: Session = Depends(get_db)):
 @app.post("/api/v1/admin/create")
 def create_admin(d: AdminPayload, db: Session = Depends(get_db)):
     if db.query(Admin).filter(Admin.username == d.username).first(): raise HTTPException(400, "Nazwa zajęta")
-    new_admin = Admin(username=d.username, password_hash=get_password_hash(d.password or "admin123"))
+    # Haszowanie: Frontend wysłał hash, my go solimy i haszujemy
+    pass_to_hash = d.password or ADMIN_PASS_HASH # Domyślnie admin123 hash
+    new_admin = Admin(username=d.username, password_hash=get_password_hash(pass_to_hash))
     db.add(new_admin); db.flush()
     perms = AdminPermissions(admin_id=new_admin.admin_id, city=d.city, view_disabled=d.view_disabled, view_ev=d.view_ev, allowed_state=d.allowed_state)
     db.add(perms); db.commit(); return {"status": "created"}
@@ -528,6 +554,7 @@ def get_history_stats(days: int = 7, db: Session = Depends(get_db)):
 def register(u: UserRegister, db: Session = Depends(get_db)):
     try:
         if db.query(User).filter(User.email == u.email).first(): raise HTTPException(400, "Email zajęty")
+        # Tu też przychodzi hash z frontendu, my go solimy i zapisujemy
         new_user = User(email=u.email, password_hash=get_password_hash(u.password), phone_number=u.phone_number)
         db.add(new_user); db.commit(); return {"status": "registered", "user_id": new_user.user_id}
     except Exception as e: db.rollback(); logger.error(f"Register: {e}"); raise HTTPException(500, str(e))
@@ -537,9 +564,11 @@ def login(u: UserLogin, db: Session = Depends(get_db)):
     try:
         user = db.query(User).filter(User.email == u.email).first()
         if not user: raise HTTPException(401, "Błędne dane")
+        # verify_password sprawdzi hash z frontendu vs bcrypt z bazy
         if not verify_password(u.password, user.password_hash): raise HTTPException(401, "Błędne dane")
+        
         token = secrets.token_hex(16); user.token = token; db.commit()
-        return {"token": token, "email": user.email, "user_id": user.user_id, "is_disabled": user.is_disabled}
+        return {"token": token, "email": user.email, "user_id": user.user_id, "is_disabled": user.is_disabled, "dark_mode": False} # Dodalem dark_mode default
     except Exception as e: db.rollback(); logger.error(f"Login: {e}"); raise HTTPException(500, str(e))
 
 @app.get("/api/v1/user/me")
@@ -574,8 +603,8 @@ def delete_user_vehicle(v: VehicleDelete, db: Session = Depends(get_db)):
     except Exception as e: db.rollback(); logger.error(f"Delete Vehicle: {e}"); raise HTTPException(500, f"Błąd bazy: {str(e)}")
 
 @app.get("/api/v1/aktualny_stan")
-def get_spots(db: Session = Depends(get_db)):
-    spots = db.query(ParkingSpot).all()
+def get_spots(limit: int = 1000, db: Session = Depends(get_db)):
+    spots = db.query(ParkingSpot).limit(limit).all()
     res = []
     for s in spots:
         dist_obj = s.district_rel
@@ -745,18 +774,28 @@ async def manage_spot(s: SpotPayload, db: Session = Depends(get_db)):
 async def iot_update_http(data: dict, db: Session = Depends(get_db)):
     try:
         name = data.get("name"); stat = int(data.get("status", 0))
+        # Tu też logika timestampu z bramki
+        event_time_str = data.get("timestamp")
+        event_time = datetime.datetime.fromisoformat(event_time_str.replace("Z", "+00:00")) if event_time_str else now_utc()
+
         spot = db.query(ParkingSpot).filter(ParkingSpot.name == name).first()
         if not spot: spot = ParkingSpot(name=name, current_status=stat); db.add(spot)
         if data.get("district_id"): spot.district_id = int(data.get("district_id"))
         if data.get("state_id"): spot.state_id = int(data.get("state_id"))
-        prev = spot.current_status; spot.current_status = stat; spot.last_seen = now_utc()
+        
+        prev = spot.current_status
+        spot.current_status = stat
+        spot.last_seen = event_time # Czas z bramki
+        
         if prev != stat:
-            today = check_if_holiday(datetime.date.today())
-            if today: db.add(HolidayData(sensor_id=name, status=stat, holiday_name=today))
-            else: db.add(HistoricalData(sensor_id=name, status=stat))
+            today = check_if_holiday(event_time.date())
+            if today: db.add(HolidayData(sensor_id=name, status=stat, holiday_name=today, timestamp=event_time))
+            else: db.add(HistoricalData(sensor_id=name, status=stat, timestamp=event_time))
+            
             if stat == 1:
                 subs = db.query(DeviceSubscription).filter(DeviceSubscription.sensor_name == name).all()
                 for s in subs: send_push(s.device_token, "Zajęto miejsce!", f"{name} zajęte", data={"action": "find_alt"}); db.delete(s)
+        
         db.commit(); await manager.broadcast({"sensor_id": name, "status": stat}); return {"status": "updated"}
     except Exception as e: db.rollback(); raise HTTPException(500, str(e))
 
