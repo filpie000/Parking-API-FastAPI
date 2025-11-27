@@ -3,18 +3,18 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Parking IoT - Panel Admina</title>
+    <title>Smart Parking - Panel Zarządzania</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" />
     <script>
         tailwind.config = {
             darkMode: 'class',
-            theme: { extend: { colors: { primary: '#3B82F6', darkBg: '#111827' } } }
+            theme: { extend: { colors: { primary: '#2563EB', darkBg: '#111827' } } }
         }
     </script>
 </head>
-<body class="bg-gray-100 dark:bg-gray-900 text-gray-800 dark:text-gray-200 font-sans h-screen flex flex-col overflow-hidden">
+<body class="bg-gray-50 dark:bg-gray-900 text-gray-800 dark:text-gray-200 font-sans h-screen flex flex-col overflow-hidden transition-colors duration-300">
 
     <div id="login-overlay" class="fixed inset-0 bg-gray-900 z-50 flex items-center justify-center">
         <div class="bg-white dark:bg-gray-800 p-8 rounded-2xl shadow-2xl w-96 text-center border dark:border-gray-700">
@@ -32,15 +32,13 @@
         
         <aside class="w-64 bg-white dark:bg-gray-800 shadow-xl flex flex-col z-20 hidden md:flex border-r dark:border-gray-700">
             <div class="p-6 border-b dark:border-gray-700 flex items-center gap-3">
-                <i class="fas fa-parking text-blue-600 text-3xl"></i>
-                <div>
-                    <h1 class="text-lg font-bold leading-tight">Smart<br>Parking</h1>
-                </div>
+                <div class="bg-blue-600 text-white p-2 rounded-lg"><i class="fas fa-parking text-xl"></i></div>
+                <h1 class="text-lg font-bold leading-tight">Smart<br>Parking</h1>
             </div>
             
             <nav class="flex-1 p-4 space-y-2">
                 <button onclick="switchView('dashboard')" class="nav-btn w-full text-left p-3 rounded-lg hover:bg-blue-50 dark:hover:bg-gray-700 transition flex items-center text-blue-600 font-medium bg-blue-50 dark:bg-gray-700">
-                    <i class="fas fa-chart-pie w-8 text-center"></i> Dashboard
+                    <i class="fas fa-chart-line w-8 text-center"></i> Przegląd i Raporty
                 </button>
                 <button onclick="switchView('admins')" id="nav-admins" class="nav-btn w-full text-left hidden p-3 rounded-lg hover:bg-gray-50 dark:hover:bg-gray-700 transition flex items-center">
                     <i class="fas fa-user-shield w-8 text-center"></i> Administratorzy
@@ -50,14 +48,20 @@
                 </button>
             </nav>
 
-            <div class="p-4 border-t dark:border-gray-700">
-                <div class="flex items-center gap-3 mb-4">
+            <div class="p-4 border-t dark:border-gray-700 space-y-3">
+                <div class="flex items-center justify-between px-2 text-sm text-gray-500 dark:text-gray-400">
+                    <span>Tryb ciemny</span>
+                    <button onclick="toggleDarkMode()" class="w-10 h-5 bg-gray-300 dark:bg-gray-600 rounded-full flex items-center p-1 transition duration-300 relative">
+                        <div id="dark-toggle-circle" class="w-3 h-3 bg-white rounded-full shadow-md transform transition duration-300 translate-x-0 dark:translate-x-5"></div>
+                    </button>
+                </div>
+
+                <div class="flex items-center gap-3 mt-4">
                     <div class="w-10 h-10 rounded-full bg-blue-100 dark:bg-blue-900 flex items-center justify-center text-blue-600 dark:text-blue-300 font-bold">
                         <i class="fas fa-user"></i>
                     </div>
                     <div class="overflow-hidden">
                         <p class="text-sm font-bold truncate" id="user-display">Admin</p>
-                        <p class="text-xs text-gray-500 truncate">Zalogowany</p>
                     </div>
                 </div>
                 <button onclick="logout()" class="w-full p-2 rounded text-red-500 hover:bg-red-50 dark:hover:bg-gray-700 text-sm font-bold border border-red-200 dark:border-red-900">
@@ -66,47 +70,42 @@
             </div>
         </aside>
 
-        <main class="flex-1 flex flex-col overflow-hidden bg-gray-100 dark:bg-gray-900 relative">
+        <main class="flex-1 flex flex-col overflow-hidden bg-gray-50 dark:bg-gray-900 relative">
             <div class="flex-1 overflow-auto p-8">
 
                 <div id="view-dashboard" class="view-section space-y-8">
                     <div class="flex justify-between items-center">
-                        <h2 class="text-3xl font-bold dark:text-white">Przegląd Systemu</h2>
-                        <button onclick="refreshData()" class="bg-white dark:bg-gray-800 p-2 rounded shadow hover:text-blue-600"><i class="fas fa-sync-alt"></i> Odśwież</button>
+                        <h2 class="text-3xl font-bold dark:text-white">Centrum Raportowania</h2>
                     </div>
 
-                    <div class="grid grid-cols-1 md:grid-cols-4 gap-6">
-                        <div class="bg-white dark:bg-gray-800 p-6 rounded-xl shadow-sm border-l-4 border-green-500">
-                            <p class="text-gray-500 text-sm uppercase font-bold">Wolne Miejsca</p>
-                            <h3 class="text-4xl font-bold mt-2" id="count-free">--</h3>
+                    <div class="bg-white dark:bg-gray-800 p-6 rounded-xl shadow-sm border dark:border-gray-700">
+                        <h3 class="text-lg font-bold mb-4 dark:text-white border-b pb-2 dark:border-gray-700"><i class="fas fa-filter mr-2"></i> Filtry Raportu</h3>
+                        
+                        <div class="grid grid-cols-1 md:grid-cols-4 gap-4 mb-4">
+                            <div>
+                                <label class="block text-xs font-bold uppercase mb-1 text-gray-500">Data Od</label>
+                                <input type="date" id="report-start" class="w-full p-2 border rounded dark:bg-gray-700 dark:text-white">
+                            </div>
+                            <div>
+                                <label class="block text-xs font-bold uppercase mb-1 text-gray-500">Data Do</label>
+                                <input type="date" id="report-end" class="w-full p-2 border rounded dark:bg-gray-700 dark:text-white">
+                            </div>
+                            <div class="md:col-span-2">
+                                <label class="block text-xs font-bold uppercase mb-1 text-gray-500">Parkingi / Strefy (Wybierz wiele)</label>
+                                <select id="report-districts" multiple class="w-full p-2 border rounded h-10 bg-white dark:bg-gray-700 dark:text-white text-sm" style="height: 42px;">
+                                    </select>
+                                <p class="text-xs text-gray-400 mt-1">Przytrzymaj Ctrl, aby wybrać wiele.</p>
+                            </div>
                         </div>
-                        <div class="bg-white dark:bg-gray-800 p-6 rounded-xl shadow-sm border-l-4 border-red-500">
-                            <p class="text-gray-500 text-sm uppercase font-bold">Zajęte Miejsca</p>
-                            <h3 class="text-4xl font-bold mt-2" id="count-occupied">--</h3>
-                        </div>
-                        <div class="bg-white dark:bg-gray-800 p-6 rounded-xl shadow-sm border-l-4 border-yellow-500">
-                            <p class="text-gray-500 text-sm uppercase font-bold">Nieznany Stan</p>
-                            <h3 class="text-4xl font-bold mt-2" id="count-unknown">--</h3>
-                        </div>
-                        <div class="bg-white dark:bg-gray-800 p-6 rounded-xl shadow-sm border-l-4 border-blue-500">
-                            <p class="text-gray-500 text-sm uppercase font-bold">Wszystkie</p>
-                            <h3 class="text-4xl font-bold mt-2" id="count-total">--</h3>
-                        </div>
+                        <button onclick="generateReport()" class="bg-blue-600 hover:bg-blue-700 text-white px-6 py-2 rounded font-bold w-full md:w-auto">
+                            <i class="fas fa-chart-area mr-2"></i> Generuj Wykres
+                        </button>
                     </div>
 
-                    <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
-                        <div class="bg-white dark:bg-gray-800 p-6 rounded-xl shadow-sm">
-                            <h3 class="text-lg font-bold mb-4 dark:text-white">Aktualne Obłożenie</h3>
-                            <div class="h-64 flex justify-center">
-                                <canvas id="statusChart"></canvas>
-                            </div>
-                        </div>
-
-                        <div class="bg-white dark:bg-gray-800 p-6 rounded-xl shadow-sm">
-                            <h3 class="text-lg font-bold mb-4 dark:text-white">Ruch w ostatnich 7 dniach</h3>
-                            <div class="h-64">
-                                <canvas id="historyChart"></canvas>
-                            </div>
+                    <div class="bg-white dark:bg-gray-800 p-6 rounded-xl shadow-sm border dark:border-gray-700 min-h-[400px]">
+                        <h3 class="text-lg font-bold mb-4 dark:text-white">Analiza Zajętości (%) w Godzinach 0-23</h3>
+                        <div class="h-96 w-full">
+                            <canvas id="advancedChart"></canvas>
                         </div>
                     </div>
                 </div>
@@ -116,23 +115,35 @@
                     
                     <div class="bg-white dark:bg-gray-800 p-6 rounded-xl shadow-sm border dark:border-gray-700">
                         <h3 class="font-bold text-lg mb-4 dark:text-white flex items-center gap-2">
-                            <i class="fas fa-plus-circle text-green-500"></i> Edycja / Dodawanie
+                            <i class="fas fa-plus-circle text-green-500"></i> Dodaj / Edytuj Admina
                         </h3>
                         <input type="hidden" id="edit-admin-id">
                         
                         <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
-                            <input type="text" id="admin-user" placeholder="Nazwa Użytkownika" class="p-3 border rounded bg-gray-50 dark:bg-gray-700 dark:text-white">
-                            <input type="password" id="admin-pass" placeholder="Hasło (zostaw puste przy edycji jeśli bez zmian)" class="p-3 border rounded bg-gray-50 dark:bg-gray-700 dark:text-white">
+                            <div>
+                                <label class="block text-xs font-bold uppercase mb-1 text-gray-500">Login (Podpowiedź)</label>
+                                <input type="text" id="admin-user" placeholder="Wpisz login..." class="w-full p-3 border rounded bg-gray-50 dark:bg-gray-700 dark:text-white">
+                            </div>
+                            <div>
+                                <label class="block text-xs font-bold uppercase mb-1 text-gray-500">Hasło</label>
+                                <input type="password" id="admin-pass" placeholder="Pozostaw puste, aby nie zmieniać" class="w-full p-3 border rounded bg-gray-50 dark:bg-gray-700 dark:text-white">
+                            </div>
                         </div>
 
                         <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6 p-4 bg-gray-50 dark:bg-gray-700 rounded">
                             <div>
                                 <label class="block text-xs font-bold uppercase mb-1 text-gray-500 dark:text-gray-300">Miasto</label>
-                                <input type="text" id="perm-city" placeholder="np. Inowrocław lub ALL" class="w-full p-2 border rounded dark:bg-gray-600 dark:text-white">
+                                <select id="perm-city" class="w-full p-2 border rounded dark:bg-gray-600 dark:text-white">
+                                    <option value="ALL">Wszystkie Miasta</option>
+                                    <option value="Inowrocław">Inowrocław</option>
+                                </select>
                             </div>
                             <div>
-                                <label class="block text-xs font-bold uppercase mb-1 text-gray-500 dark:text-gray-300">Dozwolone Strefy (po przecinku)</label>
-                                <input type="text" id="perm-states" placeholder="np. Centrum, Rynek" class="w-full p-2 border rounded dark:bg-gray-600 dark:text-white">
+                                <label class="block text-xs font-bold uppercase mb-1 text-gray-500 dark:text-gray-300">Dozwolone Strefy</label>
+                                <select id="perm-districts" class="w-full p-2 border rounded dark:bg-gray-600 dark:text-white">
+                                    <option value="">Wszystkie (Domyślnie)</option>
+                                    </select>
+                                <p class="text-xs text-gray-400 mt-1">Jeśli puste, admin widzi całe miasto.</p>
                             </div>
                             <div class="md:col-span-2 flex gap-6 mt-2">
                                 <label class="flex items-center gap-2 cursor-pointer"><input type="checkbox" id="perm-disabled" class="w-5 h-5"> <span class="dark:text-white">Wgląd w miejsca dla niepełnosprawnych</span></label>
@@ -141,7 +152,7 @@
                         </div>
 
                         <div class="flex gap-3">
-                            <button onclick="saveAdmin()" class="bg-blue-600 hover:bg-blue-700 text-white px-6 py-2 rounded font-bold">Zapisz Zmiany</button>
+                            <button onclick="saveAdmin()" class="bg-blue-600 hover:bg-blue-700 text-white px-6 py-2 rounded font-bold">Zapisz</button>
                             <button onclick="cancelEdit()" id="cancel-edit-btn" class="hidden bg-gray-500 hover:bg-gray-600 text-white px-6 py-2 rounded font-bold">Anuluj</button>
                         </div>
                     </div>
@@ -149,7 +160,7 @@
                     <div class="bg-white dark:bg-gray-800 rounded-xl shadow-sm overflow-hidden">
                         <table class="min-w-full text-left text-sm">
                             <thead class="bg-gray-100 dark:bg-gray-700 text-gray-600 dark:text-gray-200 uppercase font-bold text-xs">
-                                <tr><th class="p-4">Login</th><th class="p-4">Miasto</th><th class="p-4">Uprawnienia</th><th class="p-4">Strefy</th><th class="p-4 text-right">Akcje</th></tr>
+                                <tr><th class="p-4">Login</th><th class="p-4">Miasto</th><th class="p-4">Dostęp</th><th class="p-4">Strefy ID</th><th class="p-4 text-right">Akcje</th></tr>
                             </thead>
                             <tbody id="table-admins-body" class="divide-y dark:divide-gray-700 dark:text-gray-300"></tbody>
                         </table>
@@ -158,7 +169,13 @@
 
                 <div id="view-users" class="view-section hidden space-y-6">
                     <h2 class="text-3xl font-bold dark:text-white">Zarządzanie Kierowcami</h2>
-                    <p class="text-gray-500">Tutaj możesz blokować dostęp lub oznaczać użytkowników jako uprawnionych do miejsc dla niepełnosprawnych.</p>
+                    
+                    <div class="flex justify-between items-center bg-white dark:bg-gray-800 p-4 rounded-xl shadow-sm">
+                        <div class="relative w-full md:w-1/2">
+                            <i class="fas fa-search absolute left-3 top-3 text-gray-400"></i>
+                            <input type="text" id="user-search" onkeyup="filterUsers()" placeholder="Szukaj po emailu lub numerze telefonu..." class="w-full pl-10 p-2 border rounded dark:bg-gray-700 dark:text-white dark:border-gray-600">
+                        </div>
+                    </div>
                     
                     <div class="bg-white dark:bg-gray-800 rounded-xl shadow-sm overflow-hidden">
                         <table class="min-w-full text-left text-sm">
@@ -166,7 +183,7 @@
                                 <tr>
                                     <th class="p-4">ID</th>
                                     <th class="p-4">Email / Telefon</th>
-                                    <th class="p-4 text-center">Status Konta</th>
+                                    <th class="p-4 text-center">Status</th>
                                     <th class="p-4 text-center">Niepełnosprawność</th>
                                     <th class="p-4 text-right">Zarządzaj</th>
                                 </tr>
@@ -181,67 +198,81 @@
     </div>
 
 <script>
-// Ustawienie na localhost. Jeśli wrzucisz na serwer, zmień na: window.location.origin
-// POPRAWNA LINIA (działa i na Renderze, i na localhost):
-const API_BASE = window.location.origin;
+// --- KONFIGURACJA ---
+const API_BASE = window.location.origin; 
+// const API_BASE = "http://127.0.0.1:8000"; // Do testów lokalnych
 
-// CHARTS CONFIG
-let statusChartInstance = null;
-let historyChartInstance = null;
+let advancedChart = null;
+let allUsers = []; // Cache dla szybkiego wyszukiwania
+
+// --- INITIALIZATION ---
+document.addEventListener('DOMContentLoaded', () => {
+    initTheme();
+    
+    // Set default dates for report (Today)
+    const today = new Date().toISOString().split('T')[0];
+    document.getElementById('report-start').value = today;
+    document.getElementById('report-end').value = today;
+});
 
 // --- AUTH ---
 async function login() {
     const u = document.getElementById('login-user').value;
     const p = document.getElementById('login-pass').value;
-
-    console.log("Próba logowania:", u, p); // DEBUG W KONSOLI
-
     try {
         const res = await fetch(API_BASE + "/api/v1/admin/auth", {
             method: 'POST', headers: {'Content-Type':'application/json'}, 
-            // Czyste hasło (bez sha256)
             body: JSON.stringify({username:u, password:p})
         });
-
-        console.log("Status HTTP:", res.status);
-
         if(res.ok) {
             const data = await res.json();
-            console.log("Sukces:", data);
-            
             document.getElementById('login-overlay').style.display='none';
             document.getElementById('app-content').classList.remove('hidden');
             document.getElementById('user-display').innerText = data.username;
-            
             if(data.is_superadmin) {
                 document.getElementById('nav-admins').classList.remove('hidden');
                 document.getElementById('nav-users').classList.remove('hidden');
+                loadDistricts(); // Load for admins view
             }
-            refreshData();
-            initCharts();
-            loadHistoryStats();
+            // Load districts for report filter
+            loadDistrictsSelect('report-districts');
         } else {
-            const errText = await res.text();
-            console.error("Błąd logowania:", errText);
-            alert("Błąd logowania: " + errText);
+            alert("Błąd logowania");
         }
-    } catch(e) { 
-        console.error("Błąd sieci:", e);
-        alert("Błąd połączenia z serwerem. Sprawdź czy main.py działa!"); 
-    }
+    } catch(e) { console.error(e); alert("Błąd połączenia"); }
 }
 
 function logout() { location.reload(); }
 
+// --- THEME ---
+function initTheme() {
+    const isDark = localStorage.getItem('theme') === 'dark';
+    if(isDark) document.documentElement.classList.add('dark');
+    updateTogglePosition(isDark);
+}
+
+function toggleDarkMode() {
+    const html = document.documentElement;
+    html.classList.toggle('dark');
+    const isDark = html.classList.contains('dark');
+    localStorage.setItem('theme', isDark ? 'dark' : 'light');
+    updateTogglePosition(isDark);
+}
+
+function updateTogglePosition(isDark) {
+    const circle = document.getElementById('dark-toggle-circle');
+    if(isDark) circle.classList.add('translate-x-5');
+    else circle.classList.remove('translate-x-5');
+}
+
+// --- NAVIGATION ---
 function switchView(viewName) {
     document.querySelectorAll('.view-section').forEach(el => el.classList.add('hidden'));
     document.getElementById('view-'+viewName).classList.remove('hidden');
     
-    // Active tab style
     document.querySelectorAll('.nav-btn').forEach(btn => {
         btn.classList.remove('bg-blue-50', 'dark:bg-gray-700', 'text-blue-600');
     });
-    // Find button that calls this view
     const btn = Array.from(document.querySelectorAll('.nav-btn')).find(b => b.onclick.toString().includes(viewName));
     if(btn) btn.classList.add('bg-blue-50', 'dark:bg-gray-700', 'text-blue-600');
 
@@ -249,88 +280,91 @@ function switchView(viewName) {
     if(viewName === 'users') fetchUsers();
 }
 
-// --- DASHBOARD DATA ---
-async function refreshData() {
+// --- DATA LOADING ---
+async function loadDistricts() {
     try {
-        const res = await fetch(API_BASE + "/api/v1/aktualny_stan?limit=1000");
-        const data = await res.json();
-        
-        const total = data.length;
-        const occupied = data.filter(d => d.status == 1).length;
-        const unknown = data.filter(d => d.status == 2).length;
-        const free = data.filter(d => d.status == 0).length;
-
-        document.getElementById('count-total').innerText = total;
-        document.getElementById('count-occupied').innerText = occupied;
-        document.getElementById('count-free').innerText = free;
-        document.getElementById('count-unknown').innerText = unknown;
-
-        updateStatusChart(free, occupied, unknown);
-    } catch(e){ console.error(e); }
+        const res = await fetch(API_BASE + "/api/v1/districts");
+        if(res.ok) {
+            const list = await res.json();
+            const sel = document.getElementById('perm-districts');
+            // Keep first option
+            sel.innerHTML = '<option value="">Wszystkie (Domyślnie)</option>'; 
+            list.forEach(d => {
+                sel.innerHTML += `<option value="${d.id}">${d.name} (${d.city})</option>`;
+            });
+        }
+    } catch(e) { console.error("Districts error", e); }
 }
 
-// --- CHARTS ---
-function initCharts() {
-    // 1. Status Chart (Doughnut)
-    const ctxStatus = document.getElementById('statusChart').getContext('2d');
-    statusChartInstance = new Chart(ctxStatus, {
-        type: 'doughnut',
-        data: {
-            labels: ['Wolne', 'Zajęte', 'Nieznane'],
-            datasets: [{
-                data: [0, 0, 0],
-                backgroundColor: ['#10B981', '#EF4444', '#F59E0B'],
-                borderWidth: 0
-            }]
-        },
-        options: { responsive: true, maintainAspectRatio: false, cutout: '70%' }
-    });
+async function loadDistrictsSelect(elementId) {
+    try {
+        const res = await fetch(API_BASE + "/api/v1/districts");
+        if(res.ok) {
+            const list = await res.json();
+            const sel = document.getElementById(elementId);
+            sel.innerHTML = '';
+            list.forEach(d => {
+                sel.innerHTML += `<option value="${d.id}">${d.name}</option>`;
+            });
+        }
+    } catch(e) {}
+}
 
-    // 2. History Chart (Line)
-    const ctxHist = document.getElementById('historyChart').getContext('2d');
-    historyChartInstance = new Chart(ctxHist, {
+// --- ADVANCED REPORTS ---
+async function generateReport() {
+    const start = document.getElementById('report-start').value;
+    const end = document.getElementById('report-end').value;
+    const selectedOptions = document.getElementById('report-districts').selectedOptions;
+    const districtIds = Array.from(selectedOptions).map(opt => parseInt(opt.value));
+
+    if(districtIds.length === 0) { alert("Wybierz przynajmniej jeden parking."); return; }
+
+    try {
+        const res = await fetch(API_BASE + "/api/v1/admin/stats/advanced", {
+            method: 'POST', headers: {'Content-Type':'application/json'},
+            body: JSON.stringify({ start_date: start, end_date: end, districts: districtIds })
+        });
+        
+        if(res.ok) {
+            const data = await res.json();
+            renderAdvancedChart(data.datasets);
+        }
+    } catch(e) { console.error(e); alert("Błąd generowania raportu"); }
+}
+
+function renderAdvancedChart(datasets) {
+    const ctx = document.getElementById('advancedChart').getContext('2d');
+    
+    if(advancedChart) advancedChart.destroy();
+
+    advancedChart = new Chart(ctx, {
         type: 'line',
         data: {
-            labels: [],
-            datasets: [{
-                label: 'Ilość zaparkowań',
-                data: [],
-                borderColor: '#3B82F6',
-                tension: 0.4,
-                fill: true,
-                backgroundColor: 'rgba(59, 130, 246, 0.1)'
-            }]
+            labels: Array.from({length: 24}, (_, i) => `${i}:00`), // 0-23h
+            datasets: datasets
         },
-        options: { 
-            responsive: true, 
+        options: {
+            responsive: true,
             maintainAspectRatio: false,
-            scales: { y: { beginAtZero: true } }
+            scales: {
+                y: {
+                    beginAtZero: true,
+                    max: 100,
+                    title: { display: true, text: '% Zajętości' }
+                },
+                x: {
+                    title: { display: true, text: 'Godzina' }
+                }
+            },
+            interaction: {
+                mode: 'index',
+                intersect: false,
+            },
         }
     });
 }
 
-function updateStatusChart(free, occupied, unknown) {
-    if(statusChartInstance) {
-        statusChartInstance.data.datasets[0].data = [free, occupied, unknown];
-        statusChartInstance.update();
-    }
-}
-
-async function loadHistoryStats() {
-    try {
-        const res = await fetch(API_BASE + "/api/v1/admin/stats/history?days=7");
-        if (res.ok) {
-            const data = await res.json();
-            if(historyChartInstance) {
-                historyChartInstance.data.labels = data.labels;
-                historyChartInstance.data.datasets[0].data = data.data;
-                historyChartInstance.update();
-            }
-        }
-    } catch(e) { console.log("No history data yet"); }
-}
-
-// --- ADMIN MANAGEMENT ---
+// --- ADMINS ---
 async function fetchAdmins() {
     const res = await fetch(API_BASE + "/api/v1/admin/list");
     if(res.ok) {
@@ -341,10 +375,10 @@ async function fetchAdmins() {
                 <td class="p-4 font-bold">${a.username}</td>
                 <td class="p-4">${a.permissions.city}</td>
                 <td class="p-4 space-x-1">
-                    ${a.permissions.view_disabled ? '<span class="px-2 py-1 bg-blue-100 text-blue-800 rounded text-xs">♿ DIS</span>' : ''}
-                    ${a.permissions.view_ev ? '<span class="px-2 py-1 bg-yellow-100 text-yellow-800 rounded text-xs">⚡ EV</span>' : ''}
+                    ${a.permissions.view_disabled ? '<span class="px-2 py-1 bg-blue-100 text-blue-800 rounded text-xs">DIS</span>' : ''}
+                    ${a.permissions.view_ev ? '<span class="px-2 py-1 bg-yellow-100 text-yellow-800 rounded text-xs">EV</span>' : ''}
                 </td>
-                <td class="p-4 text-gray-500">${a.permissions.allowed_state || '-'}</td>
+                <td class="p-4 text-gray-500">${a.permissions.allowed_state || 'Wszystkie'}</td>
                 <td class="p-4 text-right">
                     <button onclick='editAdmin(${JSON.stringify(a)})' class="text-blue-600 hover:text-blue-800 mr-3"><i class="fas fa-edit"></i></button>
                     ${a.username !== 'admin' ? `<button onclick="deleteAdmin(${a.id})" class="text-red-600 hover:text-red-800"><i class="fas fa-trash"></i></button>` : ''}
@@ -362,7 +396,10 @@ function editAdmin(a) {
     
     const p = a.permissions || {};
     document.getElementById('perm-city').value = p.city || 'ALL';
-    document.getElementById('perm-states').value = p.allowed_state || ''; 
+    // Handle allowed_state which is a string like "1,2"
+    // For single select, we just check if it matches. 
+    // For multi-select logic in database (TEXT field), UI is simplified here to dropdown.
+    document.getElementById('perm-districts').value = p.allowed_state || ''; 
     document.getElementById('perm-disabled').checked = p.view_disabled || false;
     document.getElementById('perm-ev').checked = p.view_ev || false;
 }
@@ -373,8 +410,7 @@ function cancelEdit() {
     document.getElementById('admin-user').disabled = false;
     document.getElementById('admin-pass').value = '';
     document.getElementById('cancel-edit-btn').classList.add('hidden');
-    ['perm-city','perm-states'].forEach(id=>document.getElementById(id).value='');
-    ['perm-disabled','perm-ev'].forEach(id=>document.getElementById(id).checked=false);
+    document.getElementById('perm-districts').value = '';
 }
 
 async function saveAdmin() {
@@ -384,8 +420,8 @@ async function saveAdmin() {
     const payload = {
         username: document.getElementById('admin-user').value, 
         password: p || null,
-        city: document.getElementById('perm-city').value.trim() || 'ALL',
-        allowed_state: document.getElementById('perm-states').value.trim(),
+        city: document.getElementById('perm-city').value,
+        allowed_state: document.getElementById('perm-districts').value,
         view_disabled: document.getElementById('perm-disabled').checked,
         view_ev: document.getElementById('perm-ev').checked
     };
@@ -397,43 +433,61 @@ async function saveAdmin() {
 }
 
 async function deleteAdmin(id) {
-    if(confirm("Usunąć administratora?")) {
+    if(confirm("Usunąć?")) {
         await fetch(API_BASE + "/api/v1/admin/delete", { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({target_id:id})});
         fetchAdmins();
     }
 }
 
-// --- USER MANAGEMENT ---
+// --- USERS & SEARCH ---
 async function fetchUsers() {
     const res = await fetch(API_BASE + "/api/v1/admin/users");
     if(res.ok) {
-        const list = await res.json();
-        const tbody = document.getElementById('table-users-body');
-        tbody.innerHTML = list.map(u => `
-            <tr class="hover:bg-gray-50 dark:hover:bg-gray-700 transition border-b dark:border-gray-700">
-                <td class="p-4 text-gray-500">#${u.user_id}</td>
-                <td class="p-4 font-medium">${u.email || u.phone || 'Brak danych'}</td>
-                <td class="p-4 text-center">
-                    ${u.is_blocked 
-                        ? '<span class="px-3 py-1 rounded-full bg-red-100 text-red-700 text-xs font-bold">ZABLOKOWANY</span>' 
-                        : '<span class="px-3 py-1 rounded-full bg-green-100 text-green-700 text-xs font-bold">AKTYWNY</span>'}
-                </td>
-                <td class="p-4 text-center">
-                    ${u.is_disabled 
-                        ? '<i class="fas fa-check-circle text-blue-500 text-xl"></i>' 
-                        : '<span class="text-gray-400">-</span>'}
-                </td>
-                <td class="p-4 text-right space-x-2">
-                    <button onclick="toggleUserBlock(${u.user_id}, ${!u.is_blocked})" class="${u.is_blocked ? 'text-green-600' : 'text-red-600'} font-bold text-xs uppercase border px-2 py-1 rounded hover:bg-gray-100">
-                        ${u.is_blocked ? 'Odblokuj' : 'Zablokuj'}
-                    </button>
-                    <button onclick="toggleUserDisabled(${u.user_id}, ${!u.is_disabled})" class="text-blue-600 font-bold text-xs border px-2 py-1 rounded hover:bg-gray-100">
-                        ${u.is_disabled ? 'Zabierz upr.' : 'Nadaj upr.'}
-                    </button>
-                </td>
-            </tr>
-        `).join('');
+        allUsers = await res.json();
+        renderUsers(allUsers);
     }
+}
+
+function renderUsers(users) {
+    const tbody = document.getElementById('table-users-body');
+    if(users.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="5" class="p-4 text-center text-gray-500">Brak wyników</td></tr>';
+        return;
+    }
+    tbody.innerHTML = users.map(u => `
+        <tr class="hover:bg-gray-50 dark:hover:bg-gray-700 transition border-b dark:border-gray-700">
+            <td class="p-4 text-gray-500">#${u.user_id}</td>
+            <td class="p-4 font-medium">${u.email || u.phone || 'Brak'}</td>
+            <td class="p-4 text-center">
+                ${u.is_blocked 
+                    ? '<span class="px-2 py-1 rounded bg-red-100 text-red-700 text-xs font-bold">BLOK</span>' 
+                    : '<span class="px-2 py-1 rounded bg-green-100 text-green-700 text-xs font-bold">OK</span>'}
+            </td>
+            <td class="p-4 text-center">
+                ${u.is_disabled 
+                    ? '<i class="fas fa-check-circle text-blue-500"></i>' 
+                    : '<span class="text-gray-400">-</span>'}
+            </td>
+            <td class="p-4 text-right space-x-2">
+                <button onclick="toggleUserBlock(${u.user_id}, ${!u.is_blocked})" class="text-xs border px-2 py-1 rounded hover:bg-gray-200 dark:hover:bg-gray-600 dark:text-white">
+                    ${u.is_blocked ? 'Odblokuj' : 'Zablokuj'}
+                </button>
+                <button onclick="toggleUserDisabled(${u.user_id}, ${!u.is_disabled})" class="text-xs border px-2 py-1 rounded hover:bg-gray-200 dark:hover:bg-gray-600 dark:text-white">
+                    ${u.is_disabled ? 'Zabierz upr.' : 'Nadaj upr.'}
+                </button>
+            </td>
+        </tr>
+    `).join('');
+}
+
+function filterUsers() {
+    const query = document.getElementById('user-search').value.toLowerCase();
+    const filtered = allUsers.filter(u => 
+        (u.email && u.email.toLowerCase().includes(query)) || 
+        (u.phone && u.phone.includes(query)) ||
+        (u.user_id.toString().includes(query))
+    );
+    renderUsers(filtered);
 }
 
 async function toggleUserBlock(id, status) {
@@ -448,4 +502,3 @@ async function toggleUserDisabled(id, status) {
 </script>
 </body>
 </html>
-
