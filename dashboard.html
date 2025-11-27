@@ -5,8 +5,8 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Parking IoT - Panel Admina</title>
     <script src="https://cdn.tailwindcss.com"></script>
-    <!-- Chart.js do wykresów -->
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/js-sha256/0.9.0/sha256.min.js"></script>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" />
     <script>
         tailwind.config = {
@@ -17,7 +17,6 @@
 </head>
 <body class="bg-gray-100 dark:bg-gray-900 text-gray-800 dark:text-gray-200 font-sans h-screen flex flex-col overflow-hidden">
 
-    <!-- LOGIN SCREEN -->
     <div id="login-overlay" class="fixed inset-0 bg-gray-900 z-50 flex items-center justify-center">
         <div class="bg-white dark:bg-gray-800 p-8 rounded-2xl shadow-2xl w-96 text-center border dark:border-gray-700">
             <div class="mb-6">
@@ -30,10 +29,8 @@
         </div>
     </div>
 
-    <!-- MAIN APP -->
     <div id="app-content" class="flex h-full hidden">
         
-        <!-- SIDEBAR -->
         <aside class="w-64 bg-white dark:bg-gray-800 shadow-xl flex flex-col z-20 hidden md:flex border-r dark:border-gray-700">
             <div class="p-6 border-b dark:border-gray-700 flex items-center gap-3">
                 <i class="fas fa-parking text-blue-600 text-3xl"></i>
@@ -70,18 +67,15 @@
             </div>
         </aside>
 
-        <!-- CONTENT -->
         <main class="flex-1 flex flex-col overflow-hidden bg-gray-100 dark:bg-gray-900 relative">
             <div class="flex-1 overflow-auto p-8">
 
-                <!-- DASHBOARD VIEW -->
                 <div id="view-dashboard" class="view-section space-y-8">
                     <div class="flex justify-between items-center">
                         <h2 class="text-3xl font-bold dark:text-white">Przegląd Systemu</h2>
                         <button onclick="refreshData()" class="bg-white dark:bg-gray-800 p-2 rounded shadow hover:text-blue-600"><i class="fas fa-sync-alt"></i> Odśwież</button>
                     </div>
 
-                    <!-- Karty Statystyk -->
                     <div class="grid grid-cols-1 md:grid-cols-4 gap-6">
                         <div class="bg-white dark:bg-gray-800 p-6 rounded-xl shadow-sm border-l-4 border-green-500">
                             <p class="text-gray-500 text-sm uppercase font-bold">Wolne Miejsca</p>
@@ -101,9 +95,7 @@
                         </div>
                     </div>
 
-                    <!-- Wykresy -->
                     <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
-                        <!-- Wykres Kołowy (Obecny stan) -->
                         <div class="bg-white dark:bg-gray-800 p-6 rounded-xl shadow-sm">
                             <h3 class="text-lg font-bold mb-4 dark:text-white">Aktualne Obłożenie</h3>
                             <div class="h-64 flex justify-center">
@@ -111,7 +103,6 @@
                             </div>
                         </div>
 
-                        <!-- Wykres Liniowy (Historia) -->
                         <div class="bg-white dark:bg-gray-800 p-6 rounded-xl shadow-sm">
                             <h3 class="text-lg font-bold mb-4 dark:text-white">Ruch w ostatnich 7 dniach</h3>
                             <div class="h-64">
@@ -121,7 +112,6 @@
                     </div>
                 </div>
 
-                <!-- ADMINS VIEW -->
                 <div id="view-admins" class="view-section hidden space-y-6">
                     <h2 class="text-3xl font-bold dark:text-white">Zarządzanie Administratorami</h2>
                     
@@ -167,7 +157,6 @@
                     </div>
                 </div>
 
-                <!-- USERS VIEW -->
                 <div id="view-users" class="view-section hidden space-y-6">
                     <h2 class="text-3xl font-bold dark:text-white">Zarządzanie Kierowcami</h2>
                     <p class="text-gray-500">Tutaj możesz blokować dostęp lub oznaczać użytkowników jako uprawnionych do miejsc dla niepełnosprawnych.</p>
@@ -193,8 +182,8 @@
     </div>
 
 <script>
-const API_BASE = window.location.origin; 
-// LUB jeśli testujesz lokalnie z pliku, ustaw na sztywno: const API_BASE = "http://127.0.0.1:8000";
+// USTAWIONE NA LOCALHOST DLA PEWNOŚCI PRZY TESTACH Z PLIKU
+const API_BASE = "http://127.0.0.1:8000"; 
 
 // CHARTS CONFIG
 let statusChartInstance = null;
@@ -204,9 +193,15 @@ let historyChartInstance = null;
 async function login() {
     const u = document.getElementById('login-user').value;
     const p = document.getElementById('login-pass').value;
+
+    // HASZOWANIE WE FRONTENDZIE PRZED WYSŁANIEM!
+    const hashedPassword = sha256(p);
+
     try {
         const res = await fetch(API_BASE + "/api/v1/admin/auth", {
-            method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({username:u, password:p})
+            method: 'POST', headers: {'Content-Type':'application/json'}, 
+            // Wysyłamy hash
+            body: JSON.stringify({username:u, password:hashedPassword})
         });
         if(res.ok) {
             const data = await res.json();
@@ -358,7 +353,7 @@ function editAdmin(a) {
     
     const p = a.permissions || {};
     document.getElementById('perm-city').value = p.city || 'ALL';
-    document.getElementById('perm-states').value = p.allowed_state || ''; // Poprawione pole
+    document.getElementById('perm-states').value = p.allowed_state || ''; 
     document.getElementById('perm-disabled').checked = p.view_disabled || false;
     document.getElementById('perm-ev').checked = p.view_ev || false;
 }
@@ -375,9 +370,13 @@ function cancelEdit() {
 
 async function saveAdmin() {
     const id = document.getElementById('edit-admin-id').value;
+    // Pamiętaj o haszowaniu hasła jeśli je zmieniasz!
+    const rawPass = document.getElementById('admin-pass').value;
+    const hashedPass = rawPass ? sha256(rawPass) : null;
+
     const payload = {
         username: document.getElementById('admin-user').value, 
-        password: document.getElementById('admin-pass').value,
+        password: hashedPass, // Wysyłamy hash lub null
         city: document.getElementById('perm-city').value.trim() || 'ALL',
         allowed_state: document.getElementById('perm-states').value.trim(),
         view_disabled: document.getElementById('perm-disabled').checked,
