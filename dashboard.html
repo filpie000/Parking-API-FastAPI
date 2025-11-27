@@ -13,15 +13,19 @@
             theme: { extend: { colors: { primary: '#2563EB', darkBg: '#111827' } } }
         }
     </script>
+    <style>
+        .checkbox-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 0.5rem; }
+        .dropdown-check-list { position: relative; }
+        .dropdown-check-list .anchor { cursor: pointer; display: flex; justify-content: space-between; align-items: center; padding: 0.5rem; border: 1px solid #ccc; border-radius: 0.25rem; }
+        .dropdown-check-list .items { display: none; position: absolute; top: 100%; left: 0; right: 0; z-index: 50; max-height: 200px; overflow-y: auto; border: 1px solid #ccc; border-top: none; }
+        .dropdown-check-list.visible .items { display: block; }
+    </style>
 </head>
 <body class="bg-gray-50 dark:bg-gray-900 text-gray-800 dark:text-gray-200 font-sans h-screen flex flex-col overflow-hidden transition-colors duration-300">
 
     <div id="login-overlay" class="fixed inset-0 bg-gray-900 z-50 flex items-center justify-center">
         <div class="bg-white dark:bg-gray-800 p-8 rounded-2xl shadow-2xl w-96 text-center border dark:border-gray-700">
-            <div class="mb-6">
-                <i class="fas fa-parking text-blue-600 text-6xl"></i>
-                <h2 class="text-2xl font-bold mt-4 dark:text-white">Panel Zarządzania</h2>
-            </div>
+            <div class="mb-6"><i class="fas fa-parking text-blue-600 text-6xl"></i><h2 class="text-2xl font-bold mt-4 dark:text-white">Panel Zarządzania</h2></div>
             <input type="text" id="login-user" placeholder="Login" class="w-full p-3 border rounded-lg mb-3 bg-gray-50 dark:bg-gray-700 dark:text-white outline-none focus:ring-2 focus:ring-blue-500">
             <input type="password" id="login-pass" placeholder="Hasło" class="w-full p-3 border rounded-lg mb-6 bg-gray-50 dark:bg-gray-700 dark:text-white outline-none focus:ring-2 focus:ring-blue-500">
             <button onclick="login()" class="w-full bg-blue-600 text-white py-3 rounded-lg font-bold hover:bg-blue-700 transition shadow-lg">Zaloguj się</button>
@@ -29,25 +33,16 @@
     </div>
 
     <div id="app-content" class="flex h-full hidden">
-        
         <aside class="w-64 bg-white dark:bg-gray-800 shadow-xl flex flex-col z-20 hidden md:flex border-r dark:border-gray-700">
             <div class="p-6 border-b dark:border-gray-700 flex items-center gap-3">
                 <div class="bg-blue-600 text-white p-2 rounded-lg"><i class="fas fa-parking text-xl"></i></div>
                 <h1 class="text-lg font-bold leading-tight">Smart<br>Parking</h1>
             </div>
-            
             <nav class="flex-1 p-4 space-y-2">
-                <button onclick="switchView('dashboard')" class="nav-btn w-full text-left p-3 rounded-lg hover:bg-blue-50 dark:hover:bg-gray-700 transition flex items-center text-blue-600 font-medium bg-blue-50 dark:bg-gray-700">
-                    <i class="fas fa-chart-line w-8 text-center"></i> Przegląd i Raporty
-                </button>
-                <button onclick="switchView('admins')" id="nav-admins" class="nav-btn w-full text-left hidden p-3 rounded-lg hover:bg-gray-50 dark:hover:bg-gray-700 transition flex items-center">
-                    <i class="fas fa-user-shield w-8 text-center"></i> Administratorzy
-                </button>
-                <button onclick="switchView('users')" id="nav-users" class="nav-btn w-full text-left hidden p-3 rounded-lg hover:bg-gray-50 dark:hover:bg-gray-700 transition flex items-center">
-                    <i class="fas fa-users w-8 text-center"></i> Użytkownicy
-                </button>
+                <button onclick="switchView('dashboard')" class="nav-btn w-full text-left p-3 rounded-lg hover:bg-blue-50 dark:hover:bg-gray-700 transition flex items-center text-blue-600 font-medium bg-blue-50 dark:bg-gray-700"><i class="fas fa-chart-line w-8 text-center"></i> Raporty</button>
+                <button onclick="switchView('admins')" id="nav-admins" class="nav-btn w-full text-left hidden p-3 rounded-lg hover:bg-gray-50 dark:hover:bg-gray-700 transition flex items-center"><i class="fas fa-user-shield w-8 text-center"></i> Administratorzy</button>
+                <button onclick="switchView('users')" id="nav-users" class="nav-btn w-full text-left hidden p-3 rounded-lg hover:bg-gray-50 dark:hover:bg-gray-700 transition flex items-center"><i class="fas fa-users w-8 text-center"></i> Użytkownicy</button>
             </nav>
-
             <div class="p-4 border-t dark:border-gray-700 space-y-3">
                 <div class="flex items-center justify-between px-2 text-sm text-gray-500 dark:text-gray-400">
                     <span>Tryb ciemny</span>
@@ -55,18 +50,11 @@
                         <div id="dark-toggle-circle" class="w-3 h-3 bg-white rounded-full shadow-md transform transition duration-300 translate-x-0 dark:translate-x-5"></div>
                     </button>
                 </div>
-
                 <div class="flex items-center gap-3 mt-4">
-                    <div class="w-10 h-10 rounded-full bg-blue-100 dark:bg-blue-900 flex items-center justify-center text-blue-600 dark:text-blue-300 font-bold">
-                        <i class="fas fa-user"></i>
-                    </div>
-                    <div class="overflow-hidden">
-                        <p class="text-sm font-bold truncate" id="user-display">Admin</p>
-                    </div>
+                    <div class="w-10 h-10 rounded-full bg-blue-100 dark:bg-blue-900 flex items-center justify-center text-blue-600 dark:text-blue-300 font-bold"><i class="fas fa-user"></i></div>
+                    <div class="overflow-hidden"><p class="text-sm font-bold truncate" id="user-display">Admin</p></div>
                 </div>
-                <button onclick="logout()" class="w-full p-2 rounded text-red-500 hover:bg-red-50 dark:hover:bg-gray-700 text-sm font-bold border border-red-200 dark:border-red-900">
-                    <i class="fas fa-sign-out-alt mr-2"></i> Wyloguj
-                </button>
+                <button onclick="logout()" class="w-full p-2 rounded text-red-500 hover:bg-red-50 dark:hover:bg-gray-700 text-sm font-bold border border-red-200 dark:border-red-900"><i class="fas fa-sign-out-alt mr-2"></i> Wyloguj</button>
             </div>
         </aside>
 
@@ -74,55 +62,55 @@
             <div class="flex-1 overflow-auto p-8">
 
                 <div id="view-dashboard" class="view-section space-y-8">
-                    <div class="flex justify-between items-center">
-                        <h2 class="text-3xl font-bold dark:text-white">Centrum Raportowania</h2>
-                    </div>
-
+                    <div class="flex justify-between items-center"><h2 class="text-3xl font-bold dark:text-white">Analiza Zajętości</h2></div>
                     <div class="bg-white dark:bg-gray-800 p-6 rounded-xl shadow-sm border dark:border-gray-700">
-                        <h3 class="text-lg font-bold mb-4 dark:text-white border-b pb-2 dark:border-gray-700"><i class="fas fa-filter mr-2"></i> Filtry Raportu</h3>
+                        <h3 class="text-lg font-bold mb-4 dark:text-white border-b pb-2 dark:border-gray-700"><i class="fas fa-filter mr-2"></i> Parametry Raportu</h3>
                         
                         <div class="grid grid-cols-1 md:grid-cols-4 gap-4 mb-4">
-                            <div>
-                                <label class="block text-xs font-bold uppercase mb-1 text-gray-500">Data Od</label>
-                                <input type="date" id="report-start" class="w-full p-2 border rounded dark:bg-gray-700 dark:text-white">
-                            </div>
-                            <div>
-                                <label class="block text-xs font-bold uppercase mb-1 text-gray-500">Data Do</label>
-                                <input type="date" id="report-end" class="w-full p-2 border rounded dark:bg-gray-700 dark:text-white">
-                            </div>
-                            <div class="md:col-span-2">
-                                <label class="block text-xs font-bold uppercase mb-1 text-gray-500">Parkingi / Strefy (Wybierz wiele)</label>
-                                <select id="report-districts" multiple class="w-full p-2 border rounded h-10 bg-white dark:bg-gray-700 dark:text-white text-sm" style="height: 42px;">
-                                    </select>
-                                <p class="text-xs text-gray-400 mt-1">Przytrzymaj Ctrl, aby wybrać wiele.</p>
+                            <div><label class="block text-xs font-bold uppercase mb-1 text-gray-500">Data Od</label><input type="date" id="report-start" class="w-full p-2 border rounded dark:bg-gray-700 dark:text-white"></div>
+                            <div><label class="block text-xs font-bold uppercase mb-1 text-gray-500">Data Do</label><input type="date" id="report-end" class="w-full p-2 border rounded dark:bg-gray-700 dark:text-white"></div>
+                            
+                            <div class="md:col-span-2 relative">
+                                <label class="block text-xs font-bold uppercase mb-1 text-gray-500">Wybierz Parkingi (Wyszukaj i Zaznacz)</label>
+                                <div class="border rounded bg-white dark:bg-gray-700 dark:border-gray-600">
+                                    <input type="text" id="district-search" onkeyup="filterDistricts()" placeholder="Wpisz nazwę ulicy..." class="w-full p-2 border-b dark:border-gray-600 dark:bg-gray-700 dark:text-white outline-none text-sm">
+                                    <div id="districts-list" class="max-h-32 overflow-y-auto p-2 space-y-1">
+                                        </div>
+                                </div>
                             </div>
                         </div>
-                        <button onclick="generateReport()" class="bg-blue-600 hover:bg-blue-700 text-white px-6 py-2 rounded font-bold w-full md:w-auto">
-                            <i class="fas fa-chart-area mr-2"></i> Generuj Wykres
-                        </button>
+
+                        <div class="mb-4">
+                            <label class="block text-xs font-bold uppercase mb-2 text-gray-500">Filtruj Dane</label>
+                            <div class="checkbox-grid">
+                                <label class="flex items-center space-x-2 text-sm dark:text-white cursor-pointer"><input type="checkbox" id="chk-weekend" checked class="w-4 h-4"><span>Uwzględnij Weekendy</span></label>
+                                <label class="flex items-center space-x-2 text-sm dark:text-white cursor-pointer"><input type="checkbox" id="chk-holiday" checked class="w-4 h-4"><span>Uwzględnij Święta</span></label>
+                                <label class="flex items-center space-x-2 text-sm dark:text-white cursor-pointer"><input type="checkbox" id="chk-disabled" class="w-4 h-4"><span>Tylko Niepełnosprawni</span></label>
+                                <label class="flex items-center space-x-2 text-sm dark:text-white cursor-pointer"><input type="checkbox" id="chk-ev" class="w-4 h-4"><span>Tylko EV</span></label>
+                                <label class="flex items-center space-x-2 text-sm dark:text-white cursor-pointer"><input type="checkbox" id="chk-paid" class="w-4 h-4"><span>Tylko Płatne</span></label>
+                            </div>
+                        </div>
+
+                        <button onclick="generateReport()" class="bg-blue-600 hover:bg-blue-700 text-white px-6 py-2 rounded font-bold w-full md:w-auto"><i class="fas fa-chart-area mr-2"></i> Generuj Wykres</button>
                     </div>
 
                     <div class="bg-white dark:bg-gray-800 p-6 rounded-xl shadow-sm border dark:border-gray-700 min-h-[400px]">
-                        <h3 class="text-lg font-bold mb-4 dark:text-white">Analiza Zajętości (%) w Godzinach 0-23</h3>
-                        <div class="h-96 w-full">
-                            <canvas id="advancedChart"></canvas>
-                        </div>
+                        <h3 class="text-lg font-bold mb-4 dark:text-white">Średnia Zajętość (%) w Godzinach 0-23</h3>
+                        <div class="h-96 w-full"><canvas id="advancedChart"></canvas></div>
                     </div>
                 </div>
 
                 <div id="view-admins" class="view-section hidden space-y-6">
                     <h2 class="text-3xl font-bold dark:text-white">Zarządzanie Administratorami</h2>
-                    
                     <div class="bg-white dark:bg-gray-800 p-6 rounded-xl shadow-sm border dark:border-gray-700">
-                        <h3 class="font-bold text-lg mb-4 dark:text-white flex items-center gap-2">
-                            <i class="fas fa-plus-circle text-green-500"></i> Dodaj / Edytuj Admina
-                        </h3>
+                        <h3 class="font-bold text-lg mb-4 dark:text-white flex items-center gap-2"><i class="fas fa-plus-circle text-green-500"></i> Dodaj / Edytuj</h3>
                         <input type="hidden" id="edit-admin-id">
                         
                         <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
                             <div>
-                                <label class="block text-xs font-bold uppercase mb-1 text-gray-500">Login (Podpowiedź)</label>
-                                <input type="text" id="admin-user" placeholder="Wpisz login..." class="w-full p-3 border rounded bg-gray-50 dark:bg-gray-700 dark:text-white">
+                                <label class="block text-xs font-bold uppercase mb-1 text-gray-500">Login (Wyszukaj istniejącego)</label>
+                                <input type="text" id="admin-user" list="admin-hints" oninput="fetchAdminHints(this.value)" placeholder="Wpisz login..." class="w-full p-3 border rounded bg-gray-50 dark:bg-gray-700 dark:text-white">
+                                <datalist id="admin-hints"></datalist>
                             </div>
                             <div>
                                 <label class="block text-xs font-bold uppercase mb-1 text-gray-500">Hasło</label>
@@ -150,18 +138,14 @@
                                 <label class="flex items-center gap-2 cursor-pointer"><input type="checkbox" id="perm-ev" class="w-5 h-5"> <span class="dark:text-white">Wgląd w miejsca EV</span></label>
                             </div>
                         </div>
-
                         <div class="flex gap-3">
                             <button onclick="saveAdmin()" class="bg-blue-600 hover:bg-blue-700 text-white px-6 py-2 rounded font-bold">Zapisz</button>
                             <button onclick="cancelEdit()" id="cancel-edit-btn" class="hidden bg-gray-500 hover:bg-gray-600 text-white px-6 py-2 rounded font-bold">Anuluj</button>
                         </div>
                     </div>
-
                     <div class="bg-white dark:bg-gray-800 rounded-xl shadow-sm overflow-hidden">
                         <table class="min-w-full text-left text-sm">
-                            <thead class="bg-gray-100 dark:bg-gray-700 text-gray-600 dark:text-gray-200 uppercase font-bold text-xs">
-                                <tr><th class="p-4">Login</th><th class="p-4">Miasto</th><th class="p-4">Dostęp</th><th class="p-4">Strefy ID</th><th class="p-4 text-right">Akcje</th></tr>
-                            </thead>
+                            <thead class="bg-gray-100 dark:bg-gray-700 text-gray-600 dark:text-gray-200 uppercase font-bold text-xs"><tr><th class="p-4">Login</th><th class="p-4">Miasto</th><th class="p-4">Dostęp</th><th class="p-4">Strefy</th><th class="p-4 text-right">Akcje</th></tr></thead>
                             <tbody id="table-admins-body" class="divide-y dark:divide-gray-700 dark:text-gray-300"></tbody>
                         </table>
                     </div>
@@ -169,61 +153,43 @@
 
                 <div id="view-users" class="view-section hidden space-y-6">
                     <h2 class="text-3xl font-bold dark:text-white">Zarządzanie Kierowcami</h2>
-                    
                     <div class="flex justify-between items-center bg-white dark:bg-gray-800 p-4 rounded-xl shadow-sm">
                         <div class="relative w-full md:w-1/2">
                             <i class="fas fa-search absolute left-3 top-3 text-gray-400"></i>
-                            <input type="text" id="user-search" onkeyup="filterUsers()" placeholder="Szukaj po emailu lub numerze telefonu..." class="w-full pl-10 p-2 border rounded dark:bg-gray-700 dark:text-white dark:border-gray-600">
+                            <input type="text" id="user-search" onkeyup="filterUsers()" placeholder="Szukaj po emailu lub telefonie..." class="w-full pl-10 p-2 border rounded dark:bg-gray-700 dark:text-white dark:border-gray-600">
                         </div>
                     </div>
-                    
                     <div class="bg-white dark:bg-gray-800 rounded-xl shadow-sm overflow-hidden">
                         <table class="min-w-full text-left text-sm">
-                            <thead class="bg-gray-100 dark:bg-gray-700 text-gray-600 dark:text-gray-200 uppercase font-bold text-xs">
-                                <tr>
-                                    <th class="p-4">ID</th>
-                                    <th class="p-4">Email / Telefon</th>
-                                    <th class="p-4 text-center">Status</th>
-                                    <th class="p-4 text-center">Niepełnosprawność</th>
-                                    <th class="p-4 text-right">Zarządzaj</th>
-                                </tr>
-                            </thead>
+                            <thead class="bg-gray-100 dark:bg-gray-700 text-gray-600 dark:text-gray-200 uppercase font-bold text-xs"><tr><th class="p-4">ID</th><th class="p-4">Email / Telefon</th><th class="p-4 text-center">Status</th><th class="p-4 text-center">Niepełnosprawność</th><th class="p-4 text-right">Zarządzaj</th></tr></thead>
                             <tbody id="table-users-body" class="divide-y dark:divide-gray-700 dark:text-gray-300"></tbody>
                         </table>
                     </div>
                 </div>
-
             </div>
         </main>
     </div>
 
 <script>
-// --- KONFIGURACJA ---
 const API_BASE = window.location.origin; 
-// const API_BASE = "http://127.0.0.1:8000"; // Do testów lokalnych
+// const API_BASE = "http://127.0.0.1:8000";
 
 let advancedChart = null;
-let allUsers = []; // Cache dla szybkiego wyszukiwania
+let allUsers = []; 
+let allDistricts = [];
 
-// --- INITIALIZATION ---
 document.addEventListener('DOMContentLoaded', () => {
     initTheme();
-    
-    // Set default dates for report (Today)
     const today = new Date().toISOString().split('T')[0];
     document.getElementById('report-start').value = today;
     document.getElementById('report-end').value = today;
 });
 
-// --- AUTH ---
 async function login() {
     const u = document.getElementById('login-user').value;
     const p = document.getElementById('login-pass').value;
     try {
-        const res = await fetch(API_BASE + "/api/v1/admin/auth", {
-            method: 'POST', headers: {'Content-Type':'application/json'}, 
-            body: JSON.stringify({username:u, password:p})
-        });
+        const res = await fetch(API_BASE + "/api/v1/admin/auth", { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({username:u, password:p}) });
         if(res.ok) {
             const data = await res.json();
             document.getElementById('login-overlay').style.display='none';
@@ -232,25 +198,20 @@ async function login() {
             if(data.is_superadmin) {
                 document.getElementById('nav-admins').classList.remove('hidden');
                 document.getElementById('nav-users').classList.remove('hidden');
-                loadDistricts(); // Load for admins view
+                loadDistrictsForAdmin(); 
             }
-            // Load districts for report filter
-            loadDistrictsSelect('report-districts');
-        } else {
-            alert("Błąd logowania");
-        }
+            loadDistrictsForReport();
+        } else { alert("Błąd logowania"); }
     } catch(e) { console.error(e); alert("Błąd połączenia"); }
 }
 
 function logout() { location.reload(); }
 
-// --- THEME ---
 function initTheme() {
     const isDark = localStorage.getItem('theme') === 'dark';
     if(isDark) document.documentElement.classList.add('dark');
     updateTogglePosition(isDark);
 }
-
 function toggleDarkMode() {
     const html = document.documentElement;
     html.classList.toggle('dark');
@@ -258,122 +219,125 @@ function toggleDarkMode() {
     localStorage.setItem('theme', isDark ? 'dark' : 'light');
     updateTogglePosition(isDark);
 }
-
 function updateTogglePosition(isDark) {
     const circle = document.getElementById('dark-toggle-circle');
-    if(isDark) circle.classList.add('translate-x-5');
-    else circle.classList.remove('translate-x-5');
+    if(isDark) circle.classList.add('translate-x-5'); else circle.classList.remove('translate-x-5');
 }
 
-// --- NAVIGATION ---
 function switchView(viewName) {
     document.querySelectorAll('.view-section').forEach(el => el.classList.add('hidden'));
     document.getElementById('view-'+viewName).classList.remove('hidden');
-    
-    document.querySelectorAll('.nav-btn').forEach(btn => {
-        btn.classList.remove('bg-blue-50', 'dark:bg-gray-700', 'text-blue-600');
-    });
+    document.querySelectorAll('.nav-btn').forEach(btn => btn.classList.remove('bg-blue-50', 'dark:bg-gray-700', 'text-blue-600'));
     const btn = Array.from(document.querySelectorAll('.nav-btn')).find(b => b.onclick.toString().includes(viewName));
     if(btn) btn.classList.add('bg-blue-50', 'dark:bg-gray-700', 'text-blue-600');
-
     if(viewName === 'admins') fetchAdmins();
     if(viewName === 'users') fetchUsers();
 }
 
-// --- DATA LOADING ---
-async function loadDistricts() {
+// --- DISTRICTS LOGIC ---
+async function loadDistrictsForReport() {
+    try {
+        const res = await fetch(API_BASE + "/api/v1/districts");
+        if(res.ok) {
+            allDistricts = await res.json();
+            renderDistrictsList(allDistricts);
+        }
+    } catch(e){}
+}
+
+function renderDistrictsList(list) {
+    const container = document.getElementById('districts-list');
+    container.innerHTML = list.map(d => `
+        <label class="flex items-center space-x-2 p-1 hover:bg-gray-100 dark:hover:bg-gray-600 rounded cursor-pointer">
+            <input type="checkbox" value="${d.id}" class="district-chk w-4 h-4">
+            <span class="text-sm dark:text-white">${d.name} <span class="text-xs text-gray-400">(${d.city})</span></span>
+        </label>
+    `).join('');
+}
+
+function filterDistricts() {
+    const q = document.getElementById('district-search').value.toLowerCase();
+    const filtered = allDistricts.filter(d => d.name.toLowerCase().includes(q));
+    renderDistrictsList(filtered);
+}
+
+async function loadDistrictsForAdmin() {
     try {
         const res = await fetch(API_BASE + "/api/v1/districts");
         if(res.ok) {
             const list = await res.json();
             const sel = document.getElementById('perm-districts');
-            // Keep first option
-            sel.innerHTML = '<option value="">Wszystkie (Domyślnie)</option>'; 
-            list.forEach(d => {
-                sel.innerHTML += `<option value="${d.id}">${d.name} (${d.city})</option>`;
-            });
+            sel.innerHTML = '<option value="">Wszystkie (Domyślnie)</option>' + list.map(d => `<option value="${d.id}">${d.name} (${d.city})</option>`).join('');
         }
-    } catch(e) { console.error("Districts error", e); }
+    } catch(e){}
 }
 
-async function loadDistrictsSelect(elementId) {
+// --- ADMIN SEARCH AUTOCOMPLETE ---
+async function fetchAdminHints(val) {
+    if(val.length < 2) return;
     try {
-        const res = await fetch(API_BASE + "/api/v1/districts");
+        const res = await fetch(`${API_BASE}/api/v1/admin/search_hint?q=${val}`);
         if(res.ok) {
-            const list = await res.json();
-            const sel = document.getElementById(elementId);
-            sel.innerHTML = '';
-            list.forEach(d => {
-                sel.innerHTML += `<option value="${d.id}">${d.name}</option>`;
-            });
+            const hints = await res.json();
+            const dl = document.getElementById('admin-hints');
+            dl.innerHTML = hints.map(h => `<option value="${h}">`).join('');
         }
-    } catch(e) {}
+    } catch(e){}
 }
 
-// --- ADVANCED REPORTS ---
+// --- REPORT GENERATION ---
 async function generateReport() {
     const start = document.getElementById('report-start').value;
     const end = document.getElementById('report-end').value;
-    const selectedOptions = document.getElementById('report-districts').selectedOptions;
-    const districtIds = Array.from(selectedOptions).map(opt => parseInt(opt.value));
+    
+    // Get checked checkboxes from custom list
+    const districtIds = Array.from(document.querySelectorAll('.district-chk:checked')).map(cb => parseInt(cb.value));
 
-    if(districtIds.length === 0) { alert("Wybierz przynajmniej jeden parking."); return; }
+    if(districtIds.length === 0) { alert("Wybierz przynajmniej jeden parking z listy."); return; }
+
+    const payload = {
+        start_date: start, end_date: end, districts: districtIds,
+        include_weekends: document.getElementById('chk-weekend').checked,
+        include_holidays: document.getElementById('chk-holiday').checked,
+        only_disabled: document.getElementById('chk-disabled').checked,
+        only_ev: document.getElementById('chk-ev').checked,
+        only_paid: document.getElementById('chk-paid').checked
+    };
 
     try {
         const res = await fetch(API_BASE + "/api/v1/admin/stats/advanced", {
-            method: 'POST', headers: {'Content-Type':'application/json'},
-            body: JSON.stringify({ start_date: start, end_date: end, districts: districtIds })
+            method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(payload)
         });
-        
         if(res.ok) {
             const data = await res.json();
             renderAdvancedChart(data.datasets);
         }
-    } catch(e) { console.error(e); alert("Błąd generowania raportu"); }
+    } catch(e) { alert("Błąd generowania"); }
 }
 
 function renderAdvancedChart(datasets) {
     const ctx = document.getElementById('advancedChart').getContext('2d');
-    
     if(advancedChart) advancedChart.destroy();
-
     advancedChart = new Chart(ctx, {
         type: 'line',
-        data: {
-            labels: Array.from({length: 24}, (_, i) => `${i}:00`), // 0-23h
-            datasets: datasets
-        },
+        data: { labels: Array.from({length:24},(_,i)=>`${i}:00`), datasets: datasets },
         options: {
-            responsive: true,
-            maintainAspectRatio: false,
-            scales: {
-                y: {
-                    beginAtZero: true,
-                    max: 100,
-                    title: { display: true, text: '% Zajętości' }
-                },
-                x: {
-                    title: { display: true, text: 'Godzina' }
-                }
-            },
-            interaction: {
-                mode: 'index',
-                intersect: false,
-            },
+            responsive: true, maintainAspectRatio: false,
+            scales: { y: { beginAtZero: true, max: 100, title: {display:true, text:'% Zajętości'} }, x: { title: {display:true, text:'Godzina'} } },
+            interaction: { mode: 'index', intersect: false }
         }
     });
 }
 
-// --- ADMINS ---
+// --- CRUD ADMINS ---
 async function fetchAdmins() {
     const res = await fetch(API_BASE + "/api/v1/admin/list");
     if(res.ok) {
         const list = await res.json();
-        const tbody = document.getElementById('table-admins-body');
-        tbody.innerHTML = list.map(a => `
-            <tr class="hover:bg-gray-50 dark:hover:bg-gray-700 transition border-b dark:border-gray-700">
-                <td class="p-4 font-bold">${a.username}</td>
-                <td class="p-4">${a.permissions.city}</td>
+        document.getElementById('table-admins-body').innerHTML = list.map(a => `
+            <tr class="hover:bg-gray-100 dark:hover:bg-gray-700 border-b dark:border-gray-700">
+                <td class="p-4 font-bold dark:text-white">${a.username}</td>
+                <td class="p-4 dark:text-gray-300">${a.permissions.city}</td>
                 <td class="p-4 space-x-1">
                     ${a.permissions.view_disabled ? '<span class="px-2 py-1 bg-blue-100 text-blue-800 rounded text-xs">DIS</span>' : ''}
                     ${a.permissions.view_ev ? '<span class="px-2 py-1 bg-yellow-100 text-yellow-800 rounded text-xs">EV</span>' : ''}
@@ -393,12 +357,8 @@ function editAdmin(a) {
     document.getElementById('admin-user').value = a.username;
     document.getElementById('admin-user').disabled = true;
     document.getElementById('cancel-edit-btn').classList.remove('hidden');
-    
     const p = a.permissions || {};
     document.getElementById('perm-city').value = p.city || 'ALL';
-    // Handle allowed_state which is a string like "1,2"
-    // For single select, we just check if it matches. 
-    // For multi-select logic in database (TEXT field), UI is simplified here to dropdown.
     document.getElementById('perm-districts').value = p.allowed_state || ''; 
     document.getElementById('perm-disabled').checked = p.view_disabled || false;
     document.getElementById('perm-ev').checked = p.view_ev || false;
@@ -416,10 +376,8 @@ function cancelEdit() {
 async function saveAdmin() {
     const id = document.getElementById('edit-admin-id').value;
     const p = document.getElementById('admin-pass').value;
-
     const payload = {
-        username: document.getElementById('admin-user').value, 
-        password: p || null,
+        username: document.getElementById('admin-user').value, password: p || null,
         city: document.getElementById('perm-city').value,
         allowed_state: document.getElementById('perm-districts').value,
         view_disabled: document.getElementById('perm-disabled').checked,
@@ -428,8 +386,7 @@ async function saveAdmin() {
     if(id) payload.id = parseInt(id);
     const endpoint = id ? "/api/v1/admin/update" : "/api/v1/admin/create";
     await fetch(API_BASE + endpoint, { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(payload)});
-    cancelEdit();
-    fetchAdmins();
+    cancelEdit(); fetchAdmins();
 }
 
 async function deleteAdmin(id) {
@@ -439,54 +396,32 @@ async function deleteAdmin(id) {
     }
 }
 
-// --- USERS & SEARCH ---
+// --- CRUD USERS ---
 async function fetchUsers() {
     const res = await fetch(API_BASE + "/api/v1/admin/users");
-    if(res.ok) {
-        allUsers = await res.json();
-        renderUsers(allUsers);
-    }
+    if(res.ok) { allUsers = await res.json(); renderUsers(allUsers); }
 }
 
 function renderUsers(users) {
     const tbody = document.getElementById('table-users-body');
-    if(users.length === 0) {
-        tbody.innerHTML = '<tr><td colspan="5" class="p-4 text-center text-gray-500">Brak wyników</td></tr>';
-        return;
-    }
+    if(users.length === 0) { tbody.innerHTML = '<tr><td colspan="5" class="p-4 text-center text-gray-500">Brak wyników</td></tr>'; return; }
     tbody.innerHTML = users.map(u => `
-        <tr class="hover:bg-gray-50 dark:hover:bg-gray-700 transition border-b dark:border-gray-700">
+        <tr class="hover:bg-gray-100 dark:hover:bg-gray-700 border-b dark:border-gray-700">
             <td class="p-4 text-gray-500">#${u.user_id}</td>
-            <td class="p-4 font-medium">${u.email || u.phone || 'Brak'}</td>
-            <td class="p-4 text-center">
-                ${u.is_blocked 
-                    ? '<span class="px-2 py-1 rounded bg-red-100 text-red-700 text-xs font-bold">BLOK</span>' 
-                    : '<span class="px-2 py-1 rounded bg-green-100 text-green-700 text-xs font-bold">OK</span>'}
-            </td>
-            <td class="p-4 text-center">
-                ${u.is_disabled 
-                    ? '<i class="fas fa-check-circle text-blue-500"></i>' 
-                    : '<span class="text-gray-400">-</span>'}
-            </td>
+            <td class="p-4 font-medium dark:text-white">${u.email || u.phone || 'Brak'}</td>
+            <td class="p-4 text-center">${u.is_blocked ? '<span class="px-2 py-1 rounded bg-red-100 text-red-700 text-xs font-bold">BLOK</span>' : '<span class="px-2 py-1 rounded bg-green-100 text-green-700 text-xs font-bold">OK</span>'}</td>
+            <td class="p-4 text-center">${u.is_disabled ? '<i class="fas fa-check-circle text-blue-500"></i>' : '<span class="text-gray-400">-</span>'}</td>
             <td class="p-4 text-right space-x-2">
-                <button onclick="toggleUserBlock(${u.user_id}, ${!u.is_blocked})" class="text-xs border px-2 py-1 rounded hover:bg-gray-200 dark:hover:bg-gray-600 dark:text-white">
-                    ${u.is_blocked ? 'Odblokuj' : 'Zablokuj'}
-                </button>
-                <button onclick="toggleUserDisabled(${u.user_id}, ${!u.is_disabled})" class="text-xs border px-2 py-1 rounded hover:bg-gray-200 dark:hover:bg-gray-600 dark:text-white">
-                    ${u.is_disabled ? 'Zabierz upr.' : 'Nadaj upr.'}
-                </button>
+                <button onclick="toggleUserBlock(${u.user_id}, ${!u.is_blocked})" class="text-xs border px-2 py-1 rounded hover:bg-gray-200 dark:hover:bg-gray-600 dark:text-white">${u.is_blocked ? 'Odblokuj' : 'Zablokuj'}</button>
+                <button onclick="toggleUserDisabled(${u.user_id}, ${!u.is_disabled})" class="text-xs border px-2 py-1 rounded hover:bg-gray-200 dark:hover:bg-gray-600 dark:text-white">${u.is_disabled ? 'Zabierz' : 'Nadaj'}</button>
             </td>
         </tr>
     `).join('');
 }
 
 function filterUsers() {
-    const query = document.getElementById('user-search').value.toLowerCase();
-    const filtered = allUsers.filter(u => 
-        (u.email && u.email.toLowerCase().includes(query)) || 
-        (u.phone && u.phone.includes(query)) ||
-        (u.user_id.toString().includes(query))
-    );
+    const q = document.getElementById('user-search').value.toLowerCase();
+    const filtered = allUsers.filter(u => (u.email && u.email.toLowerCase().includes(q)) || (u.phone && u.phone.includes(q)) || (u.user_id.toString().includes(q)));
     renderUsers(filtered);
 }
 
@@ -494,7 +429,6 @@ async function toggleUserBlock(id, status) {
     await fetch(API_BASE + "/api/v1/admin/user/update", { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({user_id:id, is_blocked:status})});
     fetchUsers();
 }
-
 async function toggleUserDisabled(id, status) {
     await fetch(API_BASE + "/api/v1/admin/user/update", { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({user_id:id, is_disabled:status})});
     fetchUsers();
