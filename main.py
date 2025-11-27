@@ -432,43 +432,46 @@ def get_dashboard():
 # DEBUGOWANE LOGOWANIE
 @app.post("/api/v1/admin/auth")
 def admin_login(d: AdminLogin, db: Session = Depends(get_db)):
-    # WYPISZ DO KONSOLI CO OTRZYMAŁEŚ
-    print(f"DEBUG LOGIN: User=[{d.username}] Pass=[{d.password}]")
+    print(f"DEBUG LOGIN: Próba logowania dla user=[{d.username}]")
     
-    admin = db.query(Admin).filter(Admin.username == d.username).first()
-    
-    is_valid = False
-    
-    # 1. Hardcoded check (Ostatnia deska ratunku)
-    if d.username == "admin" and d.password == "admin123":
-        print("DEBUG LOGIN: Pasuje do hardcoded!")
-        is_valid = True
-    # 2. Database check
-    elif admin:
-        if verify_password(d.password, admin.password_hash):
-             print("DEBUG LOGIN: Hasło z bazy poprawne!")
-             is_valid = True
-        else:
-             print("DEBUG LOGIN: Hasło z bazy BŁĘDNE")
-    else:
-        print("DEBUG LOGIN: Nie ma takiego użytkownika w bazie")
 
-    if not is_valid:
-        raise HTTPException(401, "Błędne dane")
+    # 2. Logika Bazy Danych
+    try:
+        # KROK A: Szukamy admina w tabeli 'admins'
+        admin = db.query(Admin).filter(Admin.username == d.username).first()
         
-    is_super = (d.username == 'admin')
-    
-    return {
-        "status": "ok",
-        "username": d.username,
-        "is_superadmin": is_super,
-        "permissions": {
-            "city": admin.permissions.city if admin and admin.permissions else "ALL",
-            "view_disabled": admin.permissions.view_disabled if admin and admin.permissions else False,
-            "view_ev": admin.permissions.view_ev if admin and admin.permissions else False,
-            "allowed_state": admin.permissions.allowed_state if admin and admin.permissions else ""
-        }
-    }
+        # KROK B: Sprawdzamy hasło
+        if admin and verify_password(d.password, admin.password_hash):
+             print(f"DEBUG: Hasło poprawne. ID Admina: {admin.admin_id}")
+             
+             # KROK C: Pobieramy uprawnienia z tabeli 'admin_permissions'
+             # Relacja w SQLAlchemy sama zrobi: SELECT * FROM admin_permissions WHERE admin_id = ...
+             perms = admin.permissions 
+             
+             if perms:
+                 print(f"DEBUG: Znaleziono uprawnienia w bazie dla ID {admin.admin_id}")
+             else:
+                 print(f"DEBUG: BRAK wpisu w admin_permissions dla ID {admin.admin_id} - używam domyślnych")
+
+             return {
+                "status": "ok",
+                "username": admin.username,
+                "is_superadmin": (admin.username == 'admin'),
+                "permissions": {
+                    # TERNARY OPERATOR: Jeśli perms istnieje, weź wartość. Jeśli nie, wstaw domyślną.
+                    "city": perms.city if perms else "ALL",
+                    "view_disabled": perms.view_disabled if perms else False,
+                    "view_ev": perms.view_ev if perms else False,
+                    "allowed_state": perms.allowed_state if perms else ""
+                }
+            }
+    except Exception as e:
+        print(f"BŁĄD KRYTYCZNY PODCZAS LOGOWANIA: {e}")
+        traceback.print_exc() # Wypisze dokładny błąd w logach Rendera
+        pass
+
+    # Jeśli hasło nie pasuje lub nie ma usera
+    raise HTTPException(401, "Błędne dane logowania")
 
 # ... (Reszta endpointów - bez zmian) ...
 @app.get("/api/v1/admin/list")
@@ -800,3 +803,4 @@ async def iot_update_http(data: dict, db: Session = Depends(get_db)):
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)
+
