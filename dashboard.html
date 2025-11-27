@@ -6,7 +6,6 @@
     <title>Parking IoT - Panel Admina</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/js-sha256/0.9.0/sha256.min.js"></script>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" />
     <script>
         tailwind.config = {
@@ -182,7 +181,7 @@
     </div>
 
 <script>
-// USTAWIONE NA LOCALHOST DLA PEWNOŚCI PRZY TESTACH Z PLIKU
+// Ustawienie na localhost. Jeśli wrzucisz na serwer, zmień na: window.location.origin
 const API_BASE = "http://127.0.0.1:8000"; 
 
 // CHARTS CONFIG
@@ -194,17 +193,21 @@ async function login() {
     const u = document.getElementById('login-user').value;
     const p = document.getElementById('login-pass').value;
 
-    // HASZOWANIE WE FRONTENDZIE PRZED WYSŁANIEM!
-    const hashedPassword = sha256(p);
+    console.log("Próba logowania:", u, p); // DEBUG W KONSOLI
 
     try {
         const res = await fetch(API_BASE + "/api/v1/admin/auth", {
             method: 'POST', headers: {'Content-Type':'application/json'}, 
-            // Wysyłamy hash
-            body: JSON.stringify({username:u, password:hashedPassword})
+            // Czyste hasło (bez sha256)
+            body: JSON.stringify({username:u, password:p})
         });
+
+        console.log("Status HTTP:", res.status);
+
         if(res.ok) {
             const data = await res.json();
+            console.log("Sukces:", data);
+            
             document.getElementById('login-overlay').style.display='none';
             document.getElementById('app-content').classList.remove('hidden');
             document.getElementById('user-display').innerText = data.username;
@@ -217,9 +220,14 @@ async function login() {
             initCharts();
             loadHistoryStats();
         } else {
-            alert("Nieprawidłowe dane logowania");
+            const errText = await res.text();
+            console.error("Błąd logowania:", errText);
+            alert("Błąd logowania: " + errText);
         }
-    } catch(e) { alert("Błąd połączenia z serwerem"); console.error(e); }
+    } catch(e) { 
+        console.error("Błąd sieci:", e);
+        alert("Błąd połączenia z serwerem. Sprawdź czy main.py działa!"); 
+    }
 }
 
 function logout() { location.reload(); }
@@ -370,13 +378,11 @@ function cancelEdit() {
 
 async function saveAdmin() {
     const id = document.getElementById('edit-admin-id').value;
-    // Pamiętaj o haszowaniu hasła jeśli je zmieniasz!
-    const rawPass = document.getElementById('admin-pass').value;
-    const hashedPass = rawPass ? sha256(rawPass) : null;
+    const p = document.getElementById('admin-pass').value;
 
     const payload = {
         username: document.getElementById('admin-user').value, 
-        password: hashedPass, // Wysyłamy hash lub null
+        password: p || null,
         city: document.getElementById('perm-city').value.trim() || 'ALL',
         allowed_state: document.getElementById('perm-states').value.trim(),
         view_disabled: document.getElementById('perm-disabled').checked,
