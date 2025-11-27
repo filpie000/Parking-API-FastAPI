@@ -4,6 +4,7 @@ import logging
 import secrets
 import json
 import random
+import traceback
 from typing import Optional, List, Dict, Any
 from zoneinfo import ZoneInfo
 
@@ -38,7 +39,7 @@ MQTT_TOPIC = "parking/+/status"
 
 # --- BAZA DANYCH ---
 DATABASE_URL = os.environ.get('DATABASE_URL', "postgresql://postgres:postgres@localhost:5432/postgres")
-# DATABASE_URL = "sqlite:///./parking.db" # Odkoduj jeśli chcesz lokalnie SQLite
+# DATABASE_URL = "sqlite:///./parking.db"
 
 if DATABASE_URL.startswith("postgres://"):
     DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
@@ -109,7 +110,7 @@ class AdminPermissions(Base):
     city = Column(String(100))
     view_disabled = Column(Boolean, default=False)
     view_ev = Column(Boolean, default=False)
-    allowed_state = Column(Text) # Przechowuje IDs stref po przecinku np "1,3,5"
+    allowed_state = Column(Text) 
     admin = relationship("Admin", back_populates="permissions")
 
 class HistoricalData(Base):
@@ -201,9 +202,14 @@ class VehicleAdd(BaseModel): token: str; name: str; plate_number: str
 class VehicleDelete(BaseModel): token: str; vehicle_id: int
 
 class StatsRequest(BaseModel):
-    start_date: str # YYYY-MM-DD
-    end_date: str   # YYYY-MM-DD
-    districts: List[int] # ID stref do raportu
+    start_date: str 
+    end_date: str
+    districts: List[int]
+    include_weekends: bool = True
+    include_holidays: bool = True
+    only_disabled: bool = False
+    only_paid: bool = False
+    only_ev: bool = False
 
 class AirbnbAdd(BaseModel):
     token: str; title: str; description: Optional[str] = None; price: float; h_availability: Optional[str] = None
@@ -375,7 +381,6 @@ def get_dashboard():
 
 @app.post("/api/v1/admin/auth")
 def admin_login(d: AdminLogin, db: Session = Depends(get_db)):
-    print(f"DEBUG LOGIN: User=[{d.username}]")
     if d.username == "admin" and d.password == "admin123":
         return {
             "status": "ok", "username": "admin", "is_superadmin": True,
@@ -469,70 +474,106 @@ def get_districts(db: Session = Depends(get_db)):
     districts = db.query(District).all()
     return [{"id": d.id, "name": d.district, "city": d.city} for d in districts]
 
+@app.get("/api/v1/admin/search_hint")
+def search_admin_hint(q: str = "", db: Session = Depends(get_db)):
+    if not q: return []
+    admins = db.query(Admin.username).filter(Admin.username.ilike(f"%{q}%")).limit(5).all()
+    return [a[0] for a in admins]
+
 @app.post("/api/v1/admin/stats/advanced")
 def get_advanced_stats(req: StatsRequest, db: Session = Depends(get_db)):
-    # Obliczanie % zajętości w godzinach (0-23) dla wybranych dzielnic
     start = datetime.datetime.strptime(req.start_date, "%Y-%m-%d")
     end = datetime.datetime.strptime(req.end_date, "%Y-%m-%d") + datetime.timedelta(days=1)
     
     response_datasets = []
     
-    # Dla każdego wybranego district ID
     for dist_id in req.districts:
         district = db.query(District).filter(District.id == dist_id).first()
         if not district: continue
         
-        # Pojemność parkingu (żeby obliczyć %)
-        capacity = district.capacity or 10 # Default 10 if not set to avoid division by zero
+        # 1. Filtrowanie Miejsc (Hardware)
+        spots_query = db.query(ParkingSpot).filter(ParkingSpot.district_id == dist_id)
+        if req.only_disabled: spots_query = spots_query.filter(ParkingSpot.is_disabled_friendly == True)
+        if req.only_ev: spots_query = spots_query.filter(ParkingSpot.is_ev == True)
+        if req.only_paid: spots_query = spots_query.filter(ParkingSpot.is_paid == True)
         
-        # Pobierz dane historyczne dla czujników w tej dzielnicy
-        # Join: HistoricalData -> sensor_id == ParkingSpot.name -> ParkingSpot.district_id == dist_id
-        # Grupujemy po godzinie
-        
-        hourly_data = [0] * 24
-        
-        # Pobieramy zdarzenia "Zajęte" (status=1) w zadanym okresie
-        # UWAGA: To uproszczona statystyka "Ruchu" (ilość zaparkowań), bo historia trzyma eventy.
-        # Żeby obliczyć "średnią zajętość", musielibyśmy rekonstruować stan co minutę. 
-        # Na potrzeby projektu inżynierskiego, przyjmiemy:
-        # % Zajętości = (Liczba unikalnych zaparkowań w godzinie / Pojemność) * 100
-        # (Może wyjść > 100% przy dużej rotacji, więc przytniemy do 100).
-        
-        results = db.query(
-            extract('hour', HistoricalData.timestamp).label('hour'),
-            func.count(distinct(HistoricalData.sensor_id)).label('occupied_count')
-        ).join(ParkingSpot, ParkingSpot.name == HistoricalData.sensor_id)\
-         .filter(
-             ParkingSpot.district_id == dist_id,
-             HistoricalData.status == 1,
-             HistoricalData.timestamp >= start,
-             HistoricalData.timestamp < end
-         ).group_by('hour').all()
-         
-        for r in results:
-            idx = int(r.hour)
-            # Oblicz procent (przybliżony)
-            percent = (r.occupied_count / capacity) * 100
-            if percent > 100: percent = 100
-            hourly_data[idx] = round(percent, 1)
+        valid_spots_names = [s.name for s in spots_query.all()]
+        if not valid_spots_names: continue
+
+        # Pojemność (dla obliczenia %)
+        capacity = len(valid_spots_names)
+        if capacity == 0: capacity = 1
+
+        hourly_counts = {h: 0 for h in range(24)}
+        hourly_samples = {h: 0 for h in range(24)} # Ile dni wzięliśmy pod uwagę dla tej godziny
+
+        # 2. Pobieramy dane historyczne
+        history_data = db.query(HistoricalData).filter(
+            HistoricalData.sensor_id.in_(valid_spots_names),
+            HistoricalData.status == 1,
+            HistoricalData.timestamp >= start,
+            HistoricalData.timestamp < end
+        ).all()
+
+        # 3. Analiza w Pythonie (żeby obsłużyć Weekend/Święto)
+        for entry in history_data:
+            ts = entry.timestamp
             
-        # Generuj losowy kolor dla wykresu
-        color = f"rgba({random.randint(50,255)}, {random.randint(50,255)}, {random.randint(50,255)}, 1)"
+            # Filtr Weekendy (Sob=5, Nd=6)
+            if not req.include_weekends and ts.weekday() >= 5: continue
+            
+            # Filtr Święta
+            is_holiday = check_if_holiday(ts.date())
+            if not req.include_holidays and is_holiday: continue
+
+            # Zliczamy
+            h = ts.hour
+            hourly_counts[h] += 1
+        
+        # Normalizacja danych (Średnia)
+        # Przyjmujemy uproszczenie: Liczba zajęć / (Pojemność * Liczba Dni)
+        # Oblicz ile dni w zakresie spełnia kryteria
+        valid_days = 0
+        current = start
+        while current < end:
+            is_w = current.weekday() >= 5
+            is_h = check_if_holiday(current.date())
+            
+            skip = False
+            if not req.include_weekends and is_w: skip = True
+            if not req.include_holidays and is_h: skip = True
+            
+            if not skip: valid_days += 1
+            current += datetime.timedelta(days=1)
+        
+        if valid_days == 0: valid_days = 1
+
+        final_data = []
+        for h in range(24):
+            # Obliczamy % zajętości
+            # (Suma zajęć w danej godzinie przez wszystkie dni) / (Pojemność * Liczba dni)
+            # * 100
+            val = (hourly_counts[h] / (capacity * valid_days)) * 100
+            # Skalowanie, żeby wykres był ładny (symulacja czasu trwania)
+            # Zakładamy, że auto stoi średnio 1h, więc 1 wjazd = 1h zajętości
+            if val > 100: val = 100
+            final_data.append(round(val, 1))
+
+        # Kolor
+        color = f"rgba({random.randint(50,220)}, {random.randint(50,220)}, {random.randint(50,220)}, 1)"
         
         response_datasets.append({
-            "label": f"{district.district} ({district.city})",
-            "data": hourly_data,
+            "label": f"{district.district}",
+            "data": final_data,
             "borderColor": color,
-            "backgroundColor": color.replace(", 1)", ", 0.2)"),
-            "fill": False
+            "backgroundColor": color.replace(", 1)", ", 0.1)"),
+            "fill": True,
+            "tension": 0.4
         })
         
     return {"datasets": response_datasets}
 
-# ... (Reszta endpointów - bez zmian) ...
-# (Auth endpoints i IoT endpoints zostają tak jak były w poprzedniej wersji)
-
-# --- REJESTRACJA I LOGOWANIE USERA (BEZ ZMIAN) ---
+# ... (Reszta endpointów Auth i IoT - bez zmian) ...
 @app.post("/api/v1/auth/register")
 def register(u: UserRegister, db: Session = Depends(get_db)):
     try:
