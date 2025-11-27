@@ -182,7 +182,8 @@
 
 <script>
 // Ustawienie na localhost. Jeśli wrzucisz na serwer, zmień na: window.location.origin
-const API_BASE = "http://127.0.0.1:8000"; 
+// POPRAWNA LINIA (działa i na Renderze, i na localhost):
+const API_BASE = window.location.origin;
 
 // CHARTS CONFIG
 let statusChartInstance = null;
@@ -447,3 +448,4 @@ async function toggleUserDisabled(id, status) {
 </script>
 </body>
 </html>
+
