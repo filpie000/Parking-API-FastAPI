@@ -274,7 +274,7 @@ def get_holidays_for_year(year):
 
 def check_if_holiday(target_date):
     holidays = get_holidays_for_year(target_date.year)
-    return holidays.get(target_date) # Zwraca nazwę święta lub None
+    return holidays.get(target_date)
 
 # --- MQTT ---
 class ConnectionManager:
@@ -455,7 +455,7 @@ def search_admin_hint(q: str = "", db: Session = Depends(get_db)):
     admins = db.query(Admin.username).filter(Admin.username.ilike(f"%{q}%")).limit(5).all()
     return [a[0] for a in admins]
 
-# --- NOWE STATYSTYKI ADMINA (POPRAWIONE SQL) ---
+# --- NOWE STATYSTYKI ADMINA (POPRAWIONE SQL v2 - BEZ FILTRU status=1) ---
 @app.post("/api/v1/admin/stats/advanced")
 def get_advanced_stats(req: StatsRequest, db: Session = Depends(get_db)):
     start = datetime.datetime.strptime(req.start_date, "%Y-%m-%d")
@@ -467,7 +467,6 @@ def get_advanced_stats(req: StatsRequest, db: Session = Depends(get_db)):
         district = db.query(District).filter(District.id == dist_id).first()
         if not district: continue
         
-        # 1. Filtrowanie Miejsc (Hardware)
         spots_query = db.query(ParkingSpot).filter(ParkingSpot.district_id == dist_id)
         if req.only_disabled: spots_query = spots_query.filter(ParkingSpot.is_disabled_friendly == True)
         if req.only_ev: spots_query = spots_query.filter(ParkingSpot.is_ev == True)
@@ -476,25 +475,40 @@ def get_advanced_stats(req: StatsRequest, db: Session = Depends(get_db)):
         valid_spots_names = [s.name for s in spots_query.all()]
         if not valid_spots_names: continue
 
-        # 2. SQL Agregacja (Działa szybko dla 400k)
-        # Zwraca: (godzina, średnia_zajetosc_jako_float)
-        # avg(status) działa, bo status to 0 lub 1
+        # --- FIX: POBIERAMY WSZYSTKO (STATUS 0 i 1) ---
+        # Żeby obliczyć średnią, musimy wiedzieć ile było zer!
         raw_stats = db.query(
             extract('hour', HistoricalData.timestamp).label('hour'),
+            func.date(HistoricalData.timestamp).label('day'),
             func.avg(HistoricalData.status).label('avg_status')
         ).filter(
             HistoricalData.sensor_id.in_(valid_spots_names),
             HistoricalData.timestamp >= start,
             HistoricalData.timestamp < end
-        ).group_by('hour').all()
+            # USUNIĘTO FILTR status==1
+        ).group_by('day', 'hour').all()
 
-        # Konwersja do mapy {0: 0.1, 1: 0.2 ...}
-        hourly_map = {int(r.hour): float(r.avg_status) * 100 for r in raw_stats}
-        
+        hourly_sums = {h: [] for h in range(24)}
+
+        for r in raw_stats:
+            date_obj = r.day 
+            
+            is_w = date_obj.weekday() >= 5
+            is_h = check_if_holiday(date_obj)
+            
+            if not req.include_weekends and is_w: continue
+            if not req.include_holidays and is_h: continue
+            
+            hourly_sums[int(r.hour)].append(float(r.avg_status))
+
         final_data = []
         for h in range(24):
-            val = hourly_map.get(h, 0)
-            final_data.append(round(val, 1))
+            vals = hourly_sums[h]
+            if not vals:
+                final_data.append(0)
+            else:
+                avg_val = sum(vals) / len(vals)
+                final_data.append(round(avg_val * 100, 1)) 
 
         color = f"rgba({random.randint(50,220)}, {random.randint(50,220)}, {random.randint(50,220)}, 1)"
         response_datasets.append({
@@ -572,17 +586,17 @@ def get_spots(limit: int = 1000, db: Session = Depends(get_db)):
         })
     return res
 
-# --- WAŻNE: STATYSTYKI PREDYKCYJNE (ZAAWANSOWANA LOGIKA) ---
+# --- WAŻNE: STATYSTYKI PREDYKCYJNE (ZAAWANSOWANA LOGIKA v2) ---
 @app.post("/api/v1/statystyki/zajetosc")
 def get_stats_mobile(req: StatystykiZapytanie, db: Session = Depends(get_db)):
     try:
         target_date = datetime.datetime.strptime(req.selected_date, "%Y-%m-%d").date()
         target_hour = req.selected_hour
-        target_weekday = target_date.weekday() # 0=Pon, 4=Pt, 5=Sob, 6=Nd
+        target_weekday = target_date.weekday() # 0=Pon, 6=Nd
         
         # 1. Określ TYP DNIA
         target_holiday_name = check_if_holiday(target_date)
-        is_target_weekend = target_weekday >= 4 # Piątek, Sobota, Niedziela (wg opisu: weekend to Pt, Sob, Nd)
+        is_target_weekend = target_weekday >= 4 # Pt, Sob, Nd
         
         # 2. Znajdź District ID
         spot = db.query(ParkingSpot).filter(ParkingSpot.name == req.sensor_id).first()
@@ -600,8 +614,6 @@ def get_stats_mobile(req: StatystykiZapytanie, db: Session = Depends(get_db)):
         dates_to_check = []
         lookback_start = target_date - datetime.timedelta(days=730)
         
-        # Pobieramy wszystkie możliwe daty z historii, które są w tym samym typie dnia
-        # Żeby nie mielić w Pythonie, zapytamy bazę o UNIKALNE DATY z historii
         available_dates = db.query(distinct(func.date(HistoricalData.timestamp))).filter(
             HistoricalData.timestamp >= lookback_start,
             HistoricalData.timestamp < target_date
@@ -613,38 +625,33 @@ def get_stats_mobile(req: StatystykiZapytanie, db: Session = Depends(get_db)):
             past_holiday_name = check_if_holiday(past_date)
             
             match = False
+            # Logika "3 sytuacje"
+            if target_holiday_name: # Jeśli cel to Święto
+                if past_holiday_name == target_holiday_name: match = True
+            elif is_target_weekend: # Jeśli cel to Weekend (Pt/Sob/Nd)
+                if not past_holiday_name and past_weekday == target_weekday: match = True
+            else: # Jeśli cel to Dzień Powszedni (Pn-Czw)
+                if not past_holiday_name and past_weekday in [0, 1, 2, 3]: match = True
             
-            # SCENARIUSZ 1: ŚWIĘTA
-            if target_holiday_name:
-                if past_holiday_name == target_holiday_name:
-                    match = True # Np. Wigilia == Wigilia
-            
-            # SCENARIUSZ 2: WEEKEND (Pt, Sob, Nd - każdy osobno)
-            elif is_target_weekend:
-                if not past_holiday_name and past_weekday == target_weekday:
-                    match = True # Np. Piątek == Piątek (i nie święto)
-            
-            # SCENARIUSZ 3: DNI POWSZEDNIE (Pn-Czw razem)
-            else:
-                if not past_holiday_name and past_weekday in [0, 1, 2, 3]:
-                    match = True # Pon, Wt, Śr lub Czw
-            
-            if match:
-                dates_to_check.append(past_date)
+            if match: dates_to_check.append(past_date)
 
         if not dates_to_check:
             return {"wynik": {"procent_zajetosci": 0, "liczba_pomiarow": 0}}
 
-        # 5. Zapytanie SQL (Agregacja dla wybranych dat i godzin)
-        result = db.query(func.avg(HistoricalData.status)).filter(
+        # 5. Zapytanie SQL (LICZYMY WSZYSTKIE REKORDY, NIE TYLKO status=1)
+        # avg(status) da poprawny % zajętości (0.0-1.0)
+        # count(*) da liczbę wszystkich próbek (czyli 400 000+)
+        result = db.query(
+            func.avg(HistoricalData.status).label('avg_s'),
+            func.count(HistoricalData.id).label('cnt')
+        ).filter(
             HistoricalData.sensor_id.in_(valid_sensors),
             func.date(HistoricalData.timestamp).in_(dates_to_check),
             extract('hour', HistoricalData.timestamp).between(hour_min, hour_max)
-        ).scalar()
+        ).first()
         
-        probability = int((result or 0) * 100)
-        # Liczba "pomiarów" to liczba dni historycznych, które znaleźliśmy
-        count = len(dates_to_check)
+        probability = int((result.avg_s or 0) * 100)
+        count = result.cnt or 0 # To teraz zwróci REALNĄ liczbę próbek w bazie!
 
         return {"wynik": {"procent_zajetosci": probability, "liczba_pomiarow": count}}
         
@@ -658,20 +665,16 @@ def buy_ticket(req: TicketPurchase, db: Session = Depends(get_db)):
     try:
         user = db.query(User).filter(User.token == req.token).first()
         if not user: raise HTTPException(401, "Nieprawidłowy token")
-        
         start = now_utc()
         end = start + datetime.timedelta(hours=req.duration_hours)
         final_price = req.total_price if req.total_price is not None else (5.0 * req.duration_hours)
-        
         nt = Ticket(place_name=req.place_name, plate_number=req.plate_number, start_time=start, end_time=end, price=final_price, user_id=user.user_id)
         db.add(nt); db.flush()
         user.ticket_id = nt.id
-        
         spot = db.query(ParkingSpot).filter(ParkingSpot.name == req.place_name).first()
         if spot: 
             spot.current_status = 1
             db.add(HistoricalData(sensor_id=spot.name, status=1))
-            
         db.commit()
         return {"status": "ok", "ticket_id": nt.id, "end_time": end.isoformat()}
     except Exception as e: 
@@ -729,6 +732,7 @@ def delete_airbnb(d: AirbnbDelete, db: Session = Depends(get_db)):
     try: db.delete(offer); db.commit(); return {"status": "deleted"}
     except Exception as e: db.rollback(); logger.error(f"Airbnb Delete: {e}"); raise HTTPException(500, f"Błąd bazy: {str(e)}")
 
+# NAPRAWIONY GET AIRBNB (Z TOKENEM)
 @app.get("/api/v1/airbnb/offers", response_model=List[AirbnbResponse])
 def get_airbnb(district_id: Optional[int] = None, token: Optional[str] = None, db: Session = Depends(get_db)):
     try:
@@ -754,7 +758,7 @@ def get_airbnb(district_id: Optional[int] = None, token: Optional[str] = None, d
                     "latitude": float(o.latitude) if o.latitude is not None else 0.0,
                     "longitude": float(o.longitude) if o.longitude is not None else 0.0,
                     "state_name": s_name, "start_date": o.start_date, "end_date": o.end_date,
-                    "is_mine": (current_user_id is not None and o.owner_user_id == current_user_id) # FIX DLA EDYCJI
+                    "is_mine": (current_user_id is not None and o.owner_user_id == current_user_id) 
                 })
             except Exception as e: continue
         return res
