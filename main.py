@@ -55,7 +55,20 @@ def get_db():
     try: yield db
     finally: db.close()
 
-# --- MODELE ---
+# --- MODELE BAZY DANYCH ---
+
+class City(Base):
+    __tablename__ = "cities"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    city = Column(String(100), nullable=False) # Nazwa miasta
+
+class State(Base): # To są "Rejony" / "Strefy"
+    __tablename__ = "states"
+    state_id = Column(Integer, primary_key=True, autoincrement=True)
+    name = Column(String(100), nullable=False)
+    city_id = Column(Integer, ForeignKey("cities.id"), nullable=True) # Link do miasta
+    city = Column(String(100), nullable=True) # Fallback (stara kolumna)
+
 class User(Base):
     __tablename__ = "users"
     user_id = Column(Integer, primary_key=True, autoincrement=True)
@@ -101,10 +114,10 @@ class AdminPermissions(Base):
     __tablename__ = "admin_permissions"
     permission_id = Column(Integer, primary_key=True, autoincrement=True)
     admin_id = Column(Integer, ForeignKey("admins.admin_id", ondelete="CASCADE"), nullable=False)
-    city = Column(String(255))
+    city = Column(String(255)) # String po przecinku
     view_disabled = Column(Boolean, default=False)
     view_ev = Column(Boolean, default=False)
-    allowed_state = Column(Text)
+    allowed_state = Column(Text) # ID rejonów po przecinku
     admin = relationship("Admin", back_populates="permissions")
 
 class HistoricalData(Base):
@@ -138,12 +151,6 @@ class District(Base):
     price_info = Column(String(255), nullable=True)
     capacity = Column(Integer, default=0)
 
-class State(Base):
-    __tablename__ = "states"
-    state_id = Column(Integer, primary_key=True, autoincrement=True)
-    name = Column(String(100), nullable=False)
-    city = Column(String(100), default='Inowrocław')
-
 class AirbnbOffer(Base):
     __tablename__ = "airbnb_offers"
     id = Column(Integer, primary_key=True, autoincrement=True)
@@ -157,11 +164,14 @@ class AirbnbOffer(Base):
     rating = Column(DECIMAL(3, 2), default=0)
     latitude = Column(DECIMAL(9, 6))
     longitude = Column(DECIMAL(9, 6))
-    state_id = Column(Integer, ForeignKey("states.state_id"), nullable=True)
+    
+    state_id = Column(Integer, ForeignKey("states.state_id"), nullable=True) # REJON
     district_id = Column(Integer, ForeignKey("districts.id"), nullable=True)
+    
     start_date = Column(Date)
     end_date = Column(Date)
     created_at = Column(DateTime, default=now_utc)
+    
     state_rel = relationship("State") 
 
 class ParkingSpot(Base):
@@ -176,12 +186,13 @@ class ParkingSpot(Base):
     is_disabled_friendly = Column(Boolean, default=False)
     is_ev = Column(Boolean, default=False)
     is_paid = Column(Boolean, default=True)
+    
     district_rel = relationship("District")
     state_rel = relationship("State") 
 
 Base.metadata.create_all(bind=engine)
 
-# --- SCHEMATY ---
+# --- SCHEMATY PYDANTIC ---
 class UserRegister(BaseModel): email: str; password: str; phone_number: Optional[str] = None
 class UserLogin(BaseModel): email: str; password: str
 class SubscriptionRequest(BaseModel): device_token: str; sensor_name: str
@@ -196,13 +207,15 @@ class StatsRequest(BaseModel):
 
 class AirbnbAdd(BaseModel):
     token: str; title: str; description: Optional[str] = None; price: float; h_availability: Optional[str] = None
-    contact: str; district_id: Optional[int] = None; start_date: Optional[str] = None; end_date: Optional[str] = None
+    contact: str; district_id: Optional[int] = None; state_id: Optional[int] = None
+    start_date: Optional[str] = None; end_date: Optional[str] = None
     latitude: Optional[float] = None; longitude: Optional[float] = None
 
 class AirbnbUpdate(BaseModel):
     token: str; offer_id: int; title: Optional[str] = None; description: Optional[str] = None
     price: Optional[float] = None; h_availability: Optional[str] = None; contact: Optional[str] = None
-    district_id: Optional[int] = None; start_date: Optional[str] = None; end_date: Optional[str] = None
+    district_id: Optional[int] = None; state_id: Optional[int] = None
+    start_date: Optional[str] = None; end_date: Optional[str] = None
     latitude: Optional[float] = None; longitude: Optional[float] = None
 
 class AirbnbDelete(BaseModel): token: str; offer_id: int
@@ -223,21 +236,8 @@ class AdminPayload(BaseModel):
 
 class AdminLogin(BaseModel): username: str; password: str
 
-class DistrictPayload(BaseModel):
-    id: Optional[int] = None; district: Optional[str] = None; city: Optional[str] = None
-    description: Optional[str] = None; price_info: Optional[str] = None; capacity: Optional[int] = None
-
-class StatePayload(BaseModel): state_id: Optional[int] = None; name: Optional[str] = None; city: Optional[str] = None
-
-class SpotPayload(BaseModel):
-    name: str; city: Optional[str] = None; state_id: Optional[int] = None; district_id: Optional[int] = None
-    coordinates: Optional[str] = None; is_disabled_friendly: Optional[bool] = None
-    is_ev: Optional[bool] = None; is_paid: Optional[bool] = None
-
 class StatystykiZapytanie(BaseModel): 
-    sensor_id: str
-    selected_date: str
-    selected_hour: int
+    sensor_id: str; selected_date: str; selected_hour: int
 
 # --- POMOCNIKI ---
 def get_password_hash(p: str) -> str: return bcrypt.hashpw(p.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
@@ -354,7 +354,9 @@ async def ws(ws: WebSocket):
         while True: await ws.receive_text()
     except: manager.disconnect(ws)
 
-# --- ADMIN ENDPOINTS ---
+# ==========================================
+#           DASHBOARD ENDPOINTS
+# ==========================================
 @app.get("/dashboard", response_class=HTMLResponse)
 def get_dashboard():
     try: return open("dashboard.html", "r", encoding="utf-8").read()
@@ -444,18 +446,32 @@ def update_user_status(d: AdminUserUpdate, db: Session = Depends(get_db)):
     if d.is_disabled is not None: u.is_disabled = d.is_disabled
     db.commit(); return {"status": "updated"}
 
-@app.get("/api/v1/districts")
-def get_districts(db: Session = Depends(get_db)):
-    districts = db.query(District).all()
-    return [{"id": d.id, "name": d.district, "city": d.city} for d in districts]
-
 @app.get("/api/v1/admin/search_hint")
 def search_admin_hint(q: str = "", db: Session = Depends(get_db)):
     if not q: return []
     admins = db.query(Admin.username).filter(Admin.username.ilike(f"%{q}%")).limit(5).all()
     return [a[0] for a in admins]
 
-# --- NOWE STATYSTYKI ADMINA (POPRAWIONE SQL v3) ---
+# --- NOWE ENDPOINTY LOKALIZACJI ---
+@app.get("/api/v1/cities")
+def get_cities(db: Session = Depends(get_db)):
+    cities = db.query(City).all()
+    return [{"id": c.id, "name": c.city} for c in cities]
+
+@app.get("/api/v1/states")
+def get_states(city_id: Optional[int] = None, db: Session = Depends(get_db)):
+    query = db.query(State)
+    if city_id:
+        query = query.filter(State.city_id == city_id)
+    states = query.all()
+    return [{"id": s.state_id, "name": s.name, "city_id": s.city_id} for s in states]
+
+@app.get("/api/v1/districts")
+def get_districts(db: Session = Depends(get_db)):
+    districts = db.query(District).all()
+    return [{"id": d.id, "name": d.district, "city": d.city} for d in districts]
+
+# --- AGREGOWANE STATYSTYKI ADMINA ---
 @app.post("/api/v1/admin/stats/advanced")
 def get_advanced_stats(req: StatsRequest, db: Session = Depends(get_db)):
     start = datetime.datetime.strptime(req.start_date, "%Y-%m-%d")
@@ -583,7 +599,7 @@ def get_spots(limit: int = 1000, db: Session = Depends(get_db)):
         })
     return res
 
-# --- STATYSTYKI MOBILNE (POPRAWIONE ZLICZANIE) ---
+# --- STATYSTYKI MOBILNE (ZAAWANSOWANA LOGIKA v2) ---
 @app.post("/api/v1/statystyki/zajetosc")
 def get_stats_mobile(req: StatystykiZapytanie, db: Session = Depends(get_db)):
     try:
@@ -628,7 +644,6 @@ def get_stats_mobile(req: StatystykiZapytanie, db: Session = Depends(get_db)):
         if not dates_to_check:
             return {"wynik": {"procent_zajetosci": 0, "liczba_pomiarow": 0}}
 
-        # FIX: LICZYMY WSZYSTKO (COUNT wszystkich rekordów, AVG statusu)
         result = db.query(
             func.avg(HistoricalData.status).label('avg_s'),
             func.count(HistoricalData.id).label('cnt')
@@ -647,13 +662,13 @@ def get_stats_mobile(req: StatystykiZapytanie, db: Session = Depends(get_db)):
         logger.error(f"Stats Mobile Error: {e}")
         return {"wynik": {"procent_zajetosci": 0, "liczba_pomiarow": 0}}
 
-# --- AIRBNB (TOKEN FIX) ---
+# --- AIRBNB (TOKEN FIX + OWNER FIX) ---
 @app.post("/api/v1/airbnb/add")
 def add_airbnb(a: AirbnbAdd, db: Session = Depends(get_db)):
     u = db.query(User).filter(User.token == a.token).first()
     if not u: raise HTTPException(401, "Nieautoryzowany")
     try:
-        db.add(AirbnbOffer(title=a.title, description=a.description, price=a.price, h_availability=a.h_availability, owner_name=u.email, owner_user_id=u.user_id, contact=a.contact, state_id=a.district_id, start_date=datetime.datetime.strptime(a.start_date, "%Y-%m-%d").date() if a.start_date else None, end_date=datetime.datetime.strptime(a.end_date, "%Y-%m-%d").date() if a.end_date else None, latitude=a.latitude, longitude=a.longitude))
+        db.add(AirbnbOffer(title=a.title, description=a.description, price=a.price, h_availability=a.h_availability, owner_name=u.email, owner_user_id=u.user_id, contact=a.contact, state_id=a.state_id, district_id=a.district_id, start_date=datetime.datetime.strptime(a.start_date, "%Y-%m-%d").date() if a.start_date else None, end_date=datetime.datetime.strptime(a.end_date, "%Y-%m-%d").date() if a.end_date else None, latitude=a.latitude, longitude=a.longitude))
         db.commit(); return {"status": "ok"}
     except Exception as e: db.rollback(); raise HTTPException(500, f"DB Error: {str(e)}")
 
@@ -670,7 +685,7 @@ def update_airbnb(u: AirbnbUpdate, db: Session = Depends(get_db)):
         if u.price is not None: offer.price = u.price
         if u.h_availability is not None: offer.h_availability = u.h_availability
         if u.contact is not None: offer.contact = u.contact
-        if u.district_id is not None: offer.state_id = u.district_id
+        if u.state_id is not None: offer.state_id = u.state_id
         if u.latitude is not None: offer.latitude = u.latitude
         if u.longitude is not None: offer.longitude = u.longitude
         if u.start_date: offer.start_date = datetime.datetime.strptime(u.start_date, "%Y-%m-%d").date()
@@ -697,7 +712,7 @@ def get_airbnb(district_id: Optional[int] = None, token: Optional[str] = None, d
             if u: current_user_id = u.user_id
 
         q = db.query(AirbnbOffer)
-        if district_id: q = q.filter(AirbnbOffer.state_id == district_id)
+        if district_id: q = q.filter(AirbnbOffer.district_id == district_id)
         offers = q.all()
         
         res = []
