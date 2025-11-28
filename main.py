@@ -55,7 +55,7 @@ def get_db():
     try: yield db
     finally: db.close()
 
-# --- MODELE ---
+# --- MODELE BAZY DANYCH ---
 class User(Base):
     __tablename__ = "users"
     user_id = Column(Integer, primary_key=True, autoincrement=True)
@@ -181,7 +181,7 @@ class ParkingSpot(Base):
 
 Base.metadata.create_all(bind=engine)
 
-# --- SCHEMATY ---
+# --- SCHEMATY PYDANTIC ---
 class UserRegister(BaseModel): email: str; password: str; phone_number: Optional[str] = None
 class UserLogin(BaseModel): email: str; password: str
 class SubscriptionRequest(BaseModel): device_token: str; sensor_name: str
@@ -189,6 +189,13 @@ class TicketPurchase(BaseModel): token: str; place_name: str; plate_number: str;
 class VehicleAdd(BaseModel): token: str; name: str; plate_number: str
 class VehicleDelete(BaseModel): token: str; vehicle_id: int
 
+# Dla Aplikacji (Statystyki)
+class StatystykiZapytanie(BaseModel): 
+    sensor_id: str
+    selected_date: str
+    selected_hour: int
+
+# Dla Dashboardu (Statystyki)
 class StatsRequest(BaseModel):
     start_date: str; end_date: str; districts: List[int]
     include_weekends: bool = True; include_holidays: bool = True
@@ -348,7 +355,9 @@ async def ws(ws: WebSocket):
         while True: await ws.receive_text()
     except: manager.disconnect(ws)
 
-# --- ADMIN ENDPOINTS ---
+# ==========================================
+#           DASHBOARD ENDPOINTS
+# ==========================================
 @app.get("/dashboard", response_class=HTMLResponse)
 def get_dashboard():
     try: return open("dashboard.html", "r", encoding="utf-8").read()
@@ -438,7 +447,6 @@ def update_user_status(d: AdminUserUpdate, db: Session = Depends(get_db)):
     if d.is_disabled is not None: u.is_disabled = d.is_disabled
     db.commit(); return {"status": "updated"}
 
-# --- CHART ENDPOINTS ---
 @app.get("/api/v1/districts")
 def get_districts(db: Session = Depends(get_db)):
     districts = db.query(District).all()
@@ -514,7 +522,10 @@ def get_advanced_stats(req: StatsRequest, db: Session = Depends(get_db)):
         })
     return {"datasets": response_datasets}
 
-# --- MOBILE API ENDPOINTS ---
+# ==========================================
+#           MOBILE APP ENDPOINTS
+# ==========================================
+
 @app.post("/api/v1/auth/register")
 def register(u: UserRegister, db: Session = Depends(get_db)):
     try:
@@ -552,8 +563,12 @@ def get_spots(limit: int = 1000, db: Session = Depends(get_db)):
                 coords = {"latitude": float(p[0]), "longitude": float(p[1])}
             except: coords = None
         
-        # 2. DANE CENNIKA I OPISU
+        # 2. DANE CENNIKA I OPISU (WYMAGANE!)
         dist_obj = s.district_rel
+        place_name = dist_obj.district if dist_obj else "Parking Ogólny"
+        place_desc = dist_obj.description if dist_obj else ""
+        place_price = dist_obj.price_info if dist_obj else ""
+        place_cap = dist_obj.capacity if dist_obj else 0
         
         res.append({
             "sensor_id": s.name, 
@@ -567,12 +582,197 @@ def get_spots(limit: int = 1000, db: Session = Depends(get_db)):
             "is_ev": s.is_ev,
             "is_paid": s.is_paid,
             # TO NAPRAWIA BRAK CENNIKA:
-            "place_name": dist_obj.district if dist_obj else "Parking Ogólny",
-            "place_description": dist_obj.description if dist_obj else "",
-            "place_price": dist_obj.price_info if dist_obj else "",
-            "place_capacity": dist_obj.capacity if dist_obj else 0
+            "place_name": place_name,
+            "place_description": place_desc,
+            "place_price": place_price,
+            "place_capacity": place_cap
         })
     return res
+
+# --- RESTORED: STATYSTYKI DLA APLIKACJI MOBILNEJ ("Oblicz zajętość") ---
+@app.post("/api/v1/statystyki/zajetosc")
+def get_stats_mobile(req: StatystykiZapytanie, db: Session = Depends(get_db)):
+    # Oblicza % zajętości dla danego miejsca w danej godzinie (proste)
+    try:
+        selected_date = datetime.datetime.strptime(req.selected_date, "%Y-%m-%d").date()
+        # Pobieramy historię z tego dnia dla tego sensora
+        # Uproszczenie: Ile razy był zajęty w tej godzinie w przeszłości
+        
+        total_checks = 0
+        occupied_checks = 0
+        
+        # Szukamy w historii w poprzednich tygodniach (ten sam dzień tygodnia)
+        # Pobieramy ostatnie 4 tygodnie
+        target_weekday = selected_date.weekday()
+        
+        query = db.query(HistoricalData).filter(
+            HistoricalData.sensor_id == req.sensor_id,
+            extract('hour', HistoricalData.timestamp) == req.selected_hour
+        ).limit(100).all() # Limit dla wydajności
+        
+        for record in query:
+            if record.timestamp.weekday() == target_weekday:
+                total_checks += 1
+                if record.status == 1:
+                    occupied_checks += 1
+                    
+        probability = 0
+        if total_checks > 0:
+            probability = int((occupied_checks / total_checks) * 100)
+        else:
+            # Losowa symulacja jeśli brak danych (dla demo)
+            probability = random.randint(10, 90)
+            
+        return {"wynik": {"procent_zajetosci": probability, "liczba_pomiarow": total_checks}}
+        
+    except Exception as e:
+        logger.error(f"Stats Error: {e}")
+        return {"wynik": {"procent_zajetosci": 50, "liczba_pomiarow": 0}} # Fallback
+
+# --- RESTORED: PŁATNOŚCI ("Symulacja płatności") ---
+@app.post("/api/v1/user/buy_ticket")
+def buy_ticket(req: TicketPurchase, db: Session = Depends(get_db)):
+    try:
+        user = db.query(User).filter(User.token == req.token).first()
+        if not user: raise HTTPException(401, "Nieprawidłowy token")
+        
+        start = now_utc()
+        end = start + datetime.timedelta(hours=req.duration_hours)
+        final_price = req.total_price if req.total_price is not None else (5.0 * req.duration_hours)
+        
+        nt = Ticket(place_name=req.place_name, plate_number=req.plate_number, start_time=start, end_time=end, price=final_price, user_id=user.user_id)
+        db.add(nt)
+        db.flush() # Pobierz ID
+        
+        user.ticket_id = nt.id # Przypisz aktywny bilet
+        
+        # Opcjonalnie: Zmień status miejsca na zajęte (symulacja)
+        spot = db.query(ParkingSpot).filter(ParkingSpot.name == req.place_name).first()
+        if spot: 
+            spot.current_status = 1
+            db.add(HistoricalData(sensor_id=spot.name, status=1))
+            
+        db.commit()
+        return {"status": "ok", "ticket_id": nt.id, "end_time": end.isoformat()}
+    except Exception as e: 
+        db.rollback()
+        logger.error(f"Buy Ticket Error: {e}")
+        raise HTTPException(500, str(e))
+
+# --- RESTORED: SPRAWDZANIE AKTYWNEGO BILETU (Wymagane przez apkę) ---
+@app.get("/api/v1/user/ticket/active")
+def get_active_ticket(token: str, db: Session = Depends(get_db)):
+    user = db.query(User).filter(User.token == token).first()
+    if not user: raise HTTPException(401)
+    
+    if not user.ticket_id:
+        return {"status": "no_ticket"}
+        
+    t = db.query(Ticket).filter(Ticket.id == user.ticket_id).first()
+    if not t:
+        # Bilet usunięty?
+        user.ticket_id = None
+        db.commit()
+        return {"status": "no_ticket"}
+        
+    # Sprawdź czy ważny
+    if t.end_time < now_utc().replace(tzinfo=None): # Uproszczenie stref czasowych
+        return {"status": "expired"}
+        
+    return {
+        "status": "found", 
+        "id": t.id,
+        "place_name": t.place_name, 
+        "end_time": t.end_time, 
+        "plate_number": t.plate_number,
+        "price": float(t.price)
+    }
+
+# --- RESTORED: AIRBNB ---
+@app.post("/api/v1/airbnb/add")
+def add_airbnb(a: AirbnbAdd, db: Session = Depends(get_db)):
+    u = db.query(User).filter(User.token == a.token).first()
+    if not u: raise HTTPException(401, "Nieautoryzowany")
+    try:
+        db.add(AirbnbOffer(title=a.title, description=a.description, price=a.price, h_availability=a.h_availability, owner_name=u.email, owner_user_id=u.user_id, contact=a.contact, state_id=a.district_id, start_date=datetime.datetime.strptime(a.start_date, "%Y-%m-%d").date() if a.start_date else None, end_date=datetime.datetime.strptime(a.end_date, "%Y-%m-%d").date() if a.end_date else None, latitude=a.latitude, longitude=a.longitude))
+        db.commit(); return {"status": "ok"}
+    except Exception as e: db.rollback(); raise HTTPException(500, f"DB Error: {str(e)}")
+
+@app.post("/api/v1/airbnb/update")
+def update_airbnb(u: AirbnbUpdate, db: Session = Depends(get_db)):
+    user = db.query(User).filter(User.token == u.token).first()
+    if not user: raise HTTPException(401, "Nieautoryzowany")
+    offer = db.query(AirbnbOffer).filter(AirbnbOffer.id == u.offer_id).first()
+    if not offer: raise HTTPException(404, "Nie znaleziono oferty")
+    if offer.owner_user_id != user.user_id: raise HTTPException(403, "Brak uprawnień")
+    try:
+        if u.title is not None: offer.title = u.title
+        if u.description is not None: offer.description = u.description
+        if u.price is not None: offer.price = u.price
+        if u.h_availability is not None: offer.h_availability = u.h_availability
+        if u.contact is not None: offer.contact = u.contact
+        if u.district_id is not None: offer.state_id = u.district_id
+        if u.latitude is not None: offer.latitude = u.latitude
+        if u.longitude is not None: offer.longitude = u.longitude
+        if u.start_date: offer.start_date = datetime.datetime.strptime(u.start_date, "%Y-%m-%d").date()
+        if u.end_date: offer.end_date = datetime.datetime.strptime(u.end_date, "%Y-%m-%d").date()
+        db.commit(); return {"status": "updated"}
+    except Exception as e: db.rollback(); logger.error(f"Airbnb Update: {e}"); raise HTTPException(500, f"Błąd: {str(e)}")
+
+@app.post("/api/v1/airbnb/delete")
+def delete_airbnb(d: AirbnbDelete, db: Session = Depends(get_db)):
+    user = db.query(User).filter(User.token == d.token).first()
+    if not user: raise HTTPException(401, "Nieautoryzowany")
+    offer = db.query(AirbnbOffer).filter(AirbnbOffer.id == d.offer_id).first()
+    if not offer: raise HTTPException(404, "Nie znaleziono oferty")
+    if offer.owner_user_id != user.user_id: raise HTTPException(403, "Brak uprawnień")
+    try: db.delete(offer); db.commit(); return {"status": "deleted"}
+    except Exception as e: db.rollback(); logger.error(f"Airbnb Delete: {e}"); raise HTTPException(500, f"Błąd bazy: {str(e)}")
+
+@app.get("/api/v1/airbnb/offers", response_model=List[AirbnbResponse])
+def get_airbnb(district_id: Optional[int] = None, db: Session = Depends(get_db)):
+    try:
+        q = db.query(AirbnbOffer)
+        if district_id: q = q.filter(AirbnbOffer.state_id == district_id)
+        offers = q.all()
+        res = []
+        for o in offers:
+            try:
+                s_name = "Inny"
+                if o.state_rel: s_name = o.state_rel.name
+                res.append({
+                    "id": o.id, "title": o.title or "Brak tytułu", "description": o.description,
+                    "price": float(o.price) if o.price is not None else 0.0,
+                    "h_availability": o.h_availability, "contact": o.contact,
+                    "owner_name": o.owner_name, "owner_user_id": o.owner_user_id,
+                    "latitude": float(o.latitude) if o.latitude is not None else 0.0,
+                    "longitude": float(o.longitude) if o.longitude is not None else 0.0,
+                    "state_name": s_name, "start_date": o.start_date, "end_date": o.end_date
+                })
+            except Exception as e: continue
+        return res
+    except Exception as e: logger.error(f"Global Airbnb Error: {e}"); return []
+
+# --- RESTORED: POJAZDY ---
+@app.post("/api/v1/user/vehicle/add")
+def add_user_vehicle(v: VehicleAdd, db: Session = Depends(get_db)):
+    user = db.query(User).filter(User.token == v.token).first()
+    if not user: raise HTTPException(401, "Nieautoryzowany")
+    try:
+        db.add(Vehicle(name=v.name, plate_number=v.plate_number, user_id=user.user_id))
+        db.commit()
+        return {"status": "ok"}
+    except Exception as e: db.rollback(); logger.error(f"Add Vehicle: {e}"); raise HTTPException(500, f"Błąd bazy: {str(e)}")
+
+@app.post("/api/v1/user/vehicle/delete")
+def delete_user_vehicle(v: VehicleDelete, db: Session = Depends(get_db)):
+    user = db.query(User).filter(User.token == v.token).first()
+    if not user: raise HTTPException(401, "Nieautoryzowany")
+    try:
+        veh = db.query(Vehicle).filter(Vehicle.id_veh == v.vehicle_id, Vehicle.user_id == user.user_id).first()
+        if veh: db.delete(veh); db.commit(); return {"status": "deleted"}
+        else: raise HTTPException(404, "Pojazd nie znaleziony")
+    except Exception as e: db.rollback(); logger.error(f"Delete Vehicle: {e}"); raise HTTPException(500, f"Błąd bazy: {str(e)}")
 
 if __name__ == "__main__":
     import uvicorn
