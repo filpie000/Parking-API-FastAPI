@@ -514,7 +514,7 @@ def get_advanced_stats(req: StatsRequest, db: Session = Depends(get_db)):
         })
     return {"datasets": response_datasets}
 
-# --- MOBILE API ENDPOINTS (FIXED!) ---
+# --- MOBILE API ENDPOINTS ---
 @app.post("/api/v1/auth/register")
 def register(u: UserRegister, db: Session = Depends(get_db)):
     try:
@@ -544,25 +544,33 @@ def get_spots(limit: int = 1000, db: Session = Depends(get_db)):
     spots = db.query(ParkingSpot).limit(limit).all()
     res = []
     for s in spots:
+        # 1. PARSOWANIE WSPÓŁRZĘDNYCH DLA MOBILKI (WYMAGANE!)
         coords = None
         if s.coordinates and ',' in s.coordinates:
-            p = s.coordinates.split(',')
-            coords = {"latitude": float(p[0]), "longitude": float(p[1])}
+            try:
+                p = s.coordinates.split(',')
+                coords = {"latitude": float(p[0]), "longitude": float(p[1])}
+            except: coords = None
         
+        # 2. DANE CENNIKA I OPISU
         dist_obj = s.district_rel
-        place_name = dist_obj.district if dist_obj else "Parking Ogólny"
         
         res.append({
             "sensor_id": s.name, 
             "status": s.current_status, 
             "city": s.city, 
             "district_id": s.district_id, 
+            "state_id": s.state_id,
             "coordinates": s.coordinates, 
-            "wspolrzedne": coords, # FIX DLA MOBILKI
+            "wspolrzedne": coords, # TO NAPRAWIA PUSTE WYNIKI NA TELEFONIE
             "is_disabled_friendly": s.is_disabled_friendly,
             "is_ev": s.is_ev,
             "is_paid": s.is_paid,
-            "place_name": place_name
+            # TO NAPRAWIA BRAK CENNIKA:
+            "place_name": dist_obj.district if dist_obj else "Parking Ogólny",
+            "place_description": dist_obj.description if dist_obj else "",
+            "place_price": dist_obj.price_info if dist_obj else "",
+            "place_capacity": dist_obj.capacity if dist_obj else 0
         })
     return res
 
