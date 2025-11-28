@@ -60,14 +60,15 @@ def get_db():
 class City(Base):
     __tablename__ = "cities"
     id = Column(Integer, primary_key=True, autoincrement=True)
-    city = Column(String(100), nullable=False) # Nazwa miasta
+    city = Column(String(100), nullable=False) 
 
-class State(Base): # To są "Rejony" / "Strefy"
+class State(Base): 
     __tablename__ = "states"
     state_id = Column(Integer, primary_key=True, autoincrement=True)
     name = Column(String(100), nullable=False)
-    city_id = Column(Integer, ForeignKey("cities.id"), nullable=True) # Link do miasta
-    city = Column(String(100), nullable=True) # Fallback (stara kolumna)
+    # Zmienione pod Twoją bazę: łączymy po nazwie miasta (string), a nie city_id
+    city = Column(String(100), nullable=True) 
+    # city_id = Column(Integer, ForeignKey("cities.id"), nullable=True) # Usunięte, bo w Twojej bazie tego nie ma
 
 class User(Base):
     __tablename__ = "users"
@@ -114,10 +115,10 @@ class AdminPermissions(Base):
     __tablename__ = "admin_permissions"
     permission_id = Column(Integer, primary_key=True, autoincrement=True)
     admin_id = Column(Integer, ForeignKey("admins.admin_id", ondelete="CASCADE"), nullable=False)
-    city = Column(String(255)) # String po przecinku
+    city = Column(String(255))
     view_disabled = Column(Boolean, default=False)
     view_ev = Column(Boolean, default=False)
-    allowed_state = Column(Text) # ID rejonów po przecinku
+    allowed_state = Column(Text)
     admin = relationship("Admin", back_populates="permissions")
 
 class HistoricalData(Base):
@@ -165,13 +166,15 @@ class AirbnbOffer(Base):
     latitude = Column(DECIMAL(9, 6))
     longitude = Column(DECIMAL(9, 6))
     
-    state_id = Column(Integer, ForeignKey("states.state_id"), nullable=True) # REJON
+    state_id = Column(Integer, ForeignKey("states.state_id"), nullable=True)
     district_id = Column(Integer, ForeignKey("districts.id"), nullable=True)
     
     start_date = Column(Date)
     end_date = Column(Date)
     created_at = Column(DateTime, default=now_utc)
     
+    # Usunięta relacja 'state_rel' jeśli powoduje błędy przy braku city_id, 
+    # ale dla bezpieczenstwa zostawiam query manualne w kodzie
     state_rel = relationship("State") 
 
 class ParkingSpot(Base):
@@ -458,13 +461,21 @@ def get_cities(db: Session = Depends(get_db)):
     cities = db.query(City).all()
     return [{"id": c.id, "name": c.city} for c in cities]
 
+# FIX: Filtrowanie po nazwie miasta (dla Twojej struktury bazy)
 @app.get("/api/v1/states")
 def get_states(city_id: Optional[int] = None, db: Session = Depends(get_db)):
     query = db.query(State)
     if city_id:
-        query = query.filter(State.city_id == city_id)
+        # Najpierw znajdujemy nazwę miasta po ID
+        city_obj = db.query(City).filter(City.id == city_id).first()
+        if city_obj:
+            # Potem filtrujemy rejon (state) po nazwie miasta
+            query = query.filter(State.city == city_obj.city)
+        else:
+            return [] # Nie znaleziono miasta
+            
     states = query.all()
-    return [{"id": s.state_id, "name": s.name, "city_id": s.city_id} for s in states]
+    return [{"id": s.state_id, "name": s.name, "city": s.city} for s in states]
 
 @app.get("/api/v1/districts")
 def get_districts(db: Session = Depends(get_db)):
@@ -491,7 +502,7 @@ def get_advanced_stats(req: StatsRequest, db: Session = Depends(get_db)):
         valid_spots_names = [s.name for s in spots_query.all()]
         if not valid_spots_names: continue
 
-        # SQL Agregacja - pobieramy wszystko (status 0 i 1)
+        # SQL Agregacja
         raw_stats = db.query(
             extract('hour', HistoricalData.timestamp).label('hour'),
             func.date(HistoricalData.timestamp).label('day'),
