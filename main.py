@@ -63,7 +63,7 @@ class User(Base):
     password_hash = Column(String(255), nullable=False)
     phone_number = Column(String(20))
     token = Column(String(255))
-    is_disabled = Column(Boolean, default=False) # Status niepełnosprawności
+    is_disabled = Column(Boolean, default=False)
     is_blocked = Column(Boolean, default=False)
     payment_token = Column(String(255))
     ticket_id = Column(Integer, ForeignKey("tickets.id"), nullable=True, default=None)
@@ -101,10 +101,10 @@ class AdminPermissions(Base):
     __tablename__ = "admin_permissions"
     permission_id = Column(Integer, primary_key=True, autoincrement=True)
     admin_id = Column(Integer, ForeignKey("admins.admin_id", ondelete="CASCADE"), nullable=False)
-    city = Column(String(255)) # Zmienione na dłuższy string dla wielu miast
+    city = Column(String(255))
     view_disabled = Column(Boolean, default=False)
     view_ev = Column(Boolean, default=False)
-    allowed_state = Column(Text) # ID stref po przecinku
+    allowed_state = Column(Text)
     admin = relationship("Admin", back_populates="permissions")
 
 class HistoricalData(Base):
@@ -514,7 +514,7 @@ def get_advanced_stats(req: StatsRequest, db: Session = Depends(get_db)):
         })
     return {"datasets": response_datasets}
 
-# --- MOBILE API ENDPOINTS (AS BEFORE) ---
+# --- MOBILE API ENDPOINTS (FIXED!) ---
 @app.post("/api/v1/auth/register")
 def register(u: UserRegister, db: Session = Depends(get_db)):
     try:
@@ -542,7 +542,29 @@ def get_me(token: str, db: Session = Depends(get_db)):
 @app.get("/api/v1/aktualny_stan")
 def get_spots(limit: int = 1000, db: Session = Depends(get_db)):
     spots = db.query(ParkingSpot).limit(limit).all()
-    return [{"sensor_id": s.name, "status": s.current_status, "city": s.city, "district_id": s.district_id, "coordinates": s.coordinates} for s in spots]
+    res = []
+    for s in spots:
+        coords = None
+        if s.coordinates and ',' in s.coordinates:
+            p = s.coordinates.split(',')
+            coords = {"latitude": float(p[0]), "longitude": float(p[1])}
+        
+        dist_obj = s.district_rel
+        place_name = dist_obj.district if dist_obj else "Parking Ogólny"
+        
+        res.append({
+            "sensor_id": s.name, 
+            "status": s.current_status, 
+            "city": s.city, 
+            "district_id": s.district_id, 
+            "coordinates": s.coordinates, 
+            "wspolrzedne": coords, # FIX DLA MOBILKI
+            "is_disabled_friendly": s.is_disabled_friendly,
+            "is_ev": s.is_ev,
+            "is_paid": s.is_paid,
+            "place_name": place_name
+        })
+    return res
 
 if __name__ == "__main__":
     import uvicorn
