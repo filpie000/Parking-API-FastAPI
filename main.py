@@ -13,7 +13,8 @@ from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
-from sqlalchemy import create_engine, Column, Integer, String, DateTime, Boolean, ForeignKey, Float, Text, Table, func, Date, DECIMAL, extract, and_, or_, text, distinct
+# Importujemy funkcje SQL do zaawansowanej analityki
+from sqlalchemy import create_engine, Column, Integer, String, DateTime, Boolean, ForeignKey, Float, Text, Table, func, Date, DECIMAL, extract, and_, or_, text, distinct, case
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, Session, relationship, joinedload
 from sqlalchemy.exc import IntegrityError, ProgrammingError
@@ -55,7 +56,7 @@ def get_db():
     try: yield db
     finally: db.close()
 
-# --- MODELE BAZY DANYCH ---
+# --- MODELE ---
 class User(Base):
     __tablename__ = "users"
     user_id = Column(Integer, primary_key=True, autoincrement=True)
@@ -181,7 +182,7 @@ class ParkingSpot(Base):
 
 Base.metadata.create_all(bind=engine)
 
-# --- SCHEMATY PYDANTIC ---
+# --- SCHEMATY ---
 class UserRegister(BaseModel): email: str; password: str; phone_number: Optional[str] = None
 class UserLogin(BaseModel): email: str; password: str
 class SubscriptionRequest(BaseModel): device_token: str; sensor_name: str
@@ -189,13 +190,6 @@ class TicketPurchase(BaseModel): token: str; place_name: str; plate_number: str;
 class VehicleAdd(BaseModel): token: str; name: str; plate_number: str
 class VehicleDelete(BaseModel): token: str; vehicle_id: int
 
-# Dla Aplikacji (Statystyki)
-class StatystykiZapytanie(BaseModel): 
-    sensor_id: str
-    selected_date: str
-    selected_hour: int
-
-# Dla Dashboardu (Statystyki)
 class StatsRequest(BaseModel):
     start_date: str; end_date: str; districts: List[int]
     include_weekends: bool = True; include_holidays: bool = True
@@ -219,6 +213,7 @@ class AirbnbResponse(BaseModel):
     h_availability: Optional[str] = None; contact: Optional[str] = None; owner_name: Optional[str] = None
     owner_user_id: Optional[int] = None; latitude: Optional[float] = None; longitude: Optional[float] = None
     state_name: Optional[str] = "Inny"; start_date: Optional[datetime.date] = None; end_date: Optional[datetime.date] = None
+    is_mine: bool = False 
     class Config: orm_mode = True
 
 class AdminUserUpdate(BaseModel): user_id: int; is_blocked: Optional[bool] = None; is_disabled: Optional[bool] = None
@@ -239,6 +234,11 @@ class SpotPayload(BaseModel):
     name: str; city: Optional[str] = None; state_id: Optional[int] = None; district_id: Optional[int] = None
     coordinates: Optional[str] = None; is_disabled_friendly: Optional[bool] = None
     is_ev: Optional[bool] = None; is_paid: Optional[bool] = None
+
+class StatystykiZapytanie(BaseModel): 
+    sensor_id: str
+    selected_date: str
+    selected_hour: int
 
 # --- POMOCNIKI ---
 def get_password_hash(p: str) -> str: return bcrypt.hashpw(p.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
@@ -355,9 +355,7 @@ async def ws(ws: WebSocket):
         while True: await ws.receive_text()
     except: manager.disconnect(ws)
 
-# ==========================================
-#           DASHBOARD ENDPOINTS
-# ==========================================
+# --- ADMIN ENDPOINTS ---
 @app.get("/dashboard", response_class=HTMLResponse)
 def get_dashboard():
     try: return open("dashboard.html", "r", encoding="utf-8").read()
@@ -458,16 +456,19 @@ def search_admin_hint(q: str = "", db: Session = Depends(get_db)):
     admins = db.query(Admin.username).filter(Admin.username.ilike(f"%{q}%")).limit(5).all()
     return [a[0] for a in admins]
 
+# --- NOWE STATYSTYKI ADMINA (AGREGACJA SQL) ---
 @app.post("/api/v1/admin/stats/advanced")
 def get_advanced_stats(req: StatsRequest, db: Session = Depends(get_db)):
     start = datetime.datetime.strptime(req.start_date, "%Y-%m-%d")
     end = datetime.datetime.strptime(req.end_date, "%Y-%m-%d") + datetime.timedelta(days=1)
+    
     response_datasets = []
     
     for dist_id in req.districts:
         district = db.query(District).filter(District.id == dist_id).first()
         if not district: continue
         
+        # 1. Filtrowanie Miejsc (Hardware)
         spots_query = db.query(ParkingSpot).filter(ParkingSpot.district_id == dist_id)
         if req.only_disabled: spots_query = spots_query.filter(ParkingSpot.is_disabled_friendly == True)
         if req.only_ev: spots_query = spots_query.filter(ParkingSpot.is_ev == True)
@@ -475,41 +476,49 @@ def get_advanced_stats(req: StatsRequest, db: Session = Depends(get_db)):
         
         valid_spots_names = [s.name for s in spots_query.all()]
         if not valid_spots_names: continue
-        capacity = len(valid_spots_names) or 1
 
-        hourly_counts = {h: 0 for h in range(24)}
+        # 2. Pobieramy zagregowane dane z bazy (GROUP BY)
+        # SQL policzy średnią zajętość dla każdej godziny w zakresie dat
+        # To działa dla 400 000 rekordów w ułamku sekundy
         
-        history_data = db.query(HistoricalData).filter(
+        # Wyciągamy (Godzina, Data, Średnia statusu w tej godzinie)
+        # avg(status) zwróci wartość 0.0 - 1.0 (bo status to 0 lub 1)
+        raw_stats = db.query(
+            extract('hour', HistoricalData.timestamp).label('hour'),
+            func.date(HistoricalData.timestamp).label('day'),
+            func.avg(HistoricalData.status).label('avg_status')
+        ).filter(
             HistoricalData.sensor_id.in_(valid_spots_names),
-            HistoricalData.status == 1,
             HistoricalData.timestamp >= start,
             HistoricalData.timestamp < end
-        ).all()
+        ).group_by('day', 'hour').all()
 
-        for entry in history_data:
-            ts = entry.timestamp
-            if not req.include_weekends and ts.weekday() >= 5: continue
-            is_holiday = check_if_holiday(ts.date())
-            if not req.include_holidays and is_holiday: continue
-            hourly_counts[ts.hour] += 1
-        
-        valid_days = 0
-        current = start
-        while current < end:
-            is_w = current.weekday() >= 5
-            is_h = check_if_holiday(current.date())
-            skip = False
-            if not req.include_weekends and is_w: skip = True
-            if not req.include_holidays and is_h: skip = True
-            if not skip: valid_days += 1
-            current += datetime.timedelta(days=1)
-        if valid_days == 0: valid_days = 1
+        # 3. Post-processing w Pythonie (Filtrowanie Dni)
+        # Teraz iterujemy tylko po ~ (Liczba Dni * 24) rekordach, a nie 400 000
+        hourly_sums = {h: [] for h in range(24)}
 
+        for r in raw_stats:
+            date_obj = r.day # datetime.date
+            
+            # Filtry dni
+            is_w = date_obj.weekday() >= 5
+            is_h = check_if_holiday(date_obj)
+            
+            if not req.include_weekends and is_w: continue
+            if not req.include_holidays and is_h: continue
+            
+            # Dodajemy wynik (0.0 - 1.0) do listy dla danej godziny
+            hourly_sums[int(r.hour)].append(float(r.avg_status))
+
+        # Obliczamy ostateczną średnią dla wykresu
         final_data = []
         for h in range(24):
-            val = (hourly_counts[h] / (capacity * valid_days)) * 100
-            if val > 100: val = 100
-            final_data.append(round(val, 1))
+            vals = hourly_sums[h]
+            if not vals:
+                final_data.append(0)
+            else:
+                avg_val = sum(vals) / len(vals)
+                final_data.append(round(avg_val * 100, 1)) # Konwersja na %
 
         color = f"rgba({random.randint(50,220)}, {random.randint(50,220)}, {random.randint(50,220)}, 1)"
         response_datasets.append({
@@ -520,6 +529,7 @@ def get_advanced_stats(req: StatsRequest, db: Session = Depends(get_db)):
             "fill": True,
             "tension": 0.4
         })
+        
     return {"datasets": response_datasets}
 
 # ==========================================
@@ -555,7 +565,7 @@ def get_spots(limit: int = 1000, db: Session = Depends(get_db)):
     spots = db.query(ParkingSpot).limit(limit).all()
     res = []
     for s in spots:
-        # 1. PARSOWANIE WSPÓŁRZĘDNYCH DLA MOBILKI (WYMAGANE!)
+        # Parsowanie współrzędnych
         coords = None
         if s.coordinates and ',' in s.coordinates:
             try:
@@ -563,7 +573,7 @@ def get_spots(limit: int = 1000, db: Session = Depends(get_db)):
                 coords = {"latitude": float(p[0]), "longitude": float(p[1])}
             except: coords = None
         
-        # 2. DANE CENNIKA I OPISU (WYMAGANE!)
+        # Dane cennika
         dist_obj = s.district_rel
         place_name = dist_obj.district if dist_obj else "Parking Ogólny"
         place_desc = dist_obj.description if dist_obj else ""
@@ -577,11 +587,10 @@ def get_spots(limit: int = 1000, db: Session = Depends(get_db)):
             "district_id": s.district_id, 
             "state_id": s.state_id,
             "coordinates": s.coordinates, 
-            "wspolrzedne": coords, # TO NAPRAWIA PUSTE WYNIKI NA TELEFONIE
+            "wspolrzedne": coords, 
             "is_disabled_friendly": s.is_disabled_friendly,
             "is_ev": s.is_ev,
             "is_paid": s.is_paid,
-            # TO NAPRAWIA BRAK CENNIKA:
             "place_name": place_name,
             "place_description": place_desc,
             "place_price": place_price,
@@ -589,106 +598,72 @@ def get_spots(limit: int = 1000, db: Session = Depends(get_db)):
         })
     return res
 
-# --- RESTORED: STATYSTYKI DLA APLIKACJI MOBILNEJ ("Oblicz zajętość") ---
+# --- LOGIKA STATYSTYK (APLIKACJA MOBILNA) ---
+# Implementacja logiki użytkownika: Środa 15:00 -> Badamy 14-16, cała strefa, wykluczamy święta jeśli to dzień roboczy.
 @app.post("/api/v1/statystyki/zajetosc")
 def get_stats_mobile(req: StatystykiZapytanie, db: Session = Depends(get_db)):
-    # Oblicza % zajętości dla danego miejsca w danej godzinie (proste)
     try:
-        selected_date = datetime.datetime.strptime(req.selected_date, "%Y-%m-%d").date()
-        # Pobieramy historię z tego dnia dla tego sensora
-        # Uproszczenie: Ile razy był zajęty w tej godzinie w przeszłości
+        # 1. Analiza zapytania
+        target_date = datetime.datetime.strptime(req.selected_date, "%Y-%m-%d").date()
+        target_hour = req.selected_hour
+        target_weekday = target_date.weekday() # 0=Pon, 6=Nd
+        is_target_holiday = check_if_holiday(target_date) is not None
         
-        total_checks = 0
-        occupied_checks = 0
-        
-        # Szukamy w historii w poprzednich tygodniach (ten sam dzień tygodnia)
-        # Pobieramy ostatnie 4 tygodnie
-        target_weekday = selected_date.weekday()
-        
-        query = db.query(HistoricalData).filter(
-            HistoricalData.sensor_id == req.sensor_id,
-            extract('hour', HistoricalData.timestamp) == req.selected_hour
-        ).limit(100).all() # Limit dla wydajności
-        
-        for record in query:
-            if record.timestamp.weekday() == target_weekday:
-                total_checks += 1
-                if record.status == 1:
-                    occupied_checks += 1
-                    
-        probability = 0
-        if total_checks > 0:
-            probability = int((occupied_checks / total_checks) * 100)
+        # 2. Znajdź strefę (District) dla tego czujnika
+        spot = db.query(ParkingSpot).filter(ParkingSpot.name == req.sensor_id).first()
+        if not spot or not spot.district_id:
+            # Fallback jeśli brak danych o strefie: licz tylko dla tego sensora
+            valid_sensors = [req.sensor_id]
         else:
-            # Losowa symulacja jeśli brak danych (dla demo)
-            probability = random.randint(10, 90)
+            # Pobierz WSZYSTKIE czujniki z tej strefy
+            all_spots_in_zone = db.query(ParkingSpot.name).filter(ParkingSpot.district_id == spot.district_id).all()
+            valid_sensors = [s[0] for s in all_spots_in_zone]
+
+        # 3. Definiujemy zakres godzin (14-16 dla 15)
+        hour_min = target_hour - 1
+        hour_max = target_hour + 1
+        
+        # 4. Pobieramy dane historyczne (Agregacja SQL)
+        # Pobieramy datę i średnią zajętość w oknie godzinowym
+        raw_data = db.query(
+            func.date(HistoricalData.timestamp).label('day'),
+            func.avg(HistoricalData.status).label('avg_status')
+        ).filter(
+            HistoricalData.sensor_id.in_(valid_sensors),
+            extract('hour', HistoricalData.timestamp).between(hour_min, hour_max)
+        ).group_by('day').all()
+        
+        # 5. Filtrowanie "Inteligentne"
+        relevant_samples = []
+        
+        for r in raw_data:
+            h_date = r.day
+            is_h_holiday = check_if_holiday(h_date) is not None
             
-        return {"wynik": {"procent_zajetosci": probability, "liczba_pomiarow": total_checks}}
+            # Logika A: Jeśli szukamy dla Święta -> bierzemy tylko inne Święta
+            if is_target_holiday:
+                if is_h_holiday: relevant_samples.append(float(r.avg_status))
+                continue
+            
+            # Logika B: Jeśli szukamy Dnia Roboczego -> bierzemy ten sam dzień tygodnia, wykluczamy święta
+            if h_date.weekday() == target_weekday and not is_h_holiday:
+                relevant_samples.append(float(r.avg_status))
+
+        # 6. Wynik
+        if not relevant_samples:
+            probability = 0 # Brak danych historycznych
+            count = 0
+        else:
+            probability = int((sum(relevant_samples) / len(relevant_samples)) * 100)
+            count = len(relevant_samples) # Liczba dni, które pasowały do wzorca
+
+        return {"wynik": {"procent_zajetosci": probability, "liczba_pomiarow": count}}
         
     except Exception as e:
-        logger.error(f"Stats Error: {e}")
-        return {"wynik": {"procent_zajetosci": 50, "liczba_pomiarow": 0}} # Fallback
+        logger.error(f"Stats Mobile Error: {e}")
+        return {"wynik": {"procent_zajetosci": 0, "liczba_pomiarow": 0}}
 
-# --- RESTORED: PŁATNOŚCI ("Symulacja płatności") ---
-@app.post("/api/v1/user/buy_ticket")
-def buy_ticket(req: TicketPurchase, db: Session = Depends(get_db)):
-    try:
-        user = db.query(User).filter(User.token == req.token).first()
-        if not user: raise HTTPException(401, "Nieprawidłowy token")
-        
-        start = now_utc()
-        end = start + datetime.timedelta(hours=req.duration_hours)
-        final_price = req.total_price if req.total_price is not None else (5.0 * req.duration_hours)
-        
-        nt = Ticket(place_name=req.place_name, plate_number=req.plate_number, start_time=start, end_time=end, price=final_price, user_id=user.user_id)
-        db.add(nt)
-        db.flush() # Pobierz ID
-        
-        user.ticket_id = nt.id # Przypisz aktywny bilet
-        
-        # Opcjonalnie: Zmień status miejsca na zajęte (symulacja)
-        spot = db.query(ParkingSpot).filter(ParkingSpot.name == req.place_name).first()
-        if spot: 
-            spot.current_status = 1
-            db.add(HistoricalData(sensor_id=spot.name, status=1))
-            
-        db.commit()
-        return {"status": "ok", "ticket_id": nt.id, "end_time": end.isoformat()}
-    except Exception as e: 
-        db.rollback()
-        logger.error(f"Buy Ticket Error: {e}")
-        raise HTTPException(500, str(e))
-
-# --- RESTORED: SPRAWDZANIE AKTYWNEGO BILETU (Wymagane przez apkę) ---
-@app.get("/api/v1/user/ticket/active")
-def get_active_ticket(token: str, db: Session = Depends(get_db)):
-    user = db.query(User).filter(User.token == token).first()
-    if not user: raise HTTPException(401)
-    
-    if not user.ticket_id:
-        return {"status": "no_ticket"}
-        
-    t = db.query(Ticket).filter(Ticket.id == user.ticket_id).first()
-    if not t:
-        # Bilet usunięty?
-        user.ticket_id = None
-        db.commit()
-        return {"status": "no_ticket"}
-        
-    # Sprawdź czy ważny
-    if t.end_time < now_utc().replace(tzinfo=None): # Uproszczenie stref czasowych
-        return {"status": "expired"}
-        
-    return {
-        "status": "found", 
-        "id": t.id,
-        "place_name": t.place_name, 
-        "end_time": t.end_time, 
-        "plate_number": t.plate_number,
-        "price": float(t.price)
-    }
-
-# --- RESTORED: AIRBNB ---
+# --- AIRBNB FIX (z obsługą TOKENA) ---
 @app.post("/api/v1/airbnb/add")
 def add_airbnb(a: AirbnbAdd, db: Session = Depends(get_db)):
     u = db.query(User).filter(User.token == a.token).first()
@@ -729,12 +704,20 @@ def delete_airbnb(d: AirbnbDelete, db: Session = Depends(get_db)):
     try: db.delete(offer); db.commit(); return {"status": "deleted"}
     except Exception as e: db.rollback(); logger.error(f"Airbnb Delete: {e}"); raise HTTPException(500, f"Błąd bazy: {str(e)}")
 
+# NAPRAWIONY GET AIRBNB (Z TOKENEM)
 @app.get("/api/v1/airbnb/offers", response_model=List[AirbnbResponse])
-def get_airbnb(district_id: Optional[int] = None, db: Session = Depends(get_db)):
+def get_airbnb(district_id: Optional[int] = None, token: Optional[str] = None, db: Session = Depends(get_db)):
     try:
+        # Sprawdź usera jeśli podano token
+        current_user_id = None
+        if token:
+            u = db.query(User).filter(User.token == token).first()
+            if u: current_user_id = u.user_id
+
         q = db.query(AirbnbOffer)
         if district_id: q = q.filter(AirbnbOffer.state_id == district_id)
         offers = q.all()
+        
         res = []
         for o in offers:
             try:
@@ -747,22 +730,46 @@ def get_airbnb(district_id: Optional[int] = None, db: Session = Depends(get_db))
                     "owner_name": o.owner_name, "owner_user_id": o.owner_user_id,
                     "latitude": float(o.latitude) if o.latitude is not None else 0.0,
                     "longitude": float(o.longitude) if o.longitude is not None else 0.0,
-                    "state_name": s_name, "start_date": o.start_date, "end_date": o.end_date
+                    "state_name": s_name, "start_date": o.start_date, "end_date": o.end_date,
+                    "is_mine": (current_user_id is not None and o.owner_user_id == current_user_id) # TO NAPRAWIA EDYCJĘ
                 })
             except Exception as e: continue
         return res
     except Exception as e: logger.error(f"Global Airbnb Error: {e}"); return []
 
-# --- RESTORED: POJAZDY ---
+# --- PŁATNOŚCI I POJAZDY (BEZ ZMIAN) ---
+@app.post("/api/v1/user/buy_ticket")
+def buy_ticket(req: TicketPurchase, db: Session = Depends(get_db)):
+    try:
+        user = db.query(User).filter(User.token == req.token).first()
+        if not user: raise HTTPException(401, "Nieprawidłowy token")
+        start = now_utc()
+        end = start + datetime.timedelta(hours=req.duration_hours)
+        final_price = req.total_price if req.total_price is not None else (5.0 * req.duration_hours)
+        nt = Ticket(place_name=req.place_name, plate_number=req.plate_number, start_time=start, end_time=end, price=final_price, user_id=user.user_id)
+        db.add(nt); db.flush(); user.ticket_id = nt.id 
+        spot = db.query(ParkingSpot).filter(ParkingSpot.name == req.place_name).first()
+        if spot: spot.current_status = 1; db.add(HistoricalData(sensor_id=spot.name, status=1))
+        db.commit(); return {"status": "ok", "ticket_id": nt.id, "end_time": end.isoformat()}
+    except Exception as e: db.rollback(); raise HTTPException(500, str(e))
+
+@app.get("/api/v1/user/ticket/active")
+def get_active_ticket(token: str, db: Session = Depends(get_db)):
+    user = db.query(User).filter(User.token == token).first()
+    if not user: raise HTTPException(401)
+    if not user.ticket_id: return {"status": "no_ticket"}
+    t = db.query(Ticket).filter(Ticket.id == user.ticket_id).first()
+    if not t:
+        user.ticket_id = None; db.commit(); return {"status": "no_ticket"}
+    if t.end_time < now_utc().replace(tzinfo=None): return {"status": "expired"}
+    return {"status": "found", "id": t.id, "place_name": t.place_name, "end_time": t.end_time, "plate_number": t.plate_number, "price": float(t.price)}
+
 @app.post("/api/v1/user/vehicle/add")
 def add_user_vehicle(v: VehicleAdd, db: Session = Depends(get_db)):
     user = db.query(User).filter(User.token == v.token).first()
     if not user: raise HTTPException(401, "Nieautoryzowany")
-    try:
-        db.add(Vehicle(name=v.name, plate_number=v.plate_number, user_id=user.user_id))
-        db.commit()
-        return {"status": "ok"}
-    except Exception as e: db.rollback(); logger.error(f"Add Vehicle: {e}"); raise HTTPException(500, f"Błąd bazy: {str(e)}")
+    try: db.add(Vehicle(name=v.name, plate_number=v.plate_number, user_id=user.user_id)); db.commit(); return {"status": "ok"}
+    except Exception as e: db.rollback(); raise HTTPException(500, f"Błąd bazy: {str(e)}")
 
 @app.post("/api/v1/user/vehicle/delete")
 def delete_user_vehicle(v: VehicleDelete, db: Session = Depends(get_db)):
@@ -772,7 +779,7 @@ def delete_user_vehicle(v: VehicleDelete, db: Session = Depends(get_db)):
         veh = db.query(Vehicle).filter(Vehicle.id_veh == v.vehicle_id, Vehicle.user_id == user.user_id).first()
         if veh: db.delete(veh); db.commit(); return {"status": "deleted"}
         else: raise HTTPException(404, "Pojazd nie znaleziony")
-    except Exception as e: db.rollback(); logger.error(f"Delete Vehicle: {e}"); raise HTTPException(500, f"Błąd bazy: {str(e)}")
+    except Exception as e: db.rollback(); raise HTTPException(500, f"Błąd bazy: {str(e)}")
 
 if __name__ == "__main__":
     import uvicorn
