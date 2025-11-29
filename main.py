@@ -36,6 +36,7 @@ MQTT_PORT = int(os.environ.get('MQTT_PORT', 1883))
 MQTT_TOPIC = "parking/+/status" 
 
 DATABASE_URL = os.environ.get('DATABASE_URL', "postgresql://postgres:postgres@localhost:5432/postgres")
+# DATABASE_URL = "sqlite:///./parking.db"
 
 if DATABASE_URL and DATABASE_URL.startswith("postgres://"):
     DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
@@ -54,11 +55,11 @@ def get_db():
     try: yield db
     finally: db.close()
 
-# --- MODELE BAZY DANYCH (POPRAWIONE city_id) ---
+# --- MODELE BAZY DANYCH ---
 
 class City(Base):
     __tablename__ = "cities"
-    # W Twojej bazie kolumna nazywa się city_id, a nie id!
+    # UWAGA: Klucz to city_id
     city_id = Column(Integer, primary_key=True, autoincrement=True) 
     city = Column(String(100), nullable=False)
 
@@ -66,10 +67,9 @@ class State(Base):
     __tablename__ = "states"
     state_id = Column(Integer, primary_key=True, autoincrement=True)
     name = Column(String(100), nullable=False)
-    
-    # Relacja wskazuje na cities.city_id
+    # Relacja do cities.city_id
     city_id = Column(Integer, ForeignKey("cities.city_id"), nullable=True) 
-    city = Column(String(100), nullable=True) # Stara kolumna (string)
+    city = Column(String(100), nullable=True) 
 
 class User(Base):
     __tablename__ = "users"
@@ -167,7 +167,7 @@ class AirbnbOffer(Base):
     latitude = Column(DECIMAL(9, 6))
     longitude = Column(DECIMAL(9, 6))
     
-    # State ID (Rejon) - teraz powiązany
+    # Relacja do states.state_id
     state_id = Column(Integer, ForeignKey("states.state_id"), nullable=True)
     district_id = Column(Integer, ForeignKey("districts.id"), nullable=True)
     
@@ -455,11 +455,11 @@ def search_admin_hint(q: str = "", db: Session = Depends(get_db)):
     admins = db.query(Admin.username).filter(Admin.username.ilike(f"%{q}%")).limit(5).all()
     return [a[0] for a in admins]
 
-# --- LOKALIZACJA (FIXED for city_id) ---
+# --- LOKALIZACJA ---
 @app.get("/api/v1/cities")
 def get_cities(db: Session = Depends(get_db)):
     cities = db.query(City).all()
-    # Mapowanie city_id na id dla frontendu
+    # MAPOWANIE: city_id -> id
     return [{"id": c.city_id, "name": c.city} for c in cities]
 
 @app.get("/api/v1/states")
@@ -642,7 +642,6 @@ def get_spots(limit: int = 1000, db: Session = Depends(get_db)):
         })
     return res
 
-# --- STATYSTYKI MOBILNE ---
 @app.post("/api/v1/statystyki/zajetosc")
 def get_stats_mobile(req: StatystykiZapytanie, db: Session = Depends(get_db)):
     try:
@@ -705,7 +704,6 @@ def get_stats_mobile(req: StatystykiZapytanie, db: Session = Depends(get_db)):
         logger.error(f"Stats Mobile Error: {e}")
         return {"wynik": {"procent_zajetosci": 0, "liczba_pomiarow": 0}}
 
-# --- AIRBNB ---
 @app.post("/api/v1/airbnb/add")
 def add_airbnb(a: AirbnbAdd, db: Session = Depends(get_db)):
     u = db.query(User).filter(User.token == a.token).first()
@@ -812,9 +810,7 @@ def get_active_ticket(token: str, db: Session = Depends(get_db)):
 def get_ticket_history(token: str, db: Session = Depends(get_db)):
     user = db.query(User).filter(User.token == token).first()
     if not user: raise HTTPException(401, "Invalid token")
-    
     tickets = db.query(Ticket).filter(Ticket.user_id == user.user_id).order_by(Ticket.start_time.desc()).all()
-    
     return [{
         "id": t.id,
         "place_name": t.place_name,
