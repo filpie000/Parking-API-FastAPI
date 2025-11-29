@@ -36,7 +36,6 @@ MQTT_PORT = int(os.environ.get('MQTT_PORT', 1883))
 MQTT_TOPIC = "parking/+/status" 
 
 DATABASE_URL = os.environ.get('DATABASE_URL', "postgresql://postgres:postgres@localhost:5432/postgres")
-# DATABASE_URL = "sqlite:///./parking.db"
 
 if DATABASE_URL and DATABASE_URL.startswith("postgres://"):
     DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
@@ -118,7 +117,7 @@ class AdminPermissions(Base):
     view_disabled = Column(Boolean, default=False)
     view_ev = Column(Boolean, default=False)
     view_paid_only = Column(Boolean, default=False)
-    allowed_states = Column(Text) # Plural name match DB
+    allowed_states = Column(Text)
     admin = relationship("Admin", back_populates="permissions")
 
 class HistoricalData(Base):
@@ -317,10 +316,8 @@ def on_mqtt_message(client, userdata, msg):
                     else:
                         db.add(HistoricalData(sensor_id=sensor_name, status=status, timestamp=event_time))
                     
-                    # SMART NOTIFICATION
                     if status == 1:
                         subs = db.query(DeviceSubscription).filter(DeviceSubscription.sensor_name == sensor_name).all()
-                        
                         if subs:
                             alternatives = []
                             if spot.district_id:
@@ -356,12 +353,9 @@ async def startup_event():
     try:
         with SessionLocal() as db:
             admin = db.query(Admin).filter(Admin.username == "admin").first()
-            default_pass_hash = get_password_hash("admin123")
-            if admin:
-                admin.password_hash = default_pass_hash
-                db.commit()
-            else:
-                new_admin = Admin(username="admin", password_hash=default_pass_hash, badge_name="Super Admin")
+            # USUNIĘTO HARDCODED RESET - TERAZ TYLKO TWORZENIE JEŚLI NIE MA
+            if not admin:
+                new_admin = Admin(username="admin", password_hash=get_password_hash("admin123"), badge_name="Super Admin")
                 db.add(new_admin)
                 db.commit()
     except Exception as e:
@@ -384,8 +378,7 @@ def get_dashboard():
 
 @app.post("/api/v1/admin/auth")
 def admin_login(d: AdminLogin, db: Session = Depends(get_db)):
-    if d.username == "admin" and d.password == "admin123":
-        return { "status": "ok", "username": "admin", "is_superadmin": True, "permissions": { "city": "ALL", "view_disabled": True, "view_ev": True, "allowed_state": "" } }
+    # USUNIĘTO HARDCODED BACKDOOR
     try:
         admin = db.query(Admin).filter(Admin.username == d.username).first()
         if admin and verify_password(d.password, admin.password_hash):
@@ -629,7 +622,6 @@ async def iot_update_http(data: dict, db: Session = Depends(get_db)):
             if stat == 1:
                 subs = db.query(DeviceSubscription).filter(DeviceSubscription.sensor_name == name).all()
                 if subs:
-                    # SMART NOTIFICATION
                     alternatives = []
                     if spot.district_id:
                         alternatives = db.query(ParkingSpot).filter(
