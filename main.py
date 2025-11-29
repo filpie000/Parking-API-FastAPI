@@ -462,7 +462,6 @@ def get_cities(db: Session = Depends(get_db)):
 def get_states(city_id: Optional[int] = None, db: Session = Depends(get_db)):
     query = db.query(State)
     if city_id:
-        # Poprawione: filtruje po city_id
         query = query.filter(State.city_id == city_id)
     states = query.all()
     return [{"id": s.state_id, "name": s.name, "city_id": s.city_id} for s in states]
@@ -472,7 +471,7 @@ def get_districts(db: Session = Depends(get_db)):
     districts = db.query(District).all()
     return [{"id": d.id, "name": d.district, "city": d.city} for d in districts]
 
-# --- AGREGOWANE STATYSTYKI ADMINA (PEŁNE) ---
+# --- AGREGOWANE STATYSTYKI ADMINA ---
 @app.post("/api/v1/admin/stats/advanced")
 def get_advanced_stats(req: StatsRequest, db: Session = Depends(get_db)):
     start = datetime.datetime.strptime(req.start_date, "%Y-%m-%d")
@@ -580,6 +579,25 @@ async def iot_update_http(data: dict, db: Session = Depends(get_db)):
         db.rollback()
         raise HTTPException(500, str(e))
 
+# PRZYWRÓCONY: Endpoint do subskrypcji powiadomień
+@app.post("/api/v1/subscribe_spot")
+async def subscribe_device(request: SubscriptionRequest, db: Session = Depends(get_db)):
+    try:
+        db.query(DeviceSubscription).filter(
+            DeviceSubscription.device_token == request.device_token, 
+            DeviceSubscription.sensor_name == request.sensor_name
+        ).delete()
+        
+        db.add(DeviceSubscription(
+            device_token=request.device_token, 
+            sensor_name=request.sensor_name
+        ))
+        db.commit()
+        return {"status": "success"}
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(500, str(e))
+
 @app.post("/api/v1/auth/register")
 def register(u: UserRegister, db: Session = Depends(get_db)):
     try:
@@ -640,7 +658,7 @@ def get_spots(limit: int = 1000, db: Session = Depends(get_db)):
         })
     return res
 
-# --- STATYSTYKI MOBILNE (ZAAWANSOWANA LOGIKA) ---
+# --- STATYSTYKI MOBILNE ---
 @app.post("/api/v1/statystyki/zajetosc")
 def get_stats_mobile(req: StatystykiZapytanie, db: Session = Depends(get_db)):
     try:
@@ -703,20 +721,13 @@ def get_stats_mobile(req: StatystykiZapytanie, db: Session = Depends(get_db)):
         logger.error(f"Stats Mobile Error: {e}")
         return {"wynik": {"procent_zajetosci": 0, "liczba_pomiarow": 0}}
 
-# --- AIRBNB (KOMPLETNE) ---
+# --- AIRBNB ---
 @app.post("/api/v1/airbnb/add")
 def add_airbnb(a: AirbnbAdd, db: Session = Depends(get_db)):
     u = db.query(User).filter(User.token == a.token).first()
     if not u: raise HTTPException(401, "Nieautoryzowany")
     try:
-        db.add(AirbnbOffer(
-            title=a.title, description=a.description, price=a.price, h_availability=a.h_availability, 
-            owner_name=u.email, owner_user_id=u.user_id, contact=a.contact, 
-            state_id=a.state_id, district_id=a.district_id, # Zapisuje state_id
-            start_date=datetime.datetime.strptime(a.start_date, "%Y-%m-%d").date() if a.start_date else None, 
-            end_date=datetime.datetime.strptime(a.end_date, "%Y-%m-%d").date() if a.end_date else None, 
-            latitude=a.latitude, longitude=a.longitude
-        ))
+        db.add(AirbnbOffer(title=a.title, description=a.description, price=a.price, h_availability=a.h_availability, owner_name=u.email, owner_user_id=u.user_id, contact=a.contact, state_id=a.state_id, district_id=a.district_id, start_date=datetime.datetime.strptime(a.start_date, "%Y-%m-%d").date() if a.start_date else None, end_date=datetime.datetime.strptime(a.end_date, "%Y-%m-%d").date() if a.end_date else None, latitude=a.latitude, longitude=a.longitude))
         db.commit(); return {"status": "ok"}
     except Exception as e: db.rollback(); raise HTTPException(500, f"DB Error: {str(e)}")
 
@@ -733,12 +744,7 @@ def update_airbnb(u: AirbnbUpdate, db: Session = Depends(get_db)):
         if u.price is not None: offer.price = u.price
         if u.h_availability is not None: offer.h_availability = u.h_availability
         if u.contact is not None: offer.contact = u.contact
-        
-        # Aktualizacja lokalizacji
-        if u.state_id is not None: 
-            offer.state_id = u.state_id
-            offer.district_id = u.state_id # Backwards compatibility
-            
+        if u.state_id is not None: offer.state_id = u.state_id
         if u.latitude is not None: offer.latitude = u.latitude
         if u.longitude is not None: offer.longitude = u.longitude
         if u.start_date: offer.start_date = datetime.datetime.strptime(u.start_date, "%Y-%m-%d").date()
@@ -765,8 +771,7 @@ def get_airbnb(district_id: Optional[int] = None, token: Optional[str] = None, d
             if u: current_user_id = u.user_id
 
         q = db.query(AirbnbOffer)
-        # district_id tu działa jako state_id w nowej logice (parametr w URL może zostać district_id)
-        if district_id: q = q.filter(AirbnbOffer.state_id == district_id)
+        if district_id: q = q.filter(AirbnbOffer.district_id == district_id)
         offers = q.all()
         
         res = []
@@ -774,7 +779,6 @@ def get_airbnb(district_id: Optional[int] = None, token: Optional[str] = None, d
             try:
                 s_name = "Inny"
                 if o.state_rel: s_name = o.state_rel.name
-                
                 res.append({
                     "id": o.id, "title": o.title or "Brak tytułu", "description": o.description,
                     "price": float(o.price) if o.price is not None else 0.0,
@@ -809,6 +813,7 @@ def buy_ticket(req: TicketPurchase, db: Session = Depends(get_db)):
     except Exception as e: 
         db.rollback(); logger.error(f"Buy Ticket Error: {e}"); raise HTTPException(500, str(e))
 
+# --- FIX: NAPRAWIONY GET ACTIVE TICKET (DATETIME COMPARE) ---
 @app.get("/api/v1/user/ticket/active")
 def get_active_ticket(token: str, db: Session = Depends(get_db)):
     user = db.query(User).filter(User.token == token).first()
@@ -817,7 +822,17 @@ def get_active_ticket(token: str, db: Session = Depends(get_db)):
     t = db.query(Ticket).filter(Ticket.id == user.ticket_id).first()
     if not t:
         user.ticket_id = None; db.commit(); return {"status": "no_ticket"}
-    if t.end_time < now_utc().replace(tzinfo=None): return {"status": "expired"}
+    
+    # FIX: Bezpieczne porównanie czasu
+    now = now_utc()
+    end_t = t.end_time
+    
+    # Jeśli czas z bazy jest naive (bez strefy), traktujemy jako UTC
+    if end_t.tzinfo is None:
+        if end_t < now.replace(tzinfo=None): return {"status": "expired"}
+    else:
+        if end_t < now: return {"status": "expired"}
+        
     return {"status": "found", "id": t.id, "place_name": t.place_name, "end_time": t.end_time, "plate_number": t.plate_number, "price": float(t.price)}
 
 @app.get("/api/v1/user/tickets/history")
