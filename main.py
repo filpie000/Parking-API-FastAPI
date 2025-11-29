@@ -55,20 +55,17 @@ def get_db():
     try: yield db
     finally: db.close()
 
-# --- MODELE BAZY DANYCH ---
-
+# --- MODELE ---
 class City(Base):
     __tablename__ = "cities"
     id = Column(Integer, primary_key=True, autoincrement=True)
-    city = Column(String(100), nullable=False) 
+    city = Column(String(100), nullable=False)
 
 class State(Base): 
     __tablename__ = "states"
     state_id = Column(Integer, primary_key=True, autoincrement=True)
     name = Column(String(100), nullable=False)
-    # Zmienione pod Twoją bazę: łączymy po nazwie miasta (string), a nie city_id
     city = Column(String(100), nullable=True) 
-    # city_id = Column(Integer, ForeignKey("cities.id"), nullable=True) # Usunięte, bo w Twojej bazie tego nie ma
 
 class User(Base):
     __tablename__ = "users"
@@ -165,16 +162,11 @@ class AirbnbOffer(Base):
     rating = Column(DECIMAL(3, 2), default=0)
     latitude = Column(DECIMAL(9, 6))
     longitude = Column(DECIMAL(9, 6))
-    
     state_id = Column(Integer, ForeignKey("states.state_id"), nullable=True)
     district_id = Column(Integer, ForeignKey("districts.id"), nullable=True)
-    
     start_date = Column(Date)
     end_date = Column(Date)
     created_at = Column(DateTime, default=now_utc)
-    
-    # Usunięta relacja 'state_rel' jeśli powoduje błędy przy braku city_id, 
-    # ale dla bezpieczenstwa zostawiam query manualne w kodzie
     state_rel = relationship("State") 
 
 class ParkingSpot(Base):
@@ -189,7 +181,6 @@ class ParkingSpot(Base):
     is_disabled_friendly = Column(Boolean, default=False)
     is_ev = Column(Boolean, default=False)
     is_paid = Column(Boolean, default=True)
-    
     district_rel = relationship("District")
     state_rel = relationship("State") 
 
@@ -455,25 +446,21 @@ def search_admin_hint(q: str = "", db: Session = Depends(get_db)):
     admins = db.query(Admin.username).filter(Admin.username.ilike(f"%{q}%")).limit(5).all()
     return [a[0] for a in admins]
 
-# --- NOWE ENDPOINTY LOKALIZACJI ---
+# --- LOKALIZACJA ---
 @app.get("/api/v1/cities")
 def get_cities(db: Session = Depends(get_db)):
     cities = db.query(City).all()
     return [{"id": c.id, "name": c.city} for c in cities]
 
-# FIX: Filtrowanie po nazwie miasta (dla Twojej struktury bazy)
 @app.get("/api/v1/states")
 def get_states(city_id: Optional[int] = None, db: Session = Depends(get_db)):
     query = db.query(State)
     if city_id:
-        # Najpierw znajdujemy nazwę miasta po ID
         city_obj = db.query(City).filter(City.id == city_id).first()
         if city_obj:
-            # Potem filtrujemy rejon (state) po nazwie miasta
             query = query.filter(State.city == city_obj.city)
         else:
-            return [] # Nie znaleziono miasta
-            
+            return [] 
     states = query.all()
     return [{"id": s.state_id, "name": s.name, "city": s.city} for s in states]
 
@@ -502,7 +489,6 @@ def get_advanced_stats(req: StatsRequest, db: Session = Depends(get_db)):
         valid_spots_names = [s.name for s in spots_query.all()]
         if not valid_spots_names: continue
 
-        # SQL Agregacja
         raw_stats = db.query(
             extract('hour', HistoricalData.timestamp).label('hour'),
             func.date(HistoricalData.timestamp).label('day'),
@@ -549,6 +535,47 @@ def get_advanced_stats(req: StatsRequest, db: Session = Depends(get_db)):
 # ==========================================
 #           MOBILE APP ENDPOINTS
 # ==========================================
+
+# --- FIX: IOT UPDATE ENDPOINT (Odtworzony) ---
+@app.post("/api/v1/iot/update")
+async def iot_update_http(data: dict, db: Session = Depends(get_db)):
+    try:
+        name = data.get("name")
+        stat = int(data.get("status", 0))
+        event_time_str = data.get("timestamp")
+        event_time = datetime.datetime.fromisoformat(event_time_str.replace("Z", "+00:00")) if event_time_str else now_utc()
+
+        spot = db.query(ParkingSpot).filter(ParkingSpot.name == name).first()
+        if not spot:
+            spot = ParkingSpot(name=name, current_status=stat)
+            db.add(spot)
+        
+        if data.get("district_id"): spot.district_id = int(data.get("district_id"))
+        if data.get("state_id"): spot.state_id = int(data.get("state_id"))
+        
+        prev = spot.current_status
+        spot.current_status = stat
+        spot.last_seen = event_time
+        
+        if prev != stat:
+            today_holiday = check_if_holiday(event_time.date())
+            if today_holiday:
+                db.add(HolidayData(sensor_id=name, status=stat, holiday_name=today_holiday, timestamp=event_time))
+            else:
+                db.add(HistoricalData(sensor_id=name, status=stat, timestamp=event_time))
+            
+            if stat == 1:
+                subs = db.query(DeviceSubscription).filter(DeviceSubscription.sensor_name == name).all()
+                for s in subs:
+                    send_push(s.device_token, "Zajęto miejsce!", f"{name} zajęte", data={"action": "find_alt"})
+                    db.delete(s)
+        
+        db.commit()
+        await manager.broadcast({"sensor_id": name, "status": stat})
+        return {"status": "updated"}
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(500, str(e))
 
 @app.post("/api/v1/auth/register")
 def register(u: UserRegister, db: Session = Depends(get_db)):
@@ -610,7 +637,7 @@ def get_spots(limit: int = 1000, db: Session = Depends(get_db)):
         })
     return res
 
-# --- STATYSTYKI MOBILNE (ZAAWANSOWANA LOGIKA v2) ---
+# --- STATYSTYKI MOBILNE ---
 @app.post("/api/v1/statystyki/zajetosc")
 def get_stats_mobile(req: StatystykiZapytanie, db: Session = Depends(get_db)):
     try:
@@ -673,7 +700,7 @@ def get_stats_mobile(req: StatystykiZapytanie, db: Session = Depends(get_db)):
         logger.error(f"Stats Mobile Error: {e}")
         return {"wynik": {"procent_zajetosci": 0, "liczba_pomiarow": 0}}
 
-# --- AIRBNB (TOKEN FIX + OWNER FIX) ---
+# --- AIRBNB ---
 @app.post("/api/v1/airbnb/add")
 def add_airbnb(a: AirbnbAdd, db: Session = Depends(get_db)):
     u = db.query(User).filter(User.token == a.token).first()
@@ -775,6 +802,24 @@ def get_active_ticket(token: str, db: Session = Depends(get_db)):
         user.ticket_id = None; db.commit(); return {"status": "no_ticket"}
     if t.end_time < now_utc().replace(tzinfo=None): return {"status": "expired"}
     return {"status": "found", "id": t.id, "place_name": t.place_name, "end_time": t.end_time, "plate_number": t.plate_number, "price": float(t.price)}
+
+# --- NEW: HISTORIA BILETÓW (ALL) ---
+@app.get("/api/v1/user/tickets/history")
+def get_ticket_history(token: str, db: Session = Depends(get_db)):
+    user = db.query(User).filter(User.token == token).first()
+    if not user: raise HTTPException(401, "Invalid token")
+    
+    # Pobieramy WSZYSTKIE bilety użytkownika, sortując od najnowszych
+    tickets = db.query(Ticket).filter(Ticket.user_id == user.user_id).order_by(Ticket.start_time.desc()).all()
+    
+    return [{
+        "id": t.id,
+        "place_name": t.place_name,
+        "plate_number": t.plate_number,
+        "start_time": t.start_time,
+        "end_time": t.end_time,
+        "price": float(t.price)
+    } for t in tickets]
 
 @app.post("/api/v1/user/vehicle/add")
 def add_user_vehicle(v: VehicleAdd, db: Session = Depends(get_db)):
