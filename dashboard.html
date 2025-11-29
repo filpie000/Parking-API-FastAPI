@@ -15,44 +15,44 @@
     </script>
     <style>
         .checkbox-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 0.5rem; }
-        .multiselect-dropdown {
-            position: relative;
-            cursor: pointer;
+        
+        /* Style dla Multiselect (Lista rozwijana z checkboxami) */
+        .multiselect-dropdown { position: relative; cursor: pointer; }
+        .multiselect-header { 
+            padding: 0.75rem; 
+            border: 1px solid #e5e7eb; 
+            border-radius: 0.375rem; 
+            display: flex; 
+            justify-content: space-between; 
+            align-items: center; 
+            background-color: white; 
+            min-height: 42px;
         }
-        .multiselect-header {
-            padding: 0.5rem;
-            border: 1px solid #e5e7eb;
-            border-radius: 0.375rem;
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            background-color: white;
+        .dark .multiselect-header { background-color: #374151; border-color: #4b5563; color: white; }
+        
+        .multiselect-list { 
+            display: none; 
+            position: absolute; 
+            top: 100%; 
+            left: 0; 
+            right: 0; 
+            background-color: white; 
+            border: 1px solid #e5e7eb; 
+            border-top: none; 
+            max-height: 200px; 
+            overflow-y: auto; 
+            z-index: 50; 
+            padding: 0.5rem; 
+            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
         }
-        .dark .multiselect-header {
-            background-color: #374151;
-            border-color: #4b5563;
-            color: white;
-        }
-        .multiselect-list {
-            display: none;
-            position: absolute;
-            top: 100%;
-            left: 0;
-            right: 0;
-            background-color: white;
-            border: 1px solid #e5e7eb;
-            border-top: none;
-            max-height: 200px;
-            overflow-y: auto;
-            z-index: 50;
-            padding: 0.5rem;
-        }
-        .dark .multiselect-list {
-            background-color: #374151;
-            border-color: #4b5563;
-            color: white;
-        }
+        .dark .multiselect-list { background-color: #374151; border-color: #4b5563; color: white; }
         .multiselect-list.open { display: block; }
+        
+        /* Scrollbar styling */
+        ::-webkit-scrollbar { width: 8px; height: 8px; }
+        ::-webkit-scrollbar-track { background: transparent; }
+        ::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 4px; }
+        .dark ::-webkit-scrollbar-thumb { background: #4b5563; }
     </style>
 </head>
 <body class="bg-gray-50 dark:bg-gray-900 text-gray-800 dark:text-gray-200 font-sans h-screen flex flex-col overflow-hidden transition-colors duration-300">
@@ -73,7 +73,8 @@
                 <h1 class="text-lg font-bold leading-tight">Smart<br>Parking</h1>
             </div>
             <nav class="flex-1 p-4 space-y-2">
-                <button onclick="switchView('dashboard')" class="nav-btn w-full text-left p-3 rounded-lg hover:bg-blue-50 dark:hover:bg-gray-700 transition flex items-center text-blue-600 font-medium bg-blue-50 dark:bg-gray-700"><i class="fas fa-chart-line w-8 text-center"></i> Raporty</button>
+                <button onclick="switchView('dashboard')" class="nav-btn w-full text-left p-3 rounded-lg hover:bg-blue-50 dark:hover:bg-gray-700 transition flex items-center text-blue-600 font-medium bg-blue-50 dark:bg-gray-700"><i class="fas fa-chart-line w-8 text-center"></i> Raporty Parking</button>
+                <button onclick="switchView('airbnb')" class="nav-btn w-full text-left p-3 rounded-lg hover:bg-blue-50 dark:hover:bg-gray-700 transition flex items-center text-blue-600 font-medium bg-blue-50 dark:bg-gray-700"><i class="fas fa-home w-8 text-center"></i> Statystyki Airbnb</button>
                 <button onclick="switchView('admins')" id="nav-admins" class="nav-btn w-full text-left hidden p-3 rounded-lg hover:bg-gray-50 dark:hover:bg-gray-700 transition flex items-center"><i class="fas fa-user-shield w-8 text-center"></i> Administratorzy</button>
                 <button onclick="switchView('users')" id="nav-users" class="nav-btn w-full text-left hidden p-3 rounded-lg hover:bg-gray-50 dark:hover:bg-gray-700 transition flex items-center"><i class="fas fa-users w-8 text-center"></i> Użytkownicy</button>
             </nav>
@@ -99,11 +100,9 @@
                     <div class="flex justify-between items-center"><h2 class="text-3xl font-bold dark:text-white">Analiza Zajętości</h2></div>
                     <div class="bg-white dark:bg-gray-800 p-6 rounded-xl shadow-sm border dark:border-gray-700">
                         <h3 class="text-lg font-bold mb-4 dark:text-white border-b pb-2 dark:border-gray-700"><i class="fas fa-filter mr-2"></i> Filtry</h3>
-                        
                         <div class="grid grid-cols-1 md:grid-cols-4 gap-4 mb-4">
                             <div><label class="block text-xs font-bold uppercase mb-1 text-gray-500">Data Od</label><input type="date" id="report-start" class="w-full p-2 border rounded dark:bg-gray-700 dark:text-white"></div>
                             <div><label class="block text-xs font-bold uppercase mb-1 text-gray-500">Data Do</label><input type="date" id="report-end" class="w-full p-2 border rounded dark:bg-gray-700 dark:text-white"></div>
-                            
                             <div class="md:col-span-2 relative">
                                 <label class="block text-xs font-bold uppercase mb-1 text-gray-500">Wybierz Parkingi</label>
                                 <div class="border rounded bg-white dark:bg-gray-700 dark:border-gray-600">
@@ -112,35 +111,50 @@
                                 </div>
                             </div>
                         </div>
-
-                        <div class="mb-4">
-                            <label class="block text-xs font-bold uppercase mb-2 text-gray-500">Opcje</label>
-                            <div class="checkbox-grid">
-                                <label class="flex items-center space-x-2 text-sm dark:text-white cursor-pointer"><input type="checkbox" id="chk-weekend" checked class="w-4 h-4"><span>Weekendy</span></label>
-                                <label class="flex items-center space-x-2 text-sm dark:text-white cursor-pointer"><input type="checkbox" id="chk-holiday" checked class="w-4 h-4"><span>Święta</span></label>
-                                <label class="flex items-center space-x-2 text-sm dark:text-white cursor-pointer"><input type="checkbox" id="chk-disabled" class="w-4 h-4"><span>Tylko Niepełnosprawni</span></label>
-                                <label class="flex items-center space-x-2 text-sm dark:text-white cursor-pointer"><input type="checkbox" id="chk-ev" class="w-4 h-4"><span>Tylko EV</span></label>
-                                <label class="flex items-center space-x-2 text-sm dark:text-white cursor-pointer"><input type="checkbox" id="chk-paid" class="w-4 h-4"><span>Tylko Płatne</span></label>
-                            </div>
-                        </div>
+                        <div class="mb-4"><label class="block text-xs font-bold uppercase mb-2 text-gray-500">Opcje</label><div class="checkbox-grid">
+                            <label class="flex items-center space-x-2 text-sm dark:text-white cursor-pointer"><input type="checkbox" id="chk-weekend" checked class="w-4 h-4"><span>Weekendy</span></label>
+                            <label class="flex items-center space-x-2 text-sm dark:text-white cursor-pointer"><input type="checkbox" id="chk-holiday" checked class="w-4 h-4"><span>Święta</span></label>
+                            <label class="flex items-center space-x-2 text-sm dark:text-white cursor-pointer"><input type="checkbox" id="chk-disabled" class="w-4 h-4"><span>Tylko Niepełnosprawni</span></label>
+                            <label class="flex items-center space-x-2 text-sm dark:text-white cursor-pointer"><input type="checkbox" id="chk-ev" class="w-4 h-4"><span>Tylko EV</span></label>
+                            <label class="flex items-center space-x-2 text-sm dark:text-white cursor-pointer"><input type="checkbox" id="chk-paid" class="w-4 h-4"><span>Tylko Płatne</span></label>
+                        </div></div>
                         <button onclick="generateReport()" class="bg-blue-600 hover:bg-blue-700 text-white px-6 py-2 rounded font-bold w-full md:w-auto"><i class="fas fa-chart-area mr-2"></i> Generuj Wykres</button>
                     </div>
-
                     <div class="bg-white dark:bg-gray-800 p-6 rounded-xl shadow-sm border dark:border-gray-700 min-h-[400px]">
                         <h3 class="text-lg font-bold mb-4 dark:text-white">Średnia Zajętość (%)</h3>
                         <div class="h-96 w-full"><canvas id="advancedChart"></canvas></div>
                     </div>
                 </div>
 
+                <div id="view-airbnb" class="view-section hidden space-y-8">
+                    <h2 class="text-3xl font-bold dark:text-white">Statystyki Airbnb</h2>
+                    <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
+                        <div class="bg-white dark:bg-gray-800 p-6 rounded-xl shadow-sm border-l-4 border-green-500"><p class="text-gray-500 text-sm uppercase font-bold">Suma Ofert</p><h3 class="text-4xl font-bold mt-2" id="ab-total">--</h3></div>
+                        <div class="bg-white dark:bg-gray-800 p-6 rounded-xl shadow-sm border-l-4 border-blue-500"><p class="text-gray-500 text-sm uppercase font-bold">Średnia Cena</p><h3 class="text-4xl font-bold mt-2" id="ab-price">--</h3></div>
+                    </div>
+                    <div class="bg-white dark:bg-gray-800 p-6 rounded-xl shadow-sm border dark:border-gray-700">
+                        <h3 class="text-lg font-bold mb-4 dark:text-white">Rozkład Ofert wg Miast</h3>
+                        <div class="h-64 flex justify-center"><canvas id="airbnbPieChart"></canvas></div>
+                    </div>
+                    
+                    <div class="bg-white dark:bg-gray-800 rounded-xl shadow-sm overflow-hidden border dark:border-gray-700">
+                        <h3 class="text-lg font-bold p-4 border-b dark:border-gray-700 dark:text-white">Najnowsze Oferty</h3>
+                        <table class="min-w-full text-left text-sm">
+                             <thead class="bg-gray-100 dark:bg-gray-700 text-gray-600 dark:text-gray-200 uppercase font-bold text-xs"><tr><th class="p-4">Tytuł</th><th class="p-4">Cena</th><th class="p-4">Właściciel</th><th class="p-4">Lokalizacja</th></tr></thead>
+                             <tbody id="table-airbnb-body" class="divide-y dark:divide-gray-700 dark:text-gray-300"></tbody>
+                        </table>
+                    </div>
+                </div>
+
                 <div id="view-admins" class="view-section hidden space-y-6">
                     <h2 class="text-3xl font-bold dark:text-white">Zarządzanie Administratorami</h2>
                     <div class="bg-white dark:bg-gray-800 p-6 rounded-xl shadow-sm border dark:border-gray-700">
-                        <h3 class="font-bold text-lg mb-4 dark:text-white"><i class="fas fa-plus-circle text-green-500"></i> Edytuj Admina</h3>
+                        <h3 class="font-bold text-lg mb-4 dark:text-white"><i class="fas fa-plus-circle text-green-500"></i> Dodaj / Edytuj Admina</h3>
                         <input type="hidden" id="edit-admin-id">
                         
                         <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
                             <div>
-                                <label class="block text-xs font-bold uppercase mb-1 text-gray-500">Login (Wybierz/Wpisz)</label>
+                                <label class="block text-xs font-bold uppercase mb-1 text-gray-500">Login (Wyszukaj istniejący lub wpisz nowy)</label>
                                 <input type="text" id="admin-user" list="admin-hints" oninput="fetchAdminHints(this.value)" placeholder="Login..." class="w-full p-3 border rounded bg-gray-50 dark:bg-gray-700 dark:text-white">
                                 <datalist id="admin-hints"></datalist>
                             </div>
@@ -152,67 +166,42 @@
 
                         <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6 p-4 bg-gray-50 dark:bg-gray-700 rounded">
                             <div class="multiselect-dropdown" onclick="toggleDropdown('city-multi')">
-                                <label class="block text-xs font-bold uppercase mb-1 text-gray-500">Miasta (Wielokrotny wybór)</label>
-                                <div class="multiselect-header">
-                                    <span id="city-summary">Wszystkie</span>
-                                    <i class="fas fa-chevron-down text-xs"></i>
-                                </div>
+                                <label class="block text-xs font-bold uppercase mb-1 text-gray-500">Dozwolone Miasta</label>
+                                <div class="multiselect-header"><span id="city-summary">Wszystkie</span><i class="fas fa-chevron-down text-xs"></i></div>
                                 <div id="city-multi" class="multiselect-list" onclick="event.stopPropagation()">
-                                    <label class="block p-2 hover:bg-gray-100 dark:hover:bg-gray-600 rounded"><input type="checkbox" value="Inowrocław" class="city-chk mr-2">Inowrocław</label>
-                                    <label class="block p-2 hover:bg-gray-100 dark:hover:bg-gray-600 rounded"><input type="checkbox" value="Bydgoszcz" class="city-chk mr-2">Bydgoszcz</label>
                                     </div>
                             </div>
-
                             <div class="multiselect-dropdown" onclick="toggleDropdown('dist-multi')">
-                                <label class="block text-xs font-bold uppercase mb-1 text-gray-500">Strefy (Wielokrotny wybór)</label>
-                                <div class="multiselect-header">
-                                    <span id="dist-summary">Wszystkie</span>
-                                    <i class="fas fa-chevron-down text-xs"></i>
-                                </div>
+                                <label class="block text-xs font-bold uppercase mb-1 text-gray-500">Dozwolone Strefy (Rejony)</label>
+                                <div class="multiselect-header"><span id="dist-summary">Wszystkie</span><i class="fas fa-chevron-down text-xs"></i></div>
                                 <div id="dist-multi" class="multiselect-list" onclick="event.stopPropagation()">
                                     </div>
                             </div>
-
                             <div class="md:col-span-2 flex gap-6 mt-4">
                                 <label class="flex items-center gap-2 cursor-pointer"><input type="checkbox" id="perm-disabled" class="w-5 h-5"> <span class="dark:text-white">Wgląd w niepełnosprawne</span></label>
                                 <label class="flex items-center gap-2 cursor-pointer"><input type="checkbox" id="perm-ev" class="w-5 h-5"> <span class="dark:text-white">Wgląd w EV</span></label>
                             </div>
                         </div>
-                        <div class="flex gap-3">
-                            <button onclick="saveAdmin()" class="bg-blue-600 hover:bg-blue-700 text-white px-6 py-2 rounded font-bold">Zapisz</button>
-                            <button onclick="cancelEdit()" id="cancel-edit-btn" class="hidden bg-gray-500 hover:bg-gray-600 text-white px-6 py-2 rounded font-bold">Anuluj</button>
-                        </div>
+                        <div class="flex gap-3"><button onclick="saveAdmin()" class="bg-blue-600 hover:bg-blue-700 text-white px-6 py-2 rounded font-bold">Zapisz</button><button onclick="cancelEdit()" id="cancel-edit-btn" class="hidden bg-gray-500 hover:bg-gray-600 text-white px-6 py-2 rounded font-bold">Wyczyść Formularz</button></div>
                     </div>
-                    <div class="bg-white dark:bg-gray-800 rounded-xl shadow-sm overflow-hidden">
-                        <table class="min-w-full text-left text-sm">
-                            <thead class="bg-gray-100 dark:bg-gray-700 text-gray-600 dark:text-gray-200 uppercase font-bold text-xs"><tr><th class="p-4">Login</th><th class="p-4">Miasta</th><th class="p-4">Dostęp</th><th class="p-4">Strefy</th><th class="p-4 text-right">Akcje</th></tr></thead>
-                            <tbody id="table-admins-body" class="divide-y dark:divide-gray-700 dark:text-gray-300"></tbody>
-                        </table>
-                    </div>
+                    <div class="bg-white dark:bg-gray-800 rounded-xl shadow-sm overflow-hidden"><table class="min-w-full text-left text-sm"><thead class="bg-gray-100 dark:bg-gray-700 text-gray-600 dark:text-gray-200 uppercase font-bold text-xs"><tr><th class="p-4">Login</th><th class="p-4">Miasta</th><th class="p-4">Dostęp</th><th class="p-4">Strefy</th><th class="p-4 text-right">Akcje</th></tr></thead><tbody id="table-admins-body" class="divide-y dark:divide-gray-700 dark:text-gray-300"></tbody></table></div>
                 </div>
 
                 <div id="view-users" class="view-section hidden space-y-6">
                     <h2 class="text-3xl font-bold dark:text-white">Zarządzanie Kierowcami</h2>
-                    <div class="flex justify-between items-center bg-white dark:bg-gray-800 p-4 rounded-xl shadow-sm">
-                        <div class="relative w-full md:w-1/2">
-                            <i class="fas fa-search absolute left-3 top-3 text-gray-400"></i>
-                            <input type="text" id="user-search" onkeyup="filterUsers()" placeholder="Szukaj..." class="w-full pl-10 p-2 border rounded dark:bg-gray-700 dark:text-white">
-                        </div>
-                    </div>
-                    <div class="bg-white dark:bg-gray-800 rounded-xl shadow-sm overflow-hidden">
-                        <table class="min-w-full text-left text-sm">
-                            <thead class="bg-gray-100 dark:bg-gray-700 text-gray-600 dark:text-gray-200 uppercase font-bold text-xs"><tr><th class="p-4">ID</th><th class="p-4">Email / Telefon</th><th class="p-4 text-center">Status</th><th class="p-4 text-center">Niepełnosprawność</th><th class="p-4 text-right">Zarządzaj</th></tr></thead>
-                            <tbody id="table-users-body" class="divide-y dark:divide-gray-700 dark:text-gray-300"></tbody>
-                        </table>
-                    </div>
+                    <div class="flex justify-between items-center bg-white dark:bg-gray-800 p-4 rounded-xl shadow-sm"><div class="relative w-full md:w-1/2"><i class="fas fa-search absolute left-3 top-3 text-gray-400"></i><input type="text" id="user-search" onkeyup="filterUsers()" placeholder="Szukaj..." class="w-full pl-10 p-2 border rounded dark:bg-gray-700 dark:text-white"></div></div>
+                    <div class="bg-white dark:bg-gray-800 rounded-xl shadow-sm overflow-hidden"><table class="min-w-full text-left text-sm"><thead class="bg-gray-100 dark:bg-gray-700 text-gray-600 dark:text-gray-200 uppercase font-bold text-xs"><tr><th class="p-4">ID</th><th class="p-4">Email / Telefon</th><th class="p-4 text-center">Status</th><th class="p-4 text-center">Niepełnosprawność</th><th class="p-4 text-right">Zarządzaj</th></tr></thead><tbody id="table-users-body" class="divide-y dark:divide-gray-700 dark:text-gray-300"></tbody></table></div>
                 </div>
             </div>
         </main>
     </div>
 
 <script>
+// Ustawia bazowy URL. Użyj localhost jeśli plik jest lokalnie.
 const API_BASE = window.location.origin; 
-let advancedChart = null;
+// const API_BASE = "http://127.0.0.1:8000"; // Odkomentuj do testów lokalnych
+
+let advancedChart = null, airbnbChart = null;
 let allUsers = [], allDistricts = [];
 
 document.addEventListener('DOMContentLoaded', () => {
@@ -220,14 +209,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const today = new Date().toISOString().split('T')[0];
     document.getElementById('report-start').value = today;
     document.getElementById('report-end').value = today;
-    
-    // Close dropdowns on click outside
-    document.addEventListener('click', (e) => {
-        if(!e.target.closest('.multiselect-dropdown')) {
-            document.querySelectorAll('.multiselect-list').forEach(l => l.classList.remove('open'));
-            updateSummaries();
-        }
-    });
+    document.addEventListener('click', (e) => { if(!e.target.closest('.multiselect-dropdown')) { document.querySelectorAll('.multiselect-list').forEach(l => l.classList.remove('open')); updateSummaries(); } });
 });
 
 async function login() {
@@ -243,7 +225,7 @@ async function login() {
             if(data.is_superadmin) {
                 document.getElementById('nav-admins').classList.remove('hidden');
                 document.getElementById('nav-users').classList.remove('hidden');
-                loadDistrictsForAdmin(); 
+                loadAdminFormData(); 
             }
             loadDistrictsForReport();
         } else { alert("Błąd logowania"); }
@@ -260,201 +242,111 @@ function switchView(viewName) {
     document.getElementById('view-'+viewName).classList.remove('hidden');
     if(viewName === 'admins') fetchAdmins();
     if(viewName === 'users') fetchUsers();
+    if(viewName === 'airbnb') fetchAirbnbStats();
 }
 
-// --- MULTISELECT LOGIC ---
-function toggleDropdown(id) {
-    document.getElementById(id).classList.toggle('open');
-}
-
+function toggleDropdown(id) { document.getElementById(id).classList.toggle('open'); }
 function updateSummaries() {
-    // City
-    const cityChks = Array.from(document.querySelectorAll('#city-multi .city-chk:checked')).map(c => c.value);
+    const cityChks = Array.from(document.querySelectorAll('#city-multi .city-chk:checked')).map(c => c.parentElement.innerText.trim());
     document.getElementById('city-summary').innerText = cityChks.length > 0 ? cityChks.join(', ') : 'Wszystkie';
-    
-    // Dist
     const distChks = Array.from(document.querySelectorAll('#dist-multi .dist-chk:checked')).map(c => c.parentElement.innerText.trim());
     document.getElementById('dist-summary').innerText = distChks.length > 0 ? `${distChks.length} wybranych` : 'Wszystkie';
 }
 
 // --- REPORT ---
 async function loadDistrictsForReport() {
-    try {
-        const res = await fetch(API_BASE + "/api/v1/districts");
-        if(res.ok) {
-            allDistricts = await res.json();
-            renderDistrictsList('districts-list', allDistricts, 'district-chk');
-        }
-    } catch(e){}
+    try { const res = await fetch(API_BASE + "/api/v1/districts"); if(res.ok) { allDistricts = await res.json(); renderDistrictsList('districts-list', allDistricts, 'district-chk'); } } catch(e){}
 }
-
 function renderDistrictsList(containerId, list, inputClass) {
-    const container = document.getElementById(containerId);
-    container.innerHTML = list.map(d => `
-        <label class="flex items-center space-x-2 p-1 hover:bg-gray-100 dark:hover:bg-gray-600 rounded cursor-pointer">
-            <input type="checkbox" value="${d.id}" class="${inputClass} w-4 h-4">
-            <span class="text-sm dark:text-white">${d.name} <span class="text-xs text-gray-400">(${d.city})</span></span>
-        </label>
-    `).join('');
+    document.getElementById(containerId).innerHTML = list.map(d => `<label class="flex items-center space-x-2 p-1 hover:bg-gray-100 dark:hover:bg-gray-600 rounded cursor-pointer"><input type="checkbox" value="${d.id}" class="${inputClass} w-4 h-4"><span class="text-sm dark:text-white">${d.name} <span class="text-xs text-gray-400">(${d.city})</span></span></label>`).join('');
 }
-
-function filterDistricts(containerId, q) {
-    const filtered = allDistricts.filter(d => d.name.toLowerCase().includes(q.toLowerCase()));
-    renderDistrictsList(containerId, filtered, containerId === 'districts-list' ? 'district-chk' : 'dist-chk');
-}
+function filterDistricts(containerId, q) { renderDistrictsList(containerId, allDistricts.filter(d => d.name.toLowerCase().includes(q.toLowerCase())), containerId === 'districts-list' ? 'district-chk' : 'dist-chk'); }
 
 async function generateReport() {
     const districtIds = Array.from(document.querySelectorAll('.district-chk:checked')).map(cb => parseInt(cb.value));
     if(districtIds.length === 0) { alert("Wybierz przynajmniej jeden parking."); return; }
-    
     const payload = {
-        start_date: document.getElementById('report-start').value,
-        end_date: document.getElementById('report-end').value,
-        districts: districtIds,
-        include_weekends: document.getElementById('chk-weekend').checked,
-        include_holidays: document.getElementById('chk-holiday').checked,
-        only_disabled: document.getElementById('chk-disabled').checked,
-        only_ev: document.getElementById('chk-ev').checked,
-        only_paid: document.getElementById('chk-paid').checked
+        start_date: document.getElementById('report-start').value, end_date: document.getElementById('report-end').value, districts: districtIds,
+        include_weekends: document.getElementById('chk-weekend').checked, include_holidays: document.getElementById('chk-holiday').checked,
+        only_disabled: document.getElementById('chk-disabled').checked, only_ev: document.getElementById('chk-ev').checked, only_paid: document.getElementById('chk-paid').checked
     };
-
-    try {
-        const res = await fetch(API_BASE + "/api/v1/admin/stats/advanced", { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(payload) });
-        if(res.ok) {
-            const data = await res.json();
-            renderAdvancedChart(data.datasets);
-        }
-    } catch(e) { alert("Błąd generowania"); }
+    try { const res = await fetch(API_BASE + "/api/v1/admin/stats/advanced", { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(payload) }); if(res.ok) { const data = await res.json(); renderAdvancedChart(data.datasets); } } catch(e) { alert("Błąd generowania"); }
 }
-
 function renderAdvancedChart(datasets) {
     const ctx = document.getElementById('advancedChart').getContext('2d');
     if(advancedChart) advancedChart.destroy();
-    advancedChart = new Chart(ctx, {
-        type: 'line',
-        data: { labels: Array.from({length:24},(_,i)=>`${i}:00`), datasets: datasets },
-        options: {
-            responsive: true, maintainAspectRatio: false,
-            scales: { y: { beginAtZero: true, max: 100 }, x: { title: {display:true, text:'Godzina'} } },
-            interaction: { mode: 'index', intersect: false }
+    advancedChart = new Chart(ctx, { type: 'line', data: { labels: Array.from({length:24},(_,i)=>`${i}:00`), datasets: datasets }, options: { responsive: true, maintainAspectRatio: false, scales: { y: { beginAtZero: true, max: 100 }, x: { title: {display:true, text:'Godzina'} } }, interaction: { mode: 'index', intersect: false } } });
+}
+
+// --- AIRBNB STATS ---
+async function fetchAirbnbStats() {
+    try {
+        const res = await fetch(API_BASE + "/api/v1/admin/stats/airbnb_summary");
+        if(res.ok) {
+            const data = await res.json();
+            document.getElementById('ab-total').innerText = data.total_offers;
+            document.getElementById('ab-price').innerText = data.avg_price + " PLN";
+            renderAirbnbChart(data.by_city);
+            // Fetch List
+            const listRes = await fetch(API_BASE + "/api/v1/airbnb/offers");
+            if(listRes.ok) {
+                const list = await listRes.json();
+                document.getElementById('table-airbnb-body').innerHTML = list.slice(0,10).map(o => `<tr class="hover:bg-gray-100 dark:hover:bg-gray-700 border-b dark:border-gray-700"><td class="p-4 dark:text-white font-bold">${o.title}</td><td class="p-4 dark:text-gray-300">${o.price} PLN</td><td class="p-4 dark:text-gray-300">${o.owner_name}</td><td class="p-4 dark:text-gray-300">${o.state_name}</td></tr>`).join('');
+            }
         }
+    } catch(e){}
+}
+function renderAirbnbChart(data) {
+    const ctx = document.getElementById('airbnbPieChart').getContext('2d');
+    if(airbnbChart) airbnbChart.destroy();
+    airbnbChart = new Chart(ctx, {
+        type: 'pie',
+        data: {
+            labels: data.map(d => d.city),
+            datasets: [{ data: data.map(d => d.count), backgroundColor: ['#3B82F6', '#10B981', '#F59E0B', '#EF4444', '#8B5CF6'] }]
+        },
+        options: { responsive: true, maintainAspectRatio: false }
     });
 }
 
 // --- ADMINS ---
-async function loadDistrictsForAdmin() {
+async function loadAdminFormData() {
     try {
-        const res = await fetch(API_BASE + "/api/v1/districts");
-        if(res.ok) {
-            const list = await res.json();
-            renderDistrictsList('dist-multi', list, 'dist-chk');
+        const cRes = await fetch(API_BASE + "/api/v1/cities");
+        if(cRes.ok) {
+            const cities = await cRes.json();
+            document.getElementById('city-multi').innerHTML = cities.map(c => `<label class="block p-2 hover:bg-gray-100 dark:hover:bg-gray-600 rounded"><input type="checkbox" value="${c.name}" class="city-chk mr-2">${c.name}</label>`).join('');
+        }
+        const sRes = await fetch(API_BASE + "/api/v1/states");
+        if(sRes.ok) {
+            const states = await sRes.json();
+            document.getElementById('dist-multi').innerHTML = states.map(s => `<label class="block p-2 hover:bg-gray-100 dark:hover:bg-gray-600 rounded"><input type="checkbox" value="${s.id}" class="dist-chk mr-2">${s.name}</label>`).join('');
         }
     } catch(e){}
 }
-
-async function fetchAdminHints(val) {
-    if(val.length < 2) return;
-    try {
-        const res = await fetch(`${API_BASE}/api/v1/admin/search_hint?q=${val}`);
-        if(res.ok) {
-            const hints = await res.json();
-            document.getElementById('admin-hints').innerHTML = hints.map(h => `<option value="${h}">`).join('');
-        }
-    } catch(e){}
-}
-
-async function fetchAdmins() {
-    const res = await fetch(API_BASE + "/api/v1/admin/list");
-    if(res.ok) {
-        const list = await res.json();
-        document.getElementById('table-admins-body').innerHTML = list.map(a => `
-            <tr class="hover:bg-gray-100 dark:hover:bg-gray-700 border-b dark:border-gray-700">
-                <td class="p-4 font-bold dark:text-white">${a.username}</td>
-                <td class="p-4 dark:text-gray-300">${a.permissions.city || 'Wszystkie'}</td>
-                <td class="p-4 space-x-1">
-                    ${a.permissions.view_disabled ? '<span class="px-2 py-1 bg-blue-100 text-blue-800 rounded text-xs">DIS</span>' : ''}
-                    ${a.permissions.view_ev ? '<span class="px-2 py-1 bg-yellow-100 text-yellow-800 rounded text-xs">EV</span>' : ''}
-                </td>
-                <td class="p-4 text-gray-500">${a.permissions.allowed_state || 'Wszystkie'}</td>
-                <td class="p-4 text-right"><button onclick='editAdmin(${JSON.stringify(a)})' class="text-blue-600 hover:text-blue-800 mr-3"><i class="fas fa-edit"></i></button></td>
-            </tr>
-        `).join('');
-    }
-}
-
+async function fetchAdminHints(val) { if(val.length < 2) return; try { const res = await fetch(`${API_BASE}/api/v1/admin/search_hint?q=${val}`); if(res.ok) { const hints = await res.json(); document.getElementById('admin-hints').innerHTML = hints.map(h => `<option value="${h}">`).join(''); } } catch(e){} }
+async function fetchAdmins() { const res = await fetch(API_BASE + "/api/v1/admin/list"); if(res.ok) { const list = await res.json(); document.getElementById('table-admins-body').innerHTML = list.map(a => `
+    <tr class="hover:bg-gray-100 dark:hover:bg-gray-700 border-b dark:border-gray-700"><td class="p-4 font-bold dark:text-white">${a.username}</td><td class="p-4 dark:text-gray-300">${a.permissions.city || 'Wszystkie'}</td><td class="p-4 space-x-1">${a.permissions.view_disabled ? '<span class="px-2 py-1 bg-blue-100 text-blue-800 rounded text-xs">DIS</span>' : ''}${a.permissions.view_ev ? '<span class="px-2 py-1 bg-yellow-100 text-yellow-800 rounded text-xs">EV</span>' : ''}</td><td class="p-4 text-gray-500">${a.permissions.allowed_state || 'Wszystkie'}</td><td class="p-4 text-right"><button onclick='editAdmin(${JSON.stringify(a)})' class="text-blue-600 hover:text-blue-800 mr-3"><i class="fas fa-edit"></i></button></td></tr>`).join(''); } }
 function editAdmin(a) {
-    document.getElementById('edit-admin-id').value = a.id;
-    document.getElementById('admin-user').value = a.username;
-    document.getElementById('admin-user').disabled = true;
-    document.getElementById('cancel-edit-btn').classList.remove('hidden');
-    
+    document.getElementById('edit-admin-id').value = a.id; document.getElementById('admin-user').value = a.username; document.getElementById('admin-user').disabled = true; document.getElementById('cancel-edit-btn').classList.remove('hidden');
     const p = a.permissions || {};
-    // Set Cities Checkboxes
-    const cities = (p.city || "").split(',');
-    document.querySelectorAll('.city-chk').forEach(c => c.checked = cities.includes(c.value));
-    
-    // Set Districts Checkboxes
-    const dists = (p.allowed_state || "").split(',');
-    document.querySelectorAll('.dist-chk').forEach(c => c.checked = dists.includes(c.value));
-    
-    document.getElementById('perm-disabled').checked = p.view_disabled || false;
-    document.getElementById('perm-ev').checked = p.view_ev || false;
-    updateSummaries();
+    const cities = (p.city || "").split(','); document.querySelectorAll('.city-chk').forEach(c => c.checked = cities.includes(c.value));
+    const dists = (p.allowed_state || "").split(','); document.querySelectorAll('.dist-chk').forEach(c => c.checked = dists.includes(c.value));
+    document.getElementById('perm-disabled').checked = p.view_disabled || false; document.getElementById('perm-ev').checked = p.view_ev || false; updateSummaries();
 }
-
-function cancelEdit() {
-    document.getElementById('edit-admin-id').value = '';
-    document.getElementById('admin-user').value = '';
-    document.getElementById('admin-user').disabled = false;
-    document.getElementById('cancel-edit-btn').classList.add('hidden');
-    document.querySelectorAll('input[type=checkbox]').forEach(c => c.checked = false);
-    updateSummaries();
-}
-
+function cancelEdit() { document.getElementById('edit-admin-id').value = ''; document.getElementById('admin-user').value = ''; document.getElementById('admin-user').disabled = false; document.getElementById('cancel-edit-btn').classList.add('hidden'); document.querySelectorAll('input[type=checkbox]').forEach(c => c.checked = false); updateSummaries(); }
 async function saveAdmin() {
     const id = document.getElementById('edit-admin-id').value;
-    const p = document.getElementById('admin-pass').value;
-    
-    const selectedCities = Array.from(document.querySelectorAll('#city-multi .city-chk:checked')).map(c => c.value).join(',');
-    const selectedDistricts = Array.from(document.querySelectorAll('#dist-multi .dist-chk:checked')).map(c => c.value).join(',');
-
-    const payload = {
-        username: document.getElementById('admin-user').value, 
-        password: p || null,
-        city: selectedCities || 'ALL',
-        allowed_state: selectedDistricts,
-        view_disabled: document.getElementById('perm-disabled').checked,
-        view_ev: document.getElementById('perm-ev').checked
-    };
+    const payload = { username: document.getElementById('admin-user').value, password: document.getElementById('admin-pass').value || null, city: Array.from(document.querySelectorAll('#city-multi .city-chk:checked')).map(c => c.value).join(',') || 'ALL', allowed_state: Array.from(document.querySelectorAll('#dist-multi .dist-chk:checked')).map(c => c.value).join(','), view_disabled: document.getElementById('perm-disabled').checked, view_ev: document.getElementById('perm-ev').checked };
     if(id) payload.id = parseInt(id);
-    const endpoint = id ? "/api/v1/admin/update" : "/api/v1/admin/create";
-    await fetch(API_BASE + endpoint, { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(payload)});
-    cancelEdit(); fetchAdmins();
+    await fetch(API_BASE + (id ? "/api/v1/admin/update" : "/api/v1/admin/create"), { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(payload)}); cancelEdit(); fetchAdmins();
 }
+async function deleteAdmin(id) { if(confirm("Usunąć?")) { await fetch(API_BASE + "/api/v1/admin/delete", { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({target_id:id})}); fetchAdmins(); } }
 
 // --- USERS ---
-async function fetchUsers() {
-    const res = await fetch(API_BASE + "/api/v1/admin/users");
-    if(res.ok) { allUsers = await res.json(); renderUsers(allUsers); }
-}
-function renderUsers(users) {
-    document.getElementById('table-users-body').innerHTML = users.map(u => `
-        <tr class="hover:bg-gray-100 dark:hover:bg-gray-700 border-b dark:border-gray-700">
-            <td class="p-4 text-gray-500">#${u.user_id}</td>
-            <td class="p-4 font-medium dark:text-white">${u.email || u.phone || 'Brak'}</td>
-            <td class="p-4 text-center">${u.is_blocked ? 'BLOK' : 'OK'}</td>
-            <td class="p-4 text-center">${u.is_disabled ? 'TAK' : '-'}</td>
-            <td class="p-4 text-right space-x-2">
-                <button onclick="toggleUserBlock(${u.user_id}, ${!u.is_blocked})" class="text-xs border px-2 py-1 rounded">${u.is_blocked ? 'Odblokuj' : 'Zablokuj'}</button>
-                <button onclick="toggleUserDisabled(${u.user_id}, ${!u.is_disabled})" class="text-xs border px-2 py-1 rounded">${u.is_disabled ? 'Zabierz' : 'Nadaj'}</button>
-            </td>
-        </tr>
-    `).join('');
-}
-function filterUsers() {
-    const q = document.getElementById('user-search').value.toLowerCase();
-    renderUsers(allUsers.filter(u => (u.email && u.email.toLowerCase().includes(q)) || (u.phone && u.phone.includes(q)) || (u.user_id.toString().includes(q))));
-}
+async function fetchUsers() { const res = await fetch(API_BASE + "/api/v1/admin/users"); if(res.ok) { allUsers = await res.json(); renderUsers(allUsers); } }
+function renderUsers(users) { document.getElementById('table-users-body').innerHTML = users.map(u => `<tr class="hover:bg-gray-100 dark:hover:bg-gray-700 border-b dark:border-gray-700"><td class="p-4 text-gray-500">#${u.user_id}</td><td class="p-4 font-medium dark:text-white">${u.email || u.phone || 'Brak'}</td><td class="p-4 text-center">${u.is_blocked ? 'BLOK' : 'OK'}</td><td class="p-4 text-center">${u.is_disabled ? 'TAK' : '-'}</td><td class="p-4 text-right space-x-2"><button onclick="toggleUserBlock(${u.user_id}, ${!u.is_blocked})" class="text-xs border px-2 py-1 rounded">${u.is_blocked ? 'Odblokuj' : 'Zablokuj'}</button><button onclick="toggleUserDisabled(${u.user_id}, ${!u.is_disabled})" class="text-xs border px-2 py-1 rounded">${u.is_disabled ? 'Zabierz' : 'Nadaj'}</button></td></tr>`).join(''); }
+function filterUsers() { const q = document.getElementById('user-search').value.toLowerCase(); renderUsers(allUsers.filter(u => (u.email && u.email.toLowerCase().includes(q)) || (u.phone && u.phone.includes(q)) || (u.user_id.toString().includes(q)))); }
 async function toggleUserBlock(id, status) { await fetch(API_BASE + "/api/v1/admin/user/update", { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({user_id:id, is_blocked:status})}); fetchUsers(); }
 async function toggleUserDisabled(id, status) { await fetch(API_BASE + "/api/v1/admin/user/update", { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({user_id:id, is_disabled:status})}); fetchUsers(); }
 </script>
