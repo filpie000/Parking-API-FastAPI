@@ -116,7 +116,8 @@ class AdminPermissions(Base):
     city = Column(String(255))
     view_disabled = Column(Boolean, default=False)
     view_ev = Column(Boolean, default=False)
-    allowed_state = Column(Text)
+    view_paid_only = Column(Boolean, default=False) # NOWE POLE Z BAZY
+    allowed_states = Column(Text) # POPRAWIONE NA LICZBĘ MNOGĄ (zgodnie z bazą)
     admin = relationship("Admin", back_populates="permissions")
 
 class HistoricalData(Base):
@@ -230,10 +231,9 @@ class AirbnbResponse(BaseModel):
 class AdminUserUpdate(BaseModel): user_id: int; is_blocked: Optional[bool] = None; is_disabled: Optional[bool] = None
 
 class AdminPayload(BaseModel):
-    id: Optional[int] = None; username: str; password: Optional[str] = None; 
-    city: str = "ALL"  # Tutaj mogą być miasta po przecinku
-    view_disabled: bool = False; view_ev: bool = False
-    allowed_state: str = "" # Tutaj mogą być ID stref po przecinku
+    id: Optional[int] = None; username: str; password: Optional[str] = None; city: str = "ALL"
+    view_disabled: bool = False; view_ev: bool = False; view_paid_only: bool = False
+    allowed_states: str = "" # ZMIANA NAZWY NA LICZBĘ MNOGĄ
 
 class AdminLogin(BaseModel): username: str; password: str
 
@@ -392,7 +392,7 @@ def admin_login(d: AdminLogin, db: Session = Depends(get_db)):
                     "city": perms.city if perms else "ALL",
                     "view_disabled": perms.view_disabled if perms else False,
                     "view_ev": perms.view_ev if perms else False,
-                    "allowed_state": perms.allowed_state if perms else ""
+                    "allowed_state": perms.allowed_states if perms else "" # ZMIANA NA allowed_states
                 }
             }
     except Exception as e: pass
@@ -403,18 +403,26 @@ def list_admins(db: Session = Depends(get_db)):
     admins = db.query(Admin).options(joinedload(Admin.permissions)).all()
     res = []
     for a in admins:
+        # Używamy bezpiecznie a.permissions
+        city = a.permissions.city if a.permissions else "ALL"
+        dis = a.permissions.view_disabled if a.permissions else False
+        ev = a.permissions.view_ev if a.permissions else False
+        paid = a.permissions.view_paid_only if a.permissions else False # NEW
+        states = a.permissions.allowed_states if a.permissions else "" # NEW NAME
+        
         res.append({
             "id": a.admin_id, "username": a.username,
             "permissions": {
-                "city": a.permissions.city if a.permissions else "ALL",
-                "view_disabled": a.permissions.view_disabled if a.permissions else False,
-                "view_ev": a.permissions.view_ev if a.permissions else False,
-                "allowed_state": a.permissions.allowed_state if a.permissions else ""
+                "city": city,
+                "view_disabled": dis,
+                "view_ev": ev,
+                "view_paid_only": paid,
+                "allowed_states": states # wysyłamy jako allowed_states
             }
         })
     return res
 
-# --- DODAWANIE ADMINA (UPRAWNIENIA) ---
+# --- DODAWANIE ADMINA (POPRAWIONE) ---
 @app.post("/api/v1/admin/create")
 def create_admin(d: AdminPayload, db: Session = Depends(get_db)):
     if db.query(Admin).filter(Admin.username == d.username).first(): 
@@ -422,15 +430,16 @@ def create_admin(d: AdminPayload, db: Session = Depends(get_db)):
     
     new_admin = Admin(username=d.username, password_hash=get_password_hash(d.password or "admin123"))
     db.add(new_admin)
-    db.flush() # Generuje ID
+    db.flush() 
     
-    # Zapisujemy permissions (city = "Inowrocław,Bydgoszcz", allowed_state = "1,3,5")
+    # Używamy poprawnych nazw kolumn z bazy (allowed_states, view_paid_only)
     perms = AdminPermissions(
         admin_id=new_admin.admin_id, 
         city=d.city, 
         view_disabled=d.view_disabled, 
         view_ev=d.view_ev, 
-        allowed_state=d.allowed_state
+        view_paid_only=d.view_paid_only, # NEW
+        allowed_states=d.allowed_states  # NEW NAME
     )
     db.add(perms)
     db.commit()
@@ -447,9 +456,18 @@ def update_admin(d: AdminPayload, db: Session = Depends(get_db)):
         admin.permissions.city = d.city
         admin.permissions.view_disabled = d.view_disabled
         admin.permissions.view_ev = d.view_ev
-        admin.permissions.allowed_state = d.allowed_state
+        admin.permissions.view_paid_only = d.view_paid_only # NEW
+        admin.permissions.allowed_states = d.allowed_states # NEW NAME
     else:
-        db.add(AdminPermissions(admin_id=admin.admin_id, city=d.city, view_disabled=d.view_disabled, view_ev=d.view_ev, allowed_state=d.allowed_state))
+        # Tworzymy nowe jeśli nie ma (dla osieroconych adminów)
+        db.add(AdminPermissions(
+            admin_id=admin.admin_id, 
+            city=d.city, 
+            view_disabled=d.view_disabled, 
+            view_ev=d.view_ev,
+            view_paid_only=d.view_paid_only,
+            allowed_states=d.allowed_states
+        ))
     db.commit(); return {"status": "updated"}
 
 @app.post("/api/v1/admin/delete")
@@ -616,7 +634,6 @@ async def iot_update_http(data: dict, db: Session = Depends(get_db)):
             if stat == 1:
                 subs = db.query(DeviceSubscription).filter(DeviceSubscription.sensor_name == name).all()
                 if subs:
-                    # SMART NOTIFICATION
                     alternatives = []
                     if spot.district_id:
                         alternatives = db.query(ParkingSpot).filter(
