@@ -55,7 +55,7 @@ def get_db():
     try: yield db
     finally: db.close()
 
-# --- MODELE ---
+# --- MODELE BAZY DANYCH ---
 class City(Base):
     __tablename__ = "cities"
     id = Column(Integer, primary_key=True, autoincrement=True)
@@ -536,7 +536,6 @@ def get_advanced_stats(req: StatsRequest, db: Session = Depends(get_db)):
 #           MOBILE APP ENDPOINTS
 # ==========================================
 
-# --- FIX: IOT UPDATE ENDPOINT (Odtworzony) ---
 @app.post("/api/v1/iot/update")
 async def iot_update_http(data: dict, db: Session = Depends(get_db)):
     try:
@@ -700,7 +699,7 @@ def get_stats_mobile(req: StatystykiZapytanie, db: Session = Depends(get_db)):
         logger.error(f"Stats Mobile Error: {e}")
         return {"wynik": {"procent_zajetosci": 0, "liczba_pomiarow": 0}}
 
-# --- AIRBNB ---
+# --- AIRBNB (TOKEN FIX + OWNER FIX + ROBUST GET) ---
 @app.post("/api/v1/airbnb/add")
 def add_airbnb(a: AirbnbAdd, db: Session = Depends(get_db)):
     u = db.query(User).filter(User.token == a.token).first()
@@ -750,14 +749,19 @@ def get_airbnb(district_id: Optional[int] = None, token: Optional[str] = None, d
             if u: current_user_id = u.user_id
 
         q = db.query(AirbnbOffer)
-        if district_id: q = q.filter(AirbnbOffer.district_id == district_id)
+        # Jeśli filtrujemy po state_id (rejonie), a nie district_id (stara nazwa)
+        if district_id: q = q.filter(AirbnbOffer.state_id == district_id) 
+        
         offers = q.all()
         
         res = []
         for o in offers:
             try:
+                # SAFE STATE NAME ACCESS
                 s_name = "Inny"
-                if o.state_rel: s_name = o.state_rel.name
+                if o.state_rel: 
+                    s_name = o.state_rel.name
+                
                 res.append({
                     "id": o.id, "title": o.title or "Brak tytułu", "description": o.description,
                     "price": float(o.price) if o.price is not None else 0.0,
@@ -770,7 +774,9 @@ def get_airbnb(district_id: Optional[int] = None, token: Optional[str] = None, d
                 })
             except Exception as e: continue
         return res
-    except Exception as e: logger.error(f"Global Airbnb Error: {e}"); return []
+    except Exception as e: 
+        logger.error(f"Global Airbnb Error: {e}")
+        return [] # Return empty list on error instead of 500
 
 @app.post("/api/v1/user/buy_ticket")
 def buy_ticket(req: TicketPurchase, db: Session = Depends(get_db)):
@@ -803,13 +809,11 @@ def get_active_ticket(token: str, db: Session = Depends(get_db)):
     if t.end_time < now_utc().replace(tzinfo=None): return {"status": "expired"}
     return {"status": "found", "id": t.id, "place_name": t.place_name, "end_time": t.end_time, "plate_number": t.plate_number, "price": float(t.price)}
 
-# --- NEW: HISTORIA BILETÓW (ALL) ---
 @app.get("/api/v1/user/tickets/history")
 def get_ticket_history(token: str, db: Session = Depends(get_db)):
     user = db.query(User).filter(User.token == token).first()
     if not user: raise HTTPException(401, "Invalid token")
     
-    # Pobieramy WSZYSTKIE bilety użytkownika, sortując od najnowszych
     tickets = db.query(Ticket).filter(Ticket.user_id == user.user_id).order_by(Ticket.start_time.desc()).all()
     
     return [{
