@@ -36,6 +36,7 @@ MQTT_PORT = int(os.environ.get('MQTT_PORT', 1883))
 MQTT_TOPIC = "parking/+/status" 
 
 DATABASE_URL = os.environ.get('DATABASE_URL', "postgresql://postgres:postgres@localhost:5432/postgres")
+# DATABASE_URL = "sqlite:///./parking.db"
 
 if DATABASE_URL and DATABASE_URL.startswith("postgres://"):
     DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
@@ -116,11 +117,8 @@ class AdminPermissions(Base):
     city = Column(String(255))
     view_disabled = Column(Boolean, default=False)
     view_ev = Column(Boolean, default=False)
-    view_paid_only = Column(Boolean, default=False) # Zgodne z bazą
-    
-    # --- FIX: ZMIANA NAZWY NA LICZBĘ MNOGĄ (TAK JAK W BAZIE) ---
-    allowed_states = Column(Text) 
-    
+    view_paid_only = Column(Boolean, default=False)
+    allowed_states = Column(Text) # Plural name match DB
     admin = relationship("Admin", back_populates="permissions")
 
 class HistoricalData(Base):
@@ -236,8 +234,6 @@ class AdminUserUpdate(BaseModel): user_id: int; is_blocked: Optional[bool] = Non
 class AdminPayload(BaseModel):
     id: Optional[int] = None; username: str; password: Optional[str] = None; city: str = "ALL"
     view_disabled: bool = False; view_ev: bool = False; view_paid_only: bool = False
-    
-    # --- FIX: ZMIANA NA LICZBĘ MNOGĄ ---
     allowed_states: str = "" 
 
 class AdminLogin(BaseModel): username: str; password: str
@@ -400,8 +396,8 @@ def admin_login(d: AdminLogin, db: Session = Depends(get_db)):
                     "city": perms.city if perms else "ALL",
                     "view_disabled": perms.view_disabled if perms else False,
                     "view_ev": perms.view_ev if perms else False,
-                    "view_paid_only": perms.view_paid_only if perms else False, # NEW
-                    "allowed_state": perms.allowed_states if perms else "" # ZWRACAMY JAKO allowed_state DLA KOMPATYBILNOŚCI JS
+                    "view_paid_only": perms.view_paid_only if perms else False,
+                    "allowed_state": perms.allowed_states if perms else "" 
                 }
             }
     except Exception as e: pass
@@ -418,13 +414,12 @@ def list_admins(db: Session = Depends(get_db)):
                 "city": a.permissions.city if a.permissions else "ALL",
                 "view_disabled": a.permissions.view_disabled if a.permissions else False,
                 "view_ev": a.permissions.view_ev if a.permissions else False,
-                "view_paid_only": a.permissions.view_paid_only if a.permissions else False, # NEW
-                "allowed_states": a.permissions.allowed_states if a.permissions else "" # FIX NAME
+                "view_paid_only": a.permissions.view_paid_only if a.permissions else False,
+                "allowed_states": a.permissions.allowed_states if a.permissions else "" 
             }
         })
     return res
 
-# --- DODAWANIE ADMINA (FIX NAMES) ---
 @app.post("/api/v1/admin/create")
 def create_admin(d: AdminPayload, db: Session = Depends(get_db)):
     if db.query(Admin).filter(Admin.username == d.username).first(): 
@@ -440,7 +435,7 @@ def create_admin(d: AdminPayload, db: Session = Depends(get_db)):
         view_disabled=d.view_disabled, 
         view_ev=d.view_ev, 
         view_paid_only=d.view_paid_only, 
-        allowed_states=d.allowed_states # FIX
+        allowed_states=d.allowed_states 
     )
     db.add(perms)
     db.commit()
@@ -458,7 +453,7 @@ def update_admin(d: AdminPayload, db: Session = Depends(get_db)):
         admin.permissions.view_disabled = d.view_disabled
         admin.permissions.view_ev = d.view_ev
         admin.permissions.view_paid_only = d.view_paid_only
-        admin.permissions.allowed_states = d.allowed_states # FIX
+        admin.permissions.allowed_states = d.allowed_states
     else:
         db.add(AdminPermissions(
             admin_id=admin.admin_id, 
@@ -634,6 +629,7 @@ async def iot_update_http(data: dict, db: Session = Depends(get_db)):
             if stat == 1:
                 subs = db.query(DeviceSubscription).filter(DeviceSubscription.sensor_name == name).all()
                 if subs:
+                    # SMART NOTIFICATION
                     alternatives = []
                     if spot.district_id:
                         alternatives = db.query(ParkingSpot).filter(
