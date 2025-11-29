@@ -36,9 +36,8 @@ MQTT_PORT = int(os.environ.get('MQTT_PORT', 1883))
 MQTT_TOPIC = "parking/+/status" 
 
 DATABASE_URL = os.environ.get('DATABASE_URL', "postgresql://postgres:postgres@localhost:5432/postgres")
-# DATABASE_URL = "sqlite:///./parking.db"
 
-if DATABASE_URL.startswith("postgres://"):
+if DATABASE_URL and DATABASE_URL.startswith("postgres://"):
     DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
 
 engine = create_engine(
@@ -55,17 +54,22 @@ def get_db():
     try: yield db
     finally: db.close()
 
-# --- MODELE BAZY DANYCH ---
+# --- MODELE BAZY DANYCH (POPRAWIONE city_id) ---
+
 class City(Base):
     __tablename__ = "cities"
-    id = Column(Integer, primary_key=True, autoincrement=True)
+    # W Twojej bazie kolumna nazywa się city_id, a nie id!
+    city_id = Column(Integer, primary_key=True, autoincrement=True) 
     city = Column(String(100), nullable=False)
 
 class State(Base): 
     __tablename__ = "states"
     state_id = Column(Integer, primary_key=True, autoincrement=True)
     name = Column(String(100), nullable=False)
-    city = Column(String(100), nullable=True) 
+    
+    # Relacja wskazuje na cities.city_id
+    city_id = Column(Integer, ForeignKey("cities.city_id"), nullable=True) 
+    city = Column(String(100), nullable=True) # Stara kolumna (string)
 
 class User(Base):
     __tablename__ = "users"
@@ -162,11 +166,15 @@ class AirbnbOffer(Base):
     rating = Column(DECIMAL(3, 2), default=0)
     latitude = Column(DECIMAL(9, 6))
     longitude = Column(DECIMAL(9, 6))
+    
+    # State ID (Rejon) - teraz powiązany
     state_id = Column(Integer, ForeignKey("states.state_id"), nullable=True)
     district_id = Column(Integer, ForeignKey("districts.id"), nullable=True)
+    
     start_date = Column(Date)
     end_date = Column(Date)
     created_at = Column(DateTime, default=now_utc)
+    
     state_rel = relationship("State") 
 
 class ParkingSpot(Base):
@@ -181,6 +189,7 @@ class ParkingSpot(Base):
     is_disabled_friendly = Column(Boolean, default=False)
     is_ev = Column(Boolean, default=False)
     is_paid = Column(Boolean, default=True)
+    
     district_rel = relationship("District")
     state_rel = relationship("State") 
 
@@ -446,23 +455,20 @@ def search_admin_hint(q: str = "", db: Session = Depends(get_db)):
     admins = db.query(Admin.username).filter(Admin.username.ilike(f"%{q}%")).limit(5).all()
     return [a[0] for a in admins]
 
-# --- LOKALIZACJA ---
+# --- LOKALIZACJA (FIXED for city_id) ---
 @app.get("/api/v1/cities")
 def get_cities(db: Session = Depends(get_db)):
     cities = db.query(City).all()
-    return [{"id": c.id, "name": c.city} for c in cities]
+    # Mapowanie city_id na id dla frontendu
+    return [{"id": c.city_id, "name": c.city} for c in cities]
 
 @app.get("/api/v1/states")
 def get_states(city_id: Optional[int] = None, db: Session = Depends(get_db)):
     query = db.query(State)
     if city_id:
-        city_obj = db.query(City).filter(City.id == city_id).first()
-        if city_obj:
-            query = query.filter(State.city == city_obj.city)
-        else:
-            return [] 
+        query = query.filter(State.city_id == city_id)
     states = query.all()
-    return [{"id": s.state_id, "name": s.name, "city": s.city} for s in states]
+    return [{"id": s.state_id, "name": s.name, "city_id": s.city_id} for s in states]
 
 @app.get("/api/v1/districts")
 def get_districts(db: Session = Depends(get_db)):
@@ -699,7 +705,7 @@ def get_stats_mobile(req: StatystykiZapytanie, db: Session = Depends(get_db)):
         logger.error(f"Stats Mobile Error: {e}")
         return {"wynik": {"procent_zajetosci": 0, "liczba_pomiarow": 0}}
 
-# --- AIRBNB (TOKEN FIX + OWNER FIX + ROBUST GET) ---
+# --- AIRBNB ---
 @app.post("/api/v1/airbnb/add")
 def add_airbnb(a: AirbnbAdd, db: Session = Depends(get_db)):
     u = db.query(User).filter(User.token == a.token).first()
@@ -749,19 +755,14 @@ def get_airbnb(district_id: Optional[int] = None, token: Optional[str] = None, d
             if u: current_user_id = u.user_id
 
         q = db.query(AirbnbOffer)
-        # Jeśli filtrujemy po state_id (rejonie), a nie district_id (stara nazwa)
-        if district_id: q = q.filter(AirbnbOffer.state_id == district_id) 
-        
+        if district_id: q = q.filter(AirbnbOffer.district_id == district_id)
         offers = q.all()
         
         res = []
         for o in offers:
             try:
-                # SAFE STATE NAME ACCESS
                 s_name = "Inny"
-                if o.state_rel: 
-                    s_name = o.state_rel.name
-                
+                if o.state_rel: s_name = o.state_rel.name
                 res.append({
                     "id": o.id, "title": o.title or "Brak tytułu", "description": o.description,
                     "price": float(o.price) if o.price is not None else 0.0,
@@ -774,9 +775,7 @@ def get_airbnb(district_id: Optional[int] = None, token: Optional[str] = None, d
                 })
             except Exception as e: continue
         return res
-    except Exception as e: 
-        logger.error(f"Global Airbnb Error: {e}")
-        return [] # Return empty list on error instead of 500
+    except Exception as e: logger.error(f"Global Airbnb Error: {e}"); return []
 
 @app.post("/api/v1/user/buy_ticket")
 def buy_ticket(req: TicketPurchase, db: Session = Depends(get_db)):
