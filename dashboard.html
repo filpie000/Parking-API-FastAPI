@@ -15,44 +15,12 @@
     </script>
     <style>
         .checkbox-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 0.5rem; }
-        
-        /* Style dla Multiselect (Lista rozwijana z checkboxami) */
         .multiselect-dropdown { position: relative; cursor: pointer; }
-        .multiselect-header { 
-            padding: 0.75rem; 
-            border: 1px solid #e5e7eb; 
-            border-radius: 0.375rem; 
-            display: flex; 
-            justify-content: space-between; 
-            align-items: center; 
-            background-color: white; 
-            min-height: 42px;
-        }
+        .multiselect-header { padding: 0.5rem; border: 1px solid #e5e7eb; border-radius: 0.375rem; display: flex; justify-content: space-between; align-items: center; background-color: white; }
         .dark .multiselect-header { background-color: #374151; border-color: #4b5563; color: white; }
-        
-        .multiselect-list { 
-            display: none; 
-            position: absolute; 
-            top: 100%; 
-            left: 0; 
-            right: 0; 
-            background-color: white; 
-            border: 1px solid #e5e7eb; 
-            border-top: none; 
-            max-height: 200px; 
-            overflow-y: auto; 
-            z-index: 50; 
-            padding: 0.5rem; 
-            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
-        }
+        .multiselect-list { display: none; position: absolute; top: 100%; left: 0; right: 0; background-color: white; border: 1px solid #e5e7eb; border-top: none; max-height: 200px; overflow-y: auto; z-index: 50; padding: 0.5rem; }
         .dark .multiselect-list { background-color: #374151; border-color: #4b5563; color: white; }
         .multiselect-list.open { display: block; }
-        
-        /* Scrollbar styling */
-        ::-webkit-scrollbar { width: 8px; height: 8px; }
-        ::-webkit-scrollbar-track { background: transparent; }
-        ::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 4px; }
-        .dark ::-webkit-scrollbar-thumb { background: #4b5563; }
     </style>
 </head>
 <body class="bg-gray-50 dark:bg-gray-900 text-gray-800 dark:text-gray-200 font-sans h-screen flex flex-col overflow-hidden transition-colors duration-300">
@@ -180,6 +148,7 @@
                             <div class="md:col-span-2 flex gap-6 mt-4">
                                 <label class="flex items-center gap-2 cursor-pointer"><input type="checkbox" id="perm-disabled" class="w-5 h-5"> <span class="dark:text-white">Wgląd w niepełnosprawne</span></label>
                                 <label class="flex items-center gap-2 cursor-pointer"><input type="checkbox" id="perm-ev" class="w-5 h-5"> <span class="dark:text-white">Wgląd w EV</span></label>
+                                <label class="flex items-center gap-2 cursor-pointer"><input type="checkbox" id="perm-paid" class="w-5 h-5"> <span class="dark:text-white">Wgląd w Płatne</span></label>
                             </div>
                         </div>
                         <div class="flex gap-3"><button onclick="saveAdmin()" class="bg-blue-600 hover:bg-blue-700 text-white px-6 py-2 rounded font-bold">Zapisz</button><button onclick="cancelEdit()" id="cancel-edit-btn" class="hidden bg-gray-500 hover:bg-gray-600 text-white px-6 py-2 rounded font-bold">Wyczyść Formularz</button></div>
@@ -197,12 +166,9 @@
     </div>
 
 <script>
-// Ustawia bazowy URL. Użyj localhost jeśli plik jest lokalnie.
 const API_BASE = window.location.origin; 
-// const API_BASE = "http://127.0.0.1:8000"; // Odkomentuj do testów lokalnych
-
 let advancedChart = null, airbnbChart = null;
-let allUsers = [], allDistricts = [];
+let allUsers = [], allDistricts = [], allCities = [], allStates = [];
 
 document.addEventListener('DOMContentLoaded', () => {
     initTheme();
@@ -248,7 +214,7 @@ function switchView(viewName) {
 function toggleDropdown(id) { document.getElementById(id).classList.toggle('open'); }
 function updateSummaries() {
     const cityChks = Array.from(document.querySelectorAll('#city-multi .city-chk:checked')).map(c => c.parentElement.innerText.trim());
-    document.getElementById('city-summary').innerText = cityChks.length > 0 ? cityChks.join(', ') : 'Wszystkie';
+    document.getElementById('city-summary').innerText = cityChks.length > 0 ? `${cityChks.length} wybranych` : 'Wszystkie';
     const distChks = Array.from(document.querySelectorAll('#dist-multi .dist-chk:checked')).map(c => c.parentElement.innerText.trim());
     document.getElementById('dist-summary').innerText = distChks.length > 0 ? `${distChks.length} wybranych` : 'Wszystkie';
 }
@@ -287,7 +253,6 @@ async function fetchAirbnbStats() {
             document.getElementById('ab-total').innerText = data.total_offers;
             document.getElementById('ab-price').innerText = data.avg_price + " PLN";
             renderAirbnbChart(data.by_city);
-            // Fetch List
             const listRes = await fetch(API_BASE + "/api/v1/airbnb/offers");
             if(listRes.ok) {
                 const list = await listRes.json();
@@ -326,18 +291,29 @@ async function loadAdminFormData() {
 }
 async function fetchAdminHints(val) { if(val.length < 2) return; try { const res = await fetch(`${API_BASE}/api/v1/admin/search_hint?q=${val}`); if(res.ok) { const hints = await res.json(); document.getElementById('admin-hints').innerHTML = hints.map(h => `<option value="${h}">`).join(''); } } catch(e){} }
 async function fetchAdmins() { const res = await fetch(API_BASE + "/api/v1/admin/list"); if(res.ok) { const list = await res.json(); document.getElementById('table-admins-body').innerHTML = list.map(a => `
-    <tr class="hover:bg-gray-100 dark:hover:bg-gray-700 border-b dark:border-gray-700"><td class="p-4 font-bold dark:text-white">${a.username}</td><td class="p-4 dark:text-gray-300">${a.permissions.city || 'Wszystkie'}</td><td class="p-4 space-x-1">${a.permissions.view_disabled ? '<span class="px-2 py-1 bg-blue-100 text-blue-800 rounded text-xs">DIS</span>' : ''}${a.permissions.view_ev ? '<span class="px-2 py-1 bg-yellow-100 text-yellow-800 rounded text-xs">EV</span>' : ''}</td><td class="p-4 text-gray-500">${a.permissions.allowed_state || 'Wszystkie'}</td><td class="p-4 text-right"><button onclick='editAdmin(${JSON.stringify(a)})' class="text-blue-600 hover:text-blue-800 mr-3"><i class="fas fa-edit"></i></button></td></tr>`).join(''); } }
+    <tr class="hover:bg-gray-100 dark:hover:bg-gray-700 border-b dark:border-gray-700"><td class="p-4 font-bold dark:text-white">${a.username}</td><td class="p-4 dark:text-gray-300">${a.permissions.city || 'Wszystkie'}</td><td class="p-4 space-x-1">${a.permissions.view_disabled ? '<span class="px-2 py-1 bg-blue-100 text-blue-800 rounded text-xs">DIS</span>' : ''}${a.permissions.view_ev ? '<span class="px-2 py-1 bg-yellow-100 text-yellow-800 rounded text-xs">EV</span>' : ''}${a.permissions.view_paid_only ? '<span class="px-2 py-1 bg-green-100 text-green-800 rounded text-xs">$$$</span>' : ''}</td><td class="p-4 text-gray-500">${a.permissions.allowed_states || 'Wszystkie'}</td><td class="p-4 text-right"><button onclick='editAdmin(${JSON.stringify(a)})' class="text-blue-600 hover:text-blue-800 mr-3"><i class="fas fa-edit"></i></button></td></tr>`).join(''); } }
 function editAdmin(a) {
     document.getElementById('edit-admin-id').value = a.id; document.getElementById('admin-user').value = a.username; document.getElementById('admin-user').disabled = true; document.getElementById('cancel-edit-btn').classList.remove('hidden');
     const p = a.permissions || {};
     const cities = (p.city || "").split(','); document.querySelectorAll('.city-chk').forEach(c => c.checked = cities.includes(c.value));
-    const dists = (p.allowed_state || "").split(','); document.querySelectorAll('.dist-chk').forEach(c => c.checked = dists.includes(c.value));
-    document.getElementById('perm-disabled').checked = p.view_disabled || false; document.getElementById('perm-ev').checked = p.view_ev || false; updateSummaries();
+    const dists = (p.allowed_states || "").split(','); document.querySelectorAll('.dist-chk').forEach(c => c.checked = dists.includes(c.value));
+    document.getElementById('perm-disabled').checked = p.view_disabled || false; 
+    document.getElementById('perm-ev').checked = p.view_ev || false; 
+    document.getElementById('perm-paid').checked = p.view_paid_only || false;
+    updateSummaries();
 }
 function cancelEdit() { document.getElementById('edit-admin-id').value = ''; document.getElementById('admin-user').value = ''; document.getElementById('admin-user').disabled = false; document.getElementById('cancel-edit-btn').classList.add('hidden'); document.querySelectorAll('input[type=checkbox]').forEach(c => c.checked = false); updateSummaries(); }
 async function saveAdmin() {
     const id = document.getElementById('edit-admin-id').value;
-    const payload = { username: document.getElementById('admin-user').value, password: document.getElementById('admin-pass').value || null, city: Array.from(document.querySelectorAll('#city-multi .city-chk:checked')).map(c => c.value).join(',') || 'ALL', allowed_state: Array.from(document.querySelectorAll('#dist-multi .dist-chk:checked')).map(c => c.value).join(','), view_disabled: document.getElementById('perm-disabled').checked, view_ev: document.getElementById('perm-ev').checked };
+    const payload = { 
+        username: document.getElementById('admin-user').value, 
+        password: document.getElementById('admin-pass').value || null, 
+        city: Array.from(document.querySelectorAll('#city-multi .city-chk:checked')).map(c => c.value).join(',') || 'ALL', 
+        allowed_states: Array.from(document.querySelectorAll('#dist-multi .dist-chk:checked')).map(c => c.value).join(','), 
+        view_disabled: document.getElementById('perm-disabled').checked, 
+        view_ev: document.getElementById('perm-ev').checked,
+        view_paid_only: document.getElementById('perm-paid').checked
+    };
     if(id) payload.id = parseInt(id);
     await fetch(API_BASE + (id ? "/api/v1/admin/update" : "/api/v1/admin/create"), { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(payload)}); cancelEdit(); fetchAdmins();
 }
