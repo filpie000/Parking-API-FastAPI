@@ -22,7 +22,6 @@
         .dark .multiselect-list { background-color: #374151; border-color: #4b5563; color: white; }
         .multiselect-list.open { display: block; }
         
-        /* Styl dla zablokowanych inputów */
         input:disabled + span { opacity: 0.5; cursor: not-allowed; }
         input:disabled { cursor: not-allowed; }
     </style>
@@ -108,7 +107,6 @@
                         <h3 class="text-lg font-bold mb-4 dark:text-white">Rozkład Ofert wg Miast</h3>
                         <div class="h-64 flex justify-center"><canvas id="airbnbPieChart"></canvas></div>
                     </div>
-                    
                     <div class="bg-white dark:bg-gray-800 rounded-xl shadow-sm overflow-hidden border dark:border-gray-700">
                         <h3 class="text-lg font-bold p-4 border-b dark:border-gray-700 dark:text-white">Najnowsze Oferty</h3>
                         <table class="min-w-full text-left text-sm">
@@ -194,66 +192,74 @@ async function login() {
             
             // 1. Zapisz uprawnienia globalnie
             currentUserPerms = data.permissions;
-            console.log("Pobrano uprawnienia:", currentUserPerms);
+            const isSuper = data.is_superadmin;
 
             document.getElementById('login-overlay').style.display='none';
             document.getElementById('app-content').classList.remove('hidden');
             document.getElementById('user-display').innerText = data.username;
             
-            if(data.is_superadmin) {
+            if(isSuper) {
                 document.getElementById('nav-admins').classList.remove('hidden');
                 document.getElementById('nav-users').classList.remove('hidden');
                 loadAdminFormData(); 
             }
             
-            // 2. Załaduj parkingi i od razu zablokuj filtry
             loadDistrictsForReport();
-            enforceFilterConstraints(); // <--- KLUCZOWE WYWOŁANIE
+            
+            // 2. WYMUŚ FILTRY (Dla zwykłych adminów)
+            if (!isSuper) {
+                enforceFilterConstraints();
+            } else {
+                // Dla SuperAdmina odblokuj wszystko
+                unlockAllFilters();
+            }
             
         } else { alert("Błąd logowania"); }
     } catch(e) { console.error(e); alert("Błąd połączenia"); }
 }
 
-// --- WYMUSZANIE OGRANICZEŃ ---
+// --- FUNKCJA BLOKUJĄCA (DLA ZWYKŁYCH ADMINÓW) ---
 function enforceFilterConstraints() {
     if (!currentUserPerms) return;
 
-    // Jeśli admin ma VIEW_PAID_ONLY = true -> Musi widzieć TYLKO PŁATNE
+    // Płatne
     const chkPaid = document.getElementById('chk-paid');
     if (currentUserPerms.view_paid_only) {
         chkPaid.checked = true;
-        chkPaid.disabled = true; // Blokujemy możliwość odznaczenia
+        chkPaid.disabled = true; // Zablokuj w pozycji ON
     } else {
-        chkPaid.disabled = false;
+        // Jeśli nie ma wymuszenia "tylko płatne", to może klikać dowolnie
+        chkPaid.disabled = false; 
     }
 
-    // Jeśli view_ev = false -> NIE MOŻE filtrować po EV (odznaczamy i blokujemy)
-    // Jeśli view_ev = true -> Ma opcję, ale nie przymus.
-    // UWAGA: Zazwyczaj "uprawnienie" oznacza "możliwość zobaczenia", a nie "przymus zobaczenia tylko tego".
-    // Ale jeśli admin ma widzieć TYLKO EV, to logika jest odwrotna.
-    // Przyjmijmy model RESTRESTRICTIVE: Jeśli admin ma flagę "view_ev", to znaczy że zajmuje się TYLKO EV.
+    // EV - Jeśli ma uprawnienie view_ev, to widzi EV. Jeśli nie, to wyłączamy?
+    // Interpretacja: "Dostęp tylko do X" = checkbox X zaznaczony i zablokowany.
+    // Jeśli view_ev = true -> Widzi EV (i może odznaczyć inne?).
+    // Zróbmy tak: Jeśli ma view_ev, to checkbox EV jest DOSTĘPNY. Jeśli NIE ma, to jest ZABLOKOWANY (nieaktywny).
     
-    // Interpretacja Twojego requirements: "Ma uprawnienia tylko EV" = "Widzi TYLKO EV".
+    // Wersja RESTRESTRICTIVE (zgodna z Twoim opisem "odcina dostęp"):
     const chkEv = document.getElementById('chk-ev');
-    // Sprawdzamy czy w bazie masz logikę "Mogę widzieć EV" czy "Widzę TYLKO EV".
-    // Zakładam, że Twoje uprawnienia działają jako FILTRY WYMUSZONE.
-    
-    // Jeśli admin NIE ma view_ev w bazie (czyli null/false), to znaczy że widzi wszystko? 
-    // Czy jeśli ma view_ev=true, to widzi TYLKO EV? 
-    // Patrząc na Twojego "elektryk_admin", on ma view_ev=true.
-    
-    // Wymuszenie EV
-    if (currentUserPerms.view_ev) {
-        chkEv.checked = true;
-        chkEv.disabled = true; 
+    if (!currentUserPerms.view_ev) {
+        chkEv.checked = false;
+        chkEv.disabled = true; // Nie masz uprawnień do EV -> nie możesz włączyć
+    } else {
+        chkEv.disabled = false;
     }
 
-    // Wymuszenie Niepełnosprawnych
     const chkDisabled = document.getElementById('chk-disabled');
-    if (currentUserPerms.view_disabled) {
-        chkDisabled.checked = true;
-        chkDisabled.disabled = true;
+    if (!currentUserPerms.view_disabled) {
+        chkDisabled.checked = false;
+        chkDisabled.disabled = true; // Nie masz uprawnień -> nie możesz włączyć
+    } else {
+        chkDisabled.disabled = false;
     }
+}
+
+// --- FUNKCJA ODBLOKOWUJĄCA (DLA SUPER ADMINA) ---
+function unlockAllFilters() {
+    document.getElementById('chk-paid').disabled = false;
+    document.getElementById('chk-ev').disabled = false;
+    document.getElementById('chk-disabled').disabled = false;
 }
 
 function logout() { location.reload(); }
@@ -279,20 +285,24 @@ function updateSummaries() {
 
 // --- REPORT ---
 async function loadDistrictsForReport() {
-    try { const res = await fetch(API_BASE + "/api/v1/districts"); if(res.ok) { allDistricts = await res.json(); 
-        
-        // FILTROWANIE LISTY PARKINGÓW WG UPRAWNIEŃ
-        let filtered = allDistricts;
-        if(currentUserPerms && currentUserPerms.allowed_state) {
-             // Spodziewamy się stringa z ID, np "1,3"
-             const allowedIds = currentUserPerms.allowed_state.split(',').map(s => parseInt(s.trim()));
-             if(allowedIds.length > 0 && !isNaN(allowedIds[0])) {
-                 filtered = allDistricts.filter(d => allowedIds.includes(d.id));
-             }
-        }
-        
-        renderDistrictsList('districts-list', filtered, 'district-chk'); 
-    } } catch(e){}
+    try { 
+        const res = await fetch(API_BASE + "/api/v1/districts"); 
+        if(res.ok) { 
+            allDistricts = await res.json(); 
+            
+            // FILTROWANIE LISTY PARKINGÓW WG UPRAWNIEŃ
+            let filtered = allDistricts;
+            // Jeśli nie jest superadminem i ma ograniczone strefy
+            if(currentUserPerms && currentUserPerms.allowed_state) {
+                 const allowedIds = currentUserPerms.allowed_state.split(',').map(s => parseInt(s.trim()));
+                 if(allowedIds.length > 0 && !isNaN(allowedIds[0])) {
+                     filtered = allDistricts.filter(d => allowedIds.includes(d.id));
+                 }
+            }
+            
+            renderDistrictsList('districts-list', filtered, 'district-chk'); 
+        } 
+    } catch(e){}
 }
 function renderDistrictsList(containerId, list, inputClass) {
     document.getElementById(containerId).innerHTML = list.map(d => `<label class="flex items-center space-x-2 p-1 hover:bg-gray-100 dark:hover:bg-gray-600 rounded cursor-pointer"><input type="checkbox" value="${d.id}" class="${inputClass} w-4 h-4"><span class="text-sm dark:text-white">${d.name} <span class="text-xs text-gray-400">(${d.city})</span></span></label>`).join('');
