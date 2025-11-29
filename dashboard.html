@@ -22,9 +22,9 @@
         .dark .multiselect-list { background-color: #374151; border-color: #4b5563; color: white; }
         .multiselect-list.open { display: block; }
         
-        /* Styl dla zablokowanych checkboxów */
-        input:disabled + span { color: #9CA3AF; }
-        input:disabled { cursor: not-allowed; opacity: 0.7; }
+        /* Styl dla zablokowanych inputów */
+        input:disabled + span { opacity: 0.5; cursor: not-allowed; }
+        input:disabled { cursor: not-allowed; }
     </style>
 </head>
 <body class="bg-gray-50 dark:bg-gray-900 text-gray-800 dark:text-gray-200 font-sans h-screen flex flex-col overflow-hidden transition-colors duration-300">
@@ -70,14 +70,11 @@
 
                 <div id="view-dashboard" class="view-section space-y-8">
                     <div class="flex justify-between items-center"><h2 class="text-3xl font-bold dark:text-white">Analiza Zajętości</h2></div>
-                    
                     <div class="bg-white dark:bg-gray-800 p-6 rounded-xl shadow-sm border dark:border-gray-700">
                         <h3 class="text-lg font-bold mb-4 dark:text-white border-b pb-2 dark:border-gray-700"><i class="fas fa-filter mr-2"></i> Filtry</h3>
-                        
                         <div class="grid grid-cols-1 md:grid-cols-4 gap-4 mb-4">
                             <div><label class="block text-xs font-bold uppercase mb-1 text-gray-500">Data Od</label><input type="date" id="report-start" class="w-full p-2 border rounded dark:bg-gray-700 dark:text-white"></div>
                             <div><label class="block text-xs font-bold uppercase mb-1 text-gray-500">Data Do</label><input type="date" id="report-end" class="w-full p-2 border rounded dark:bg-gray-700 dark:text-white"></div>
-                            
                             <div class="md:col-span-2 relative">
                                 <label class="block text-xs font-bold uppercase mb-1 text-gray-500">Wybierz Parkingi</label>
                                 <div class="border rounded bg-white dark:bg-gray-700 dark:border-gray-600">
@@ -86,20 +83,15 @@
                                 </div>
                             </div>
                         </div>
-
-                        <div class="mb-4">
-                            <label class="block text-xs font-bold uppercase mb-2 text-gray-500">Opcje (Zależne od uprawnień)</label>
-                            <div class="checkbox-grid">
-                                <label class="flex items-center space-x-2 text-sm dark:text-white cursor-pointer"><input type="checkbox" id="chk-weekend" checked class="w-4 h-4"><span>Weekendy</span></label>
-                                <label class="flex items-center space-x-2 text-sm dark:text-white cursor-pointer"><input type="checkbox" id="chk-holiday" checked class="w-4 h-4"><span>Święta</span></label>
-                                <label class="flex items-center space-x-2 text-sm dark:text-white cursor-pointer"><input type="checkbox" id="chk-disabled" class="w-4 h-4"><span>Tylko Niepełnosprawni</span></label>
-                                <label class="flex items-center space-x-2 text-sm dark:text-white cursor-pointer"><input type="checkbox" id="chk-ev" class="w-4 h-4"><span>Tylko EV</span></label>
-                                <label class="flex items-center space-x-2 text-sm dark:text-white cursor-pointer"><input type="checkbox" id="chk-paid" class="w-4 h-4"><span>Tylko Płatne</span></label>
-                            </div>
-                        </div>
+                        <div class="mb-4"><label class="block text-xs font-bold uppercase mb-2 text-gray-500">Opcje (Zależne od uprawnień)</label><div class="checkbox-grid">
+                            <label class="flex items-center space-x-2 text-sm dark:text-white cursor-pointer"><input type="checkbox" id="chk-weekend" checked class="w-4 h-4"><span>Weekendy</span></label>
+                            <label class="flex items-center space-x-2 text-sm dark:text-white cursor-pointer"><input type="checkbox" id="chk-holiday" checked class="w-4 h-4"><span>Święta</span></label>
+                            <label class="flex items-center space-x-2 text-sm dark:text-white cursor-pointer"><input type="checkbox" id="chk-disabled" class="w-4 h-4"><span>Tylko Niepełnosprawni</span></label>
+                            <label class="flex items-center space-x-2 text-sm dark:text-white cursor-pointer"><input type="checkbox" id="chk-ev" class="w-4 h-4"><span>Tylko EV</span></label>
+                            <label class="flex items-center space-x-2 text-sm dark:text-white cursor-pointer"><input type="checkbox" id="chk-paid" class="w-4 h-4"><span>Tylko Płatne</span></label>
+                        </div></div>
                         <button onclick="generateReport()" class="bg-blue-600 hover:bg-blue-700 text-white px-6 py-2 rounded font-bold w-full md:w-auto"><i class="fas fa-chart-area mr-2"></i> Generuj Wykres</button>
                     </div>
-                    
                     <div class="bg-white dark:bg-gray-800 p-6 rounded-xl shadow-sm border dark:border-gray-700 min-h-[400px]">
                         <h3 class="text-lg font-bold mb-4 dark:text-white">Średnia Zajętość (%)</h3>
                         <div class="h-96 w-full"><canvas id="advancedChart"></canvas></div>
@@ -116,6 +108,7 @@
                         <h3 class="text-lg font-bold mb-4 dark:text-white">Rozkład Ofert wg Miast</h3>
                         <div class="h-64 flex justify-center"><canvas id="airbnbPieChart"></canvas></div>
                     </div>
+                    
                     <div class="bg-white dark:bg-gray-800 rounded-xl shadow-sm overflow-hidden border dark:border-gray-700">
                         <h3 class="text-lg font-bold p-4 border-b dark:border-gray-700 dark:text-white">Najnowsze Oferty</h3>
                         <table class="min-w-full text-left text-sm">
@@ -126,14 +119,14 @@
                 </div>
 
                 <div id="view-admins" class="view-section hidden space-y-6">
-                     <h2 class="text-3xl font-bold dark:text-white">Zarządzanie Administratorami</h2>
-                     <div class="bg-white dark:bg-gray-800 p-6 rounded-xl shadow-sm border dark:border-gray-700">
+                    <h2 class="text-3xl font-bold dark:text-white">Zarządzanie Administratorami</h2>
+                    <div class="bg-white dark:bg-gray-800 p-6 rounded-xl shadow-sm border dark:border-gray-700">
                         <h3 class="font-bold text-lg mb-4 dark:text-white"><i class="fas fa-plus-circle text-green-500"></i> Dodaj / Edytuj Admina</h3>
                         <input type="hidden" id="edit-admin-id">
                         
                         <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
                             <div>
-                                <label class="block text-xs font-bold uppercase mb-1 text-gray-500">Login</label>
+                                <label class="block text-xs font-bold uppercase mb-1 text-gray-500">Login (Wyszukaj istniejący lub wpisz nowy)</label>
                                 <input type="text" id="admin-user" list="admin-hints" oninput="fetchAdminHints(this.value)" placeholder="Login..." class="w-full p-3 border rounded bg-gray-50 dark:bg-gray-700 dark:text-white">
                                 <datalist id="admin-hints"></datalist>
                             </div>
@@ -147,12 +140,14 @@
                             <div class="multiselect-dropdown" onclick="toggleDropdown('city-multi')">
                                 <label class="block text-xs font-bold uppercase mb-1 text-gray-500">Dozwolone Miasta</label>
                                 <div class="multiselect-header"><span id="city-summary">Wszystkie</span><i class="fas fa-chevron-down text-xs"></i></div>
-                                <div id="city-multi" class="multiselect-list" onclick="event.stopPropagation()"></div>
+                                <div id="city-multi" class="multiselect-list" onclick="event.stopPropagation()">
+                                    </div>
                             </div>
                             <div class="multiselect-dropdown" onclick="toggleDropdown('dist-multi')">
                                 <label class="block text-xs font-bold uppercase mb-1 text-gray-500">Dozwolone Strefy (Rejony)</label>
                                 <div class="multiselect-header"><span id="dist-summary">Wszystkie</span><i class="fas fa-chevron-down text-xs"></i></div>
-                                <div id="dist-multi" class="multiselect-list" onclick="event.stopPropagation()"></div>
+                                <div id="dist-multi" class="multiselect-list" onclick="event.stopPropagation()">
+                                    </div>
                             </div>
                             <div class="md:col-span-2 flex gap-6 mt-4">
                                 <label class="flex items-center gap-2 cursor-pointer"><input type="checkbox" id="perm-disabled" class="w-5 h-5"> <span class="dark:text-white">Wgląd w niepełnosprawne</span></label>
@@ -160,15 +155,15 @@
                                 <label class="flex items-center gap-2 cursor-pointer"><input type="checkbox" id="perm-paid" class="w-5 h-5"> <span class="dark:text-white">Wgląd w Płatne</span></label>
                             </div>
                         </div>
-                        <div class="flex gap-3"><button onclick="saveAdmin()" class="bg-blue-600 hover:bg-blue-700 text-white px-6 py-2 rounded font-bold">Zapisz</button><button onclick="cancelEdit()" id="cancel-edit-btn" class="hidden bg-gray-500 hover:bg-gray-600 text-white px-6 py-2 rounded font-bold">Wyczyść</button></div>
+                        <div class="flex gap-3"><button onclick="saveAdmin()" class="bg-blue-600 hover:bg-blue-700 text-white px-6 py-2 rounded font-bold">Zapisz</button><button onclick="cancelEdit()" id="cancel-edit-btn" class="hidden bg-gray-500 hover:bg-gray-600 text-white px-6 py-2 rounded font-bold">Wyczyść Formularz</button></div>
                     </div>
                     <div class="bg-white dark:bg-gray-800 rounded-xl shadow-sm overflow-hidden"><table class="min-w-full text-left text-sm"><thead class="bg-gray-100 dark:bg-gray-700 text-gray-600 dark:text-gray-200 uppercase font-bold text-xs"><tr><th class="p-4">Login</th><th class="p-4">Miasta</th><th class="p-4">Dostęp</th><th class="p-4">Strefy</th><th class="p-4 text-right">Akcje</th></tr></thead><tbody id="table-admins-body" class="divide-y dark:divide-gray-700 dark:text-gray-300"></tbody></table></div>
                 </div>
 
                 <div id="view-users" class="view-section hidden space-y-6">
                     <h2 class="text-3xl font-bold dark:text-white">Zarządzanie Kierowcami</h2>
-                     <div class="flex justify-between items-center bg-white dark:bg-gray-800 p-4 rounded-xl shadow-sm"><div class="relative w-full md:w-1/2"><i class="fas fa-search absolute left-3 top-3 text-gray-400"></i><input type="text" id="user-search" onkeyup="filterUsers()" placeholder="Szukaj..." class="w-full pl-10 p-2 border rounded dark:bg-gray-700 dark:text-white"></div></div>
-                     <div class="bg-white dark:bg-gray-800 rounded-xl shadow-sm overflow-hidden"><table class="min-w-full text-left text-sm"><thead class="bg-gray-100 dark:bg-gray-700 text-gray-600 dark:text-gray-200 uppercase font-bold text-xs"><tr><th class="p-4">ID</th><th class="p-4">Email / Telefon</th><th class="p-4 text-center">Status</th><th class="p-4 text-center">Niepełnosprawność</th><th class="p-4 text-right">Zarządzaj</th></tr></thead><tbody id="table-users-body" class="divide-y dark:divide-gray-700 dark:text-gray-300"></tbody></table></div>
+                    <div class="flex justify-between items-center bg-white dark:bg-gray-800 p-4 rounded-xl shadow-sm"><div class="relative w-full md:w-1/2"><i class="fas fa-search absolute left-3 top-3 text-gray-400"></i><input type="text" id="user-search" onkeyup="filterUsers()" placeholder="Szukaj..." class="w-full pl-10 p-2 border rounded dark:bg-gray-700 dark:text-white"></div></div>
+                    <div class="bg-white dark:bg-gray-800 rounded-xl shadow-sm overflow-hidden"><table class="min-w-full text-left text-sm"><thead class="bg-gray-100 dark:bg-gray-700 text-gray-600 dark:text-gray-200 uppercase font-bold text-xs"><tr><th class="p-4">ID</th><th class="p-4">Email / Telefon</th><th class="p-4 text-center">Status</th><th class="p-4 text-center">Niepełnosprawność</th><th class="p-4 text-right">Zarządzaj</th></tr></thead><tbody id="table-users-body" class="divide-y dark:divide-gray-700 dark:text-gray-300"></tbody></table></div>
                 </div>
             </div>
         </main>
@@ -176,7 +171,6 @@
 
 <script>
 const API_BASE = window.location.origin; 
-// Globalne zmienne na uprawnienia zalogowanego usera
 let currentUserPerms = null; 
 let allUsers = [], allDistricts = [], allCities = [], allStates = [];
 let advancedChart = null, airbnbChart = null;
@@ -189,7 +183,7 @@ document.addEventListener('DOMContentLoaded', () => {
     document.addEventListener('click', (e) => { if(!e.target.closest('.multiselect-dropdown')) { document.querySelectorAll('.multiselect-list').forEach(l => l.classList.remove('open')); updateSummaries(); } });
 });
 
-// --- LOGOWANIE + APLIKOWANIE UPRAWNIEŃ ---
+// --- LOGOWANIE I UPRAWNIENIA ---
 async function login() {
     const u = document.getElementById('login-user').value;
     const p = document.getElementById('login-pass').value;
@@ -198,28 +192,68 @@ async function login() {
         if(res.ok) {
             const data = await res.json();
             
-            // 1. Zapisz uprawnienia
+            // 1. Zapisz uprawnienia globalnie
             currentUserPerms = data.permissions;
-            
+            console.log("Pobrano uprawnienia:", currentUserPerms);
+
             document.getElementById('login-overlay').style.display='none';
             document.getElementById('app-content').classList.remove('hidden');
             document.getElementById('user-display').innerText = data.username;
             
-            // 2. Pokaż/Ukryj sekcje admina
             if(data.is_superadmin) {
                 document.getElementById('nav-admins').classList.remove('hidden');
                 document.getElementById('nav-users').classList.remove('hidden');
                 loadAdminFormData(); 
             }
             
-            // 3. Załaduj listę parkingów (z uwzględnieniem uprawnień!)
+            // 2. Załaduj parkingi i od razu zablokuj filtry
             loadDistrictsForReport();
-            
-            // 4. Zablokuj checkboxy w filtrach, jeśli trzeba
-            enforceFilterConstraints();
+            enforceFilterConstraints(); // <--- KLUCZOWE WYWOŁANIE
             
         } else { alert("Błąd logowania"); }
     } catch(e) { console.error(e); alert("Błąd połączenia"); }
+}
+
+// --- WYMUSZANIE OGRANICZEŃ ---
+function enforceFilterConstraints() {
+    if (!currentUserPerms) return;
+
+    // Jeśli admin ma VIEW_PAID_ONLY = true -> Musi widzieć TYLKO PŁATNE
+    const chkPaid = document.getElementById('chk-paid');
+    if (currentUserPerms.view_paid_only) {
+        chkPaid.checked = true;
+        chkPaid.disabled = true; // Blokujemy możliwość odznaczenia
+    } else {
+        chkPaid.disabled = false;
+    }
+
+    // Jeśli view_ev = false -> NIE MOŻE filtrować po EV (odznaczamy i blokujemy)
+    // Jeśli view_ev = true -> Ma opcję, ale nie przymus.
+    // UWAGA: Zazwyczaj "uprawnienie" oznacza "możliwość zobaczenia", a nie "przymus zobaczenia tylko tego".
+    // Ale jeśli admin ma widzieć TYLKO EV, to logika jest odwrotna.
+    // Przyjmijmy model RESTRESTRICTIVE: Jeśli admin ma flagę "view_ev", to znaczy że zajmuje się TYLKO EV.
+    
+    // Interpretacja Twojego requirements: "Ma uprawnienia tylko EV" = "Widzi TYLKO EV".
+    const chkEv = document.getElementById('chk-ev');
+    // Sprawdzamy czy w bazie masz logikę "Mogę widzieć EV" czy "Widzę TYLKO EV".
+    // Zakładam, że Twoje uprawnienia działają jako FILTRY WYMUSZONE.
+    
+    // Jeśli admin NIE ma view_ev w bazie (czyli null/false), to znaczy że widzi wszystko? 
+    // Czy jeśli ma view_ev=true, to widzi TYLKO EV? 
+    // Patrząc na Twojego "elektryk_admin", on ma view_ev=true.
+    
+    // Wymuszenie EV
+    if (currentUserPerms.view_ev) {
+        chkEv.checked = true;
+        chkEv.disabled = true; 
+    }
+
+    // Wymuszenie Niepełnosprawnych
+    const chkDisabled = document.getElementById('chk-disabled');
+    if (currentUserPerms.view_disabled) {
+        chkDisabled.checked = true;
+        chkDisabled.disabled = true;
+    }
 }
 
 function logout() { location.reload(); }
@@ -243,99 +277,38 @@ function updateSummaries() {
     document.getElementById('dist-summary').innerText = distChks.length > 0 ? `${distChks.length} wybranych` : 'Wszystkie';
 }
 
-// --- UPRAWNIENIA (ENFORCEMENT) ---
-function enforceFilterConstraints() {
-    if (!currentUserPerms) return;
-
-    // Blokada: Tylko EV
-    const chkEv = document.getElementById('chk-ev');
-    if (currentUserPerms.view_ev) {
-        chkEv.checked = true;
-        chkEv.disabled = true;
-    } else {
-        chkEv.disabled = false;
-    }
-
-    // Blokada: Tylko Niepełnosprawni
-    const chkDis = document.getElementById('chk-disabled');
-    if (currentUserPerms.view_disabled) {
-        chkDis.checked = true;
-        chkDis.disabled = true;
-    } else {
-        chkDis.disabled = false;
-    }
-
-    // Blokada: Tylko Płatne
-    const chkPaid = document.getElementById('chk-paid');
-    if (currentUserPerms.view_paid_only) {
-        chkPaid.checked = true;
-        chkPaid.disabled = true;
-    } else {
-        chkPaid.disabled = false;
-    }
-}
-
-// --- RAPORTY ---
+// --- REPORT ---
 async function loadDistrictsForReport() {
-    try { 
-        const res = await fetch(API_BASE + "/api/v1/districts"); 
-        if(res.ok) { 
-            allDistricts = await res.json(); 
-            
-            // FILTROWANIE LISTY PARKINGÓW WG UPRAWNIEŃ ADMINA
-            let filteredDistricts = allDistricts;
-            
-            if (currentUserPerms && currentUserPerms.allowed_state) {
-                // allowed_state to np. "1,3,5" (ID rejonów/districts)
-                // Uwaga: W Twojej bazie states.state_id == districts.id (uproszczenie logiki)
-                // Jeśli allowed_state nie jest puste, filtrujemy.
-                const allowedIds = currentUserPerms.allowed_state.split(',').map(id => parseInt(id.trim()));
-                if (allowedIds.length > 0 && !isNaN(allowedIds[0])) {
-                    filteredDistricts = allDistricts.filter(d => allowedIds.includes(d.id));
-                }
-            }
-
-            renderDistrictsList('districts-list', filteredDistricts, 'district-chk'); 
-        } 
-    } catch(e){}
+    try { const res = await fetch(API_BASE + "/api/v1/districts"); if(res.ok) { allDistricts = await res.json(); 
+        
+        // FILTROWANIE LISTY PARKINGÓW WG UPRAWNIEŃ
+        let filtered = allDistricts;
+        if(currentUserPerms && currentUserPerms.allowed_state) {
+             // Spodziewamy się stringa z ID, np "1,3"
+             const allowedIds = currentUserPerms.allowed_state.split(',').map(s => parseInt(s.trim()));
+             if(allowedIds.length > 0 && !isNaN(allowedIds[0])) {
+                 filtered = allDistricts.filter(d => allowedIds.includes(d.id));
+             }
+        }
+        
+        renderDistrictsList('districts-list', filtered, 'district-chk'); 
+    } } catch(e){}
 }
-
 function renderDistrictsList(containerId, list, inputClass) {
     document.getElementById(containerId).innerHTML = list.map(d => `<label class="flex items-center space-x-2 p-1 hover:bg-gray-100 dark:hover:bg-gray-600 rounded cursor-pointer"><input type="checkbox" value="${d.id}" class="${inputClass} w-4 h-4"><span class="text-sm dark:text-white">${d.name} <span class="text-xs text-gray-400">(${d.city})</span></span></label>`).join('');
 }
-
-function filterDistricts(containerId, q) { 
-    // Filtrujemy tylko te, które są dozwolone (już załadowane w loadDistrictsForReport logic)
-    // Ale tutaj robimy prosty filtr tekstowy po nazwie
-    const rendered = allDistricts.filter(d => d.name.toLowerCase().includes(q.toLowerCase()));
-    renderDistrictsList(containerId, rendered, containerId === 'districts-list' ? 'district-chk' : 'dist-chk'); 
-}
+function filterDistricts(containerId, q) { renderDistrictsList(containerId, allDistricts.filter(d => d.name.toLowerCase().includes(q.toLowerCase())), containerId === 'districts-list' ? 'district-chk' : 'dist-chk'); }
 
 async function generateReport() {
     const districtIds = Array.from(document.querySelectorAll('.district-chk:checked')).map(cb => parseInt(cb.value));
     if(districtIds.length === 0) { alert("Wybierz przynajmniej jeden parking."); return; }
-    
-    // Parametry z uwzględnieniem wymuszonych checkboxów
     const payload = {
-        start_date: document.getElementById('report-start').value, 
-        end_date: document.getElementById('report-end').value, 
-        districts: districtIds,
-        include_weekends: document.getElementById('chk-weekend').checked, 
-        include_holidays: document.getElementById('chk-holiday').checked,
-        only_disabled: document.getElementById('chk-disabled').checked, 
-        only_ev: document.getElementById('chk-ev').checked, 
-        only_paid: document.getElementById('chk-paid').checked
+        start_date: document.getElementById('report-start').value, end_date: document.getElementById('report-end').value, districts: districtIds,
+        include_weekends: document.getElementById('chk-weekend').checked, include_holidays: document.getElementById('chk-holiday').checked,
+        only_disabled: document.getElementById('chk-disabled').checked, only_ev: document.getElementById('chk-ev').checked, only_paid: document.getElementById('chk-paid').checked
     };
-
-    try { 
-        const res = await fetch(API_BASE + "/api/v1/admin/stats/advanced", { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(payload) }); 
-        if(res.ok) { 
-            const data = await res.json(); 
-            renderAdvancedChart(data.datasets); 
-        } 
-    } catch(e) { alert("Błąd generowania"); }
+    try { const res = await fetch(API_BASE + "/api/v1/admin/stats/advanced", { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(payload) }); if(res.ok) { const data = await res.json(); renderAdvancedChart(data.datasets); } } catch(e) { alert("Błąd generowania"); }
 }
-
 function renderAdvancedChart(datasets) {
     const ctx = document.getElementById('advancedChart').getContext('2d');
     if(advancedChart) advancedChart.destroy();
