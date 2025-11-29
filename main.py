@@ -276,7 +276,7 @@ def check_if_holiday(target_date):
     holidays = get_holidays_for_year(target_date.year)
     return holidays.get(target_date)
 
-# --- MQTT ---
+# --- MQTT + SMART POWIADOMIENIA ---
 class ConnectionManager:
     def __init__(self): self.active_connections: List[WebSocket] = []
     async def connect(self, websocket: WebSocket): await websocket.accept(); self.active_connections.append(websocket)
@@ -314,11 +314,29 @@ def on_mqtt_message(client, userdata, msg):
                         db.add(HolidayData(sensor_id=sensor_name, status=status, holiday_name=today_holiday, timestamp=event_time))
                     else:
                         db.add(HistoricalData(sensor_id=sensor_name, status=status, timestamp=event_time))
+                    
+                    # SMART NOTIFICATIONS (Real MQTT)
                     if status == 1:
                         subs = db.query(DeviceSubscription).filter(DeviceSubscription.sensor_name == sensor_name).all()
-                        for sub in subs:
-                            send_push(sub.device_token, "⚠️ Ktoś zajął Twoje miejsce!", f"Miejsce {sensor_name} zajęte. Kliknij, aby znaleźć alternatywę.", data={"action": "find_alt"})
-                            db.delete(sub)
+                        
+                        if subs:
+                            alternatives = []
+                            if spot.district_id:
+                                alternatives = db.query(ParkingSpot).filter(
+                                    ParkingSpot.district_id == spot.district_id,
+                                    ParkingSpot.current_status == 0,
+                                    ParkingSpot.name != sensor_name
+                                ).limit(3).all()
+                            
+                            if alternatives:
+                                alt_names = ", ".join([a.name for a in alternatives])
+                                msg_body = f"Miejsce {sensor_name} zajęte. Wolne obok: {alt_names}."
+                            else:
+                                msg_body = f"Miejsce {sensor_name} zajęte. Brak innych wolnych w tej strefie."
+
+                            for sub in subs:
+                                send_push(sub.device_token, "Zmiana statusu!", msg_body, data={"action": "find_alt"})
+                                db.delete(sub)
                 db.commit()
     except Exception as e: logger.error(f"MQTT Error: {e}")
 
@@ -452,7 +470,7 @@ def search_admin_hint(q: str = "", db: Session = Depends(get_db)):
     admins = db.query(Admin.username).filter(Admin.username.ilike(f"%{q}%")).limit(5).all()
     return [a[0] for a in admins]
 
-# --- LOKALIZACJA (CITY_ID) ---
+# --- LOKALIZACJA ---
 @app.get("/api/v1/cities")
 def get_cities(db: Session = Depends(get_db)):
     cities = db.query(City).all()
@@ -471,7 +489,7 @@ def get_districts(db: Session = Depends(get_db)):
     districts = db.query(District).all()
     return [{"id": d.id, "name": d.district, "city": d.city} for d in districts]
 
-# --- AGREGOWANE STATYSTYKI ADMINA ---
+# --- STATYSTYKI ADMINA (PEŁNE) ---
 @app.post("/api/v1/admin/stats/advanced")
 def get_advanced_stats(req: StatsRequest, db: Session = Depends(get_db)):
     start = datetime.datetime.strptime(req.start_date, "%Y-%m-%d")
@@ -491,7 +509,6 @@ def get_advanced_stats(req: StatsRequest, db: Session = Depends(get_db)):
         valid_spots_names = [s.name for s in spots_query.all()]
         if not valid_spots_names: continue
 
-        # SQL Agregacja
         raw_stats = db.query(
             extract('hour', HistoricalData.timestamp).label('hour'),
             func.date(HistoricalData.timestamp).label('day'),
@@ -539,6 +556,7 @@ def get_advanced_stats(req: StatsRequest, db: Session = Depends(get_db)):
 #           MOBILE APP ENDPOINTS
 # ==========================================
 
+# --- IOT UPDATE + SMART NOTIFICATIONS (HTTP Version for Simulation) ---
 @app.post("/api/v1/iot/update")
 async def iot_update_http(data: dict, db: Session = Depends(get_db)):
     try:
@@ -566,11 +584,28 @@ async def iot_update_http(data: dict, db: Session = Depends(get_db)):
             else:
                 db.add(HistoricalData(sensor_id=name, status=stat, timestamp=event_time))
             
+            # SMART NOTIFICATION
             if stat == 1:
                 subs = db.query(DeviceSubscription).filter(DeviceSubscription.sensor_name == name).all()
-                for s in subs:
-                    send_push(s.device_token, "Zajęto miejsce!", f"{name} zajęte", data={"action": "find_alt"})
-                    db.delete(s)
+                
+                if subs:
+                    alternatives = []
+                    if spot.district_id:
+                        alternatives = db.query(ParkingSpot).filter(
+                            ParkingSpot.district_id == spot.district_id,
+                            ParkingSpot.current_status == 0,
+                            ParkingSpot.name != name
+                        ).limit(3).all()
+                    
+                    if alternatives:
+                        alt_names = ", ".join([a.name for a in alternatives])
+                        msg_body = f"Miejsce {name} zajęte. Wolne obok: {alt_names}."
+                    else:
+                        msg_body = f"Miejsce {name} zajęte. Brak innych wolnych w tej strefie."
+
+                    for s in subs:
+                        send_push(s.device_token, "Zmiana statusu!", msg_body, data={"action": "find_alt"})
+                        db.delete(s)
         
         db.commit()
         await manager.broadcast({"sensor_id": name, "status": stat})
@@ -579,7 +614,7 @@ async def iot_update_http(data: dict, db: Session = Depends(get_db)):
         db.rollback()
         raise HTTPException(500, str(e))
 
-# PRZYWRÓCONY: Endpoint do subskrypcji powiadomień
+# Endpoint do subskrypcji (Niezbędny!)
 @app.post("/api/v1/subscribe_spot")
 async def subscribe_device(request: SubscriptionRequest, db: Session = Depends(get_db)):
     try:
@@ -771,7 +806,7 @@ def get_airbnb(district_id: Optional[int] = None, token: Optional[str] = None, d
             if u: current_user_id = u.user_id
 
         q = db.query(AirbnbOffer)
-        if district_id: q = q.filter(AirbnbOffer.district_id == district_id)
+        if district_id: q = q.filter(AirbnbOffer.state_id == district_id)
         offers = q.all()
         
         res = []
@@ -813,7 +848,6 @@ def buy_ticket(req: TicketPurchase, db: Session = Depends(get_db)):
     except Exception as e: 
         db.rollback(); logger.error(f"Buy Ticket Error: {e}"); raise HTTPException(500, str(e))
 
-# --- FIX: NAPRAWIONY GET ACTIVE TICKET (DATETIME COMPARE) ---
 @app.get("/api/v1/user/ticket/active")
 def get_active_ticket(token: str, db: Session = Depends(get_db)):
     user = db.query(User).filter(User.token == token).first()
@@ -823,11 +857,8 @@ def get_active_ticket(token: str, db: Session = Depends(get_db)):
     if not t:
         user.ticket_id = None; db.commit(); return {"status": "no_ticket"}
     
-    # FIX: Bezpieczne porównanie czasu
     now = now_utc()
     end_t = t.end_time
-    
-    # Jeśli czas z bazy jest naive (bez strefy), traktujemy jako UTC
     if end_t.tzinfo is None:
         if end_t < now.replace(tzinfo=None): return {"status": "expired"}
     else:
