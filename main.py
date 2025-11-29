@@ -36,7 +36,6 @@ MQTT_PORT = int(os.environ.get('MQTT_PORT', 1883))
 MQTT_TOPIC = "parking/+/status" 
 
 DATABASE_URL = os.environ.get('DATABASE_URL', "postgresql://postgres:postgres@localhost:5432/postgres")
-# DATABASE_URL = "sqlite:///./parking.db"
 
 if DATABASE_URL and DATABASE_URL.startswith("postgres://"):
     DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
@@ -231,8 +230,10 @@ class AirbnbResponse(BaseModel):
 class AdminUserUpdate(BaseModel): user_id: int; is_blocked: Optional[bool] = None; is_disabled: Optional[bool] = None
 
 class AdminPayload(BaseModel):
-    id: Optional[int] = None; username: str; password: Optional[str] = None; city: str = "ALL"
-    view_disabled: bool = False; view_ev: bool = False; allowed_state: str = ""
+    id: Optional[int] = None; username: str; password: Optional[str] = None; 
+    city: str = "ALL"  # Tutaj mogą być miasta po przecinku
+    view_disabled: bool = False; view_ev: bool = False
+    allowed_state: str = "" # Tutaj mogą być ID stref po przecinku
 
 class AdminLogin(BaseModel): username: str; password: str
 
@@ -276,7 +277,7 @@ def check_if_holiday(target_date):
     holidays = get_holidays_for_year(target_date.year)
     return holidays.get(target_date)
 
-# --- MQTT + SMART POWIADOMIENIA ---
+# --- MQTT ---
 class ConnectionManager:
     def __init__(self): self.active_connections: List[WebSocket] = []
     async def connect(self, websocket: WebSocket): await websocket.accept(); self.active_connections.append(websocket)
@@ -314,11 +315,8 @@ def on_mqtt_message(client, userdata, msg):
                         db.add(HolidayData(sensor_id=sensor_name, status=status, holiday_name=today_holiday, timestamp=event_time))
                     else:
                         db.add(HistoricalData(sensor_id=sensor_name, status=status, timestamp=event_time))
-                    
-                    # SMART NOTIFICATIONS (Real MQTT)
                     if status == 1:
                         subs = db.query(DeviceSubscription).filter(DeviceSubscription.sensor_name == sensor_name).all()
-                        
                         if subs:
                             alternatives = []
                             if spot.district_id:
@@ -416,13 +414,27 @@ def list_admins(db: Session = Depends(get_db)):
         })
     return res
 
+# --- DODAWANIE ADMINA (UPRAWNIENIA) ---
 @app.post("/api/v1/admin/create")
 def create_admin(d: AdminPayload, db: Session = Depends(get_db)):
-    if db.query(Admin).filter(Admin.username == d.username).first(): raise HTTPException(400, "Nazwa zajęta")
+    if db.query(Admin).filter(Admin.username == d.username).first(): 
+        raise HTTPException(400, "Nazwa zajęta")
+    
     new_admin = Admin(username=d.username, password_hash=get_password_hash(d.password or "admin123"))
-    db.add(new_admin); db.flush()
-    perms = AdminPermissions(admin_id=new_admin.admin_id, city=d.city, view_disabled=d.view_disabled, view_ev=d.view_ev, allowed_state=d.allowed_state)
-    db.add(perms); db.commit(); return {"status": "created"}
+    db.add(new_admin)
+    db.flush() # Generuje ID
+    
+    # Zapisujemy permissions (city = "Inowrocław,Bydgoszcz", allowed_state = "1,3,5")
+    perms = AdminPermissions(
+        admin_id=new_admin.admin_id, 
+        city=d.city, 
+        view_disabled=d.view_disabled, 
+        view_ev=d.view_ev, 
+        allowed_state=d.allowed_state
+    )
+    db.add(perms)
+    db.commit()
+    return {"status": "created"}
 
 @app.post("/api/v1/admin/update")
 def update_admin(d: AdminPayload, db: Session = Depends(get_db)):
@@ -430,6 +442,7 @@ def update_admin(d: AdminPayload, db: Session = Depends(get_db)):
     admin = db.query(Admin).filter(Admin.admin_id == d.id).first()
     if not admin: raise HTTPException(404)
     if d.password: admin.password_hash = get_password_hash(d.password)
+    
     if admin.permissions:
         admin.permissions.city = d.city
         admin.permissions.view_disabled = d.view_disabled
@@ -489,7 +502,24 @@ def get_districts(db: Session = Depends(get_db)):
     districts = db.query(District).all()
     return [{"id": d.id, "name": d.district, "city": d.city} for d in districts]
 
-# --- STATYSTYKI ADMINA (PEŁNE) ---
+# --- STATYSTYKI AIRBNB ---
+@app.get("/api/v1/admin/stats/airbnb_summary")
+def get_airbnb_summary(db: Session = Depends(get_db)):
+    total = db.query(func.count(AirbnbOffer.id)).scalar()
+    avg_price = db.query(func.avg(AirbnbOffer.price)).scalar() or 0
+    city_stats = db.query(
+        City.city, func.count(AirbnbOffer.id)
+    ).join(State, AirbnbOffer.state_id == State.state_id)\
+     .join(City, State.city_id == City.city_id)\
+     .group_by(City.city).all()
+
+    return {
+        "total_offers": total,
+        "avg_price": round(float(avg_price), 2),
+        "by_city": [{"city": c[0], "count": c[1]} for c in city_stats]
+    }
+
+# --- AGREGOWANE STATYSTYKI ADMINA ---
 @app.post("/api/v1/admin/stats/advanced")
 def get_advanced_stats(req: StatsRequest, db: Session = Depends(get_db)):
     start = datetime.datetime.strptime(req.start_date, "%Y-%m-%d")
@@ -556,7 +586,6 @@ def get_advanced_stats(req: StatsRequest, db: Session = Depends(get_db)):
 #           MOBILE APP ENDPOINTS
 # ==========================================
 
-# --- IOT UPDATE + SMART NOTIFICATIONS (HTTP Version for Simulation) ---
 @app.post("/api/v1/iot/update")
 async def iot_update_http(data: dict, db: Session = Depends(get_db)):
     try:
@@ -584,11 +613,10 @@ async def iot_update_http(data: dict, db: Session = Depends(get_db)):
             else:
                 db.add(HistoricalData(sensor_id=name, status=stat, timestamp=event_time))
             
-            # SMART NOTIFICATION
             if stat == 1:
                 subs = db.query(DeviceSubscription).filter(DeviceSubscription.sensor_name == name).all()
-                
                 if subs:
+                    # SMART NOTIFICATION
                     alternatives = []
                     if spot.district_id:
                         alternatives = db.query(ParkingSpot).filter(
@@ -614,7 +642,6 @@ async def iot_update_http(data: dict, db: Session = Depends(get_db)):
         db.rollback()
         raise HTTPException(500, str(e))
 
-# Endpoint do subskrypcji (Niezbędny!)
 @app.post("/api/v1/subscribe_spot")
 async def subscribe_device(request: SubscriptionRequest, db: Session = Depends(get_db)):
     try:
@@ -693,7 +720,6 @@ def get_spots(limit: int = 1000, db: Session = Depends(get_db)):
         })
     return res
 
-# --- STATYSTYKI MOBILNE ---
 @app.post("/api/v1/statystyki/zajetosc")
 def get_stats_mobile(req: StatystykiZapytanie, db: Session = Depends(get_db)):
     try:
@@ -756,7 +782,6 @@ def get_stats_mobile(req: StatystykiZapytanie, db: Session = Depends(get_db)):
         logger.error(f"Stats Mobile Error: {e}")
         return {"wynik": {"procent_zajetosci": 0, "liczba_pomiarow": 0}}
 
-# --- AIRBNB ---
 @app.post("/api/v1/airbnb/add")
 def add_airbnb(a: AirbnbAdd, db: Session = Depends(get_db)):
     u = db.query(User).filter(User.token == a.token).first()
