@@ -59,7 +59,6 @@ def get_db():
 
 class City(Base):
     __tablename__ = "cities"
-    # UWAGA: Klucz to city_id
     city_id = Column(Integer, primary_key=True, autoincrement=True) 
     city = Column(String(100), nullable=False)
 
@@ -67,7 +66,6 @@ class State(Base):
     __tablename__ = "states"
     state_id = Column(Integer, primary_key=True, autoincrement=True)
     name = Column(String(100), nullable=False)
-    # Relacja do cities.city_id
     city_id = Column(Integer, ForeignKey("cities.city_id"), nullable=True) 
     city = Column(String(100), nullable=True) 
 
@@ -167,7 +165,6 @@ class AirbnbOffer(Base):
     latitude = Column(DECIMAL(9, 6))
     longitude = Column(DECIMAL(9, 6))
     
-    # Relacja do states.state_id
     state_id = Column(Integer, ForeignKey("states.state_id"), nullable=True)
     district_id = Column(Integer, ForeignKey("districts.id"), nullable=True)
     
@@ -455,17 +452,17 @@ def search_admin_hint(q: str = "", db: Session = Depends(get_db)):
     admins = db.query(Admin.username).filter(Admin.username.ilike(f"%{q}%")).limit(5).all()
     return [a[0] for a in admins]
 
-# --- LOKALIZACJA ---
+# --- LOKALIZACJA (CITY_ID) ---
 @app.get("/api/v1/cities")
 def get_cities(db: Session = Depends(get_db)):
     cities = db.query(City).all()
-    # MAPOWANIE: city_id -> id
     return [{"id": c.city_id, "name": c.city} for c in cities]
 
 @app.get("/api/v1/states")
 def get_states(city_id: Optional[int] = None, db: Session = Depends(get_db)):
     query = db.query(State)
     if city_id:
+        # Poprawione: filtruje po city_id
         query = query.filter(State.city_id == city_id)
     states = query.all()
     return [{"id": s.state_id, "name": s.name, "city_id": s.city_id} for s in states]
@@ -475,7 +472,7 @@ def get_districts(db: Session = Depends(get_db)):
     districts = db.query(District).all()
     return [{"id": d.id, "name": d.district, "city": d.city} for d in districts]
 
-# --- AGREGOWANE STATYSTYKI ADMINA ---
+# --- AGREGOWANE STATYSTYKI ADMINA (PEŁNE) ---
 @app.post("/api/v1/admin/stats/advanced")
 def get_advanced_stats(req: StatsRequest, db: Session = Depends(get_db)):
     start = datetime.datetime.strptime(req.start_date, "%Y-%m-%d")
@@ -495,6 +492,7 @@ def get_advanced_stats(req: StatsRequest, db: Session = Depends(get_db)):
         valid_spots_names = [s.name for s in spots_query.all()]
         if not valid_spots_names: continue
 
+        # SQL Agregacja
         raw_stats = db.query(
             extract('hour', HistoricalData.timestamp).label('hour'),
             func.date(HistoricalData.timestamp).label('day'),
@@ -642,6 +640,7 @@ def get_spots(limit: int = 1000, db: Session = Depends(get_db)):
         })
     return res
 
+# --- STATYSTYKI MOBILNE (ZAAWANSOWANA LOGIKA) ---
 @app.post("/api/v1/statystyki/zajetosc")
 def get_stats_mobile(req: StatystykiZapytanie, db: Session = Depends(get_db)):
     try:
@@ -704,12 +703,20 @@ def get_stats_mobile(req: StatystykiZapytanie, db: Session = Depends(get_db)):
         logger.error(f"Stats Mobile Error: {e}")
         return {"wynik": {"procent_zajetosci": 0, "liczba_pomiarow": 0}}
 
+# --- AIRBNB (KOMPLETNE) ---
 @app.post("/api/v1/airbnb/add")
 def add_airbnb(a: AirbnbAdd, db: Session = Depends(get_db)):
     u = db.query(User).filter(User.token == a.token).first()
     if not u: raise HTTPException(401, "Nieautoryzowany")
     try:
-        db.add(AirbnbOffer(title=a.title, description=a.description, price=a.price, h_availability=a.h_availability, owner_name=u.email, owner_user_id=u.user_id, contact=a.contact, state_id=a.state_id, district_id=a.district_id, start_date=datetime.datetime.strptime(a.start_date, "%Y-%m-%d").date() if a.start_date else None, end_date=datetime.datetime.strptime(a.end_date, "%Y-%m-%d").date() if a.end_date else None, latitude=a.latitude, longitude=a.longitude))
+        db.add(AirbnbOffer(
+            title=a.title, description=a.description, price=a.price, h_availability=a.h_availability, 
+            owner_name=u.email, owner_user_id=u.user_id, contact=a.contact, 
+            state_id=a.state_id, district_id=a.district_id, # Zapisuje state_id
+            start_date=datetime.datetime.strptime(a.start_date, "%Y-%m-%d").date() if a.start_date else None, 
+            end_date=datetime.datetime.strptime(a.end_date, "%Y-%m-%d").date() if a.end_date else None, 
+            latitude=a.latitude, longitude=a.longitude
+        ))
         db.commit(); return {"status": "ok"}
     except Exception as e: db.rollback(); raise HTTPException(500, f"DB Error: {str(e)}")
 
@@ -726,7 +733,12 @@ def update_airbnb(u: AirbnbUpdate, db: Session = Depends(get_db)):
         if u.price is not None: offer.price = u.price
         if u.h_availability is not None: offer.h_availability = u.h_availability
         if u.contact is not None: offer.contact = u.contact
-        if u.state_id is not None: offer.state_id = u.state_id
+        
+        # Aktualizacja lokalizacji
+        if u.state_id is not None: 
+            offer.state_id = u.state_id
+            offer.district_id = u.state_id # Backwards compatibility
+            
         if u.latitude is not None: offer.latitude = u.latitude
         if u.longitude is not None: offer.longitude = u.longitude
         if u.start_date: offer.start_date = datetime.datetime.strptime(u.start_date, "%Y-%m-%d").date()
@@ -753,7 +765,8 @@ def get_airbnb(district_id: Optional[int] = None, token: Optional[str] = None, d
             if u: current_user_id = u.user_id
 
         q = db.query(AirbnbOffer)
-        if district_id: q = q.filter(AirbnbOffer.district_id == district_id)
+        # district_id tu działa jako state_id w nowej logice (parametr w URL może zostać district_id)
+        if district_id: q = q.filter(AirbnbOffer.state_id == district_id)
         offers = q.all()
         
         res = []
@@ -761,6 +774,7 @@ def get_airbnb(district_id: Optional[int] = None, token: Optional[str] = None, d
             try:
                 s_name = "Inny"
                 if o.state_rel: s_name = o.state_rel.name
+                
                 res.append({
                     "id": o.id, "title": o.title or "Brak tytułu", "description": o.description,
                     "price": float(o.price) if o.price is not None else 0.0,
